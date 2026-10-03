@@ -113,7 +113,7 @@ def check(name, ok, detail=""):
 
 def case_plain_render(blend, out_dir):
     """场景一：完整跑一轮，6 帧全出。"""
-    log("\n[1/3] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
+    log("\n[1/4] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "6", "-E", "CYCLES", "--samples", "8",
@@ -133,7 +133,7 @@ def case_plain_render(blend, out_dir):
 
 def case_kill_and_resume(blend, out_dir):
     """场景二：渲染中途杀掉 Blender，验证会自动重启并从断点接上。"""
-    log("\n[2/3] 中途杀掉 Blender，验证崩溃续跑")
+    log("\n[2/4] 中途杀掉 Blender，验证崩溃续跑")
     clean(out_dir)
     # 每帧要够慢（~1s），否则检测循环会一帧都抓不到中间态，等于没测到崩溃
     cmd = [PY, os.path.join(ROOT, "main.py"), blend, "-s", "1", "-e", "6",
@@ -187,7 +187,7 @@ def case_kill_and_resume(blend, out_dir):
 
 def case_eevee(blend, out_dir):
     """场景三：切 EEVEE，验证引擎别名（5.2 里可能叫 BLENDER_EEVEE_NEXT）能落地。"""
-    log("\n[3/3] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
+    log("\n[3/4] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "2", "-E", "BLENDER_EEVEE", "--samples", "16",
@@ -206,10 +206,34 @@ def case_eevee(blend, out_dir):
     return ok, out
 
 
+def case_inspect(blend):
+    """场景四：只读工程配置（不渲染）——验证 inspect.py 的 bpy 取数逻辑。"""
+    log("\n[4/4] 读取工程配置（无头 Blender 读 .blend，不渲染）")
+    from brconsole.inspect import output_template_from, read_blend_info
+    t0 = time.time()
+    info = read_blend_info(BLENDER, blend)
+    ok = check("读取成功", bool(info.get("ok")), str(info.get("error", "")))
+    if not info.get("ok"):
+        return ok, ""
+    ok &= check("引擎 = CYCLES", info.get("engine") == "CYCLES", str(info.get("engine")))
+    ok &= check("采样 = 8", info.get("samples") == 8, str(info.get("samples")))
+    ok &= check("分辨率 = 160x120", info.get("resolution") == [160, 120],
+                str(info.get("resolution")))
+    ok &= check("帧范围 = 1-6",
+                (info.get("frame_start"), info.get("frame_end")) == (1, 6),
+                "%s-%s" % (info.get("frame_start"), info.get("frame_end")))
+    ok &= check("设备 = CPU", (info.get("cycles_device") or "").upper() == "CPU",
+                str(info.get("cycles_device")))
+    tpl = output_template_from(info.get("output_path"), blend)
+    ok &= check("输出模板可用", "####" in tpl, tpl)
+    log("    用时 %.1fs（读一次要起一个无头 Blender）" % (time.time() - t0))
+    return ok, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留产物目录")
-    ap.add_argument("--only", choices=["1", "2", "3"], help="只跑某一个场景")
+    ap.add_argument("--only", choices=["1", "2", "3", "4"], help="只跑某一个场景")
     args = ap.parse_args()
 
     if not os.path.exists(BLENDER):
@@ -227,6 +251,8 @@ def main():
             results.append(case_kill_and_resume(blend, os.path.join(WORK, "out2")))
         if args.only in (None, "3"):
             results.append(case_eevee(blend, os.path.join(WORK, "out3")))
+        if args.only in (None, "4"):
+            results.append(case_inspect(blend))
     finally:
         if not args.keep:
             try:
