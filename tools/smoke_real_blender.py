@@ -1,0 +1,244 @@
+# -*- coding: utf-8 -*-
+"""真机冒烟：用**真的 Blender 5.2** 跑通「渲染 → 杀进程 → 断点续跑」全链路。
+
+单测（tests/test_core.py）用的是 fake_blender，验证的是接线；
+这个脚本验证的是**真机行为**：bpy API 对不对、引擎/采样覆盖生效没有、
+`frame_path` 算出来的路径对不对、Blender 真被杀掉之后续跑能不能接上。
+
+    python tools/smoke_real_blender.py            # 跑全部
+    python tools/smoke_real_blender.py --keep     # 保留产物目录以便查看
+
+⚠️ 杀进程只杀**本脚本自己启动的** blender（按 PID 差集），不会误伤你正在用的 Blender。
+"""
+
+import argparse
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+
+BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
+WORK = os.path.join(HERE, "_smoke")
+PY = sys.executable
+
+RE_RESTART = re.compile(r"退出码|重启 (\d+) 次|任务结束")
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def make_scene(path):
+    """用 --factory-startup 造一个极简场景（不依赖任何已有 .blend）。"""
+    expr = (
+        "import bpy;"
+        "sc=bpy.context.scene;"
+        "sc.render.engine='CYCLES';"
+        "sc.cycles.device='CPU';"
+        "sc.cycles.samples=8;"
+        "sc.render.resolution_x=160;"
+        "sc.render.resolution_y=120;"
+        "sc.render.resolution_percentage=100;"
+        "sc.frame_start=1;sc.frame_end=6;"
+        "sc.render.image_settings.file_format='PNG';"
+        "bpy.ops.wm.save_as_mainfile(filepath=r'%s')" % path
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    p = subprocess.run([BLENDER, "-b", "--factory-startup", "--python-expr", expr],
+                       capture_output=True)
+    if not os.path.exists(path):
+        raise SystemExit("建场景失败，rc=%s\n%s" % (p.returncode, p.stdout.decode("utf-8", "replace")[-800:]))
+    return path
+
+
+def done_count(state_path):
+    """从断点文件读已完成帧数 —— 比数 png 更准（png 可能正在写一半）。"""
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            return len(json.load(f).get("done") or {})
+    except Exception:
+        return 0
+
+
+def blender_pids():
+    """当前所有 blender.exe 的 PID —— 用于只杀我们自己拉起来的那些。"""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq blender.exe", "/FO", "CSV", "/NH"],
+                             capture_output=True, timeout=15).stdout.decode("utf-8", "replace")
+    except Exception:
+        return set()
+    pids = set()
+    for line in out.splitlines():
+        m = re.search(r'"blender\.exe","(\d+)"', line)
+        if m:
+            pids.add(int(m.group(1)))
+    return pids
+
+
+def kill_blenders(pids):
+    for pid in sorted(pids):
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+
+
+def clean(d):
+    """清空目录 —— 注意 glob('*') 拿不到点开头的 state 文件，必须走 listdir。"""
+    if os.path.isdir(d):
+        for name in os.listdir(d):
+            p = os.path.join(d, name)
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def run_cli(args, timeout=300):
+    """跑 main.py，返回 (rc, stdout)。"""
+    cmd = [PY, os.path.join(ROOT, "main.py")] + args
+    p = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    return p.returncode, p.stdout.decode("utf-8", "replace")
+
+
+def check(name, ok, detail=""):
+    log("  %s %s%s" % ("✓" if ok else "✗", name, (" —— " + detail) if detail else ""))
+    return ok
+
+
+def case_plain_render(blend, out_dir):
+    """场景一：完整跑一轮，6 帧全出。"""
+    log("\n[1/3] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
+    clean(out_dir)
+    t0 = time.time()
+    rc, out = run_cli([blend, "-s", "1", "-e", "6", "-E", "CYCLES", "--samples", "8",
+                       "--res", "160x120", "--device", "CPU",
+                       "-o", os.path.join(out_dir, "smoke_####"),
+                       "--log", os.path.join(out_dir, "blender.log"),
+                       "--state", os.path.join(out_dir, ".state.json")])
+    pngs = sorted(glob.glob(os.path.join(out_dir, "smoke_*.png")))
+    ok = check("退出码 0", rc == 0, "rc=%s" % rc)
+    ok &= check("产出 6 张图", len(pngs) == 6, "实际 %d 张：%s"
+                % (len(pngs), [os.path.basename(p) for p in pngs][:8]))
+    ok &= check("耗时合理", time.time() - t0 < 180, "%.1fs" % (time.time() - t0))
+    if "任务结束" not in out:
+        ok &= check("有任务结束汇总", False, out[-400:])
+    return ok, out
+
+
+def case_kill_and_resume(blend, out_dir):
+    """场景二：渲染中途杀掉 Blender，验证会自动重启并从断点接上。"""
+    log("\n[2/3] 中途杀掉 Blender，验证崩溃续跑")
+    clean(out_dir)
+    # 每帧要够慢（~1s），否则检测循环会一帧都抓不到中间态，等于没测到崩溃
+    cmd = [PY, os.path.join(ROOT, "main.py"), blend, "-s", "1", "-e", "6",
+           "-E", "CYCLES", "--samples", "24", "--res", "320x240", "--device", "CPU",
+           "-o", os.path.join(out_dir, "smoke_####"),
+           "--state", os.path.join(out_dir, ".state.json"),
+           "--log", os.path.join(out_dir, "blender.log")]
+    before = blender_pids()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+    # 用 state 里的完成数判断下手时机：早了测不到「有进度可续」，晚了就全渲染完了
+    deadline = time.time() + 120
+    killed = 0
+    state_file = os.path.join(out_dir, ".state.json")
+    while time.time() < deadline:
+        if 1 <= done_count(state_file) <= 5:
+            new = blender_pids() - before
+            if new:
+                log("    杀掉 blender：%s（此时已产出 %d 张）"
+                    % (sorted(new), len(glob.glob(os.path.join(out_dir, "smoke_*.png")))))
+                kill_blenders(new)
+                killed = 1
+                time.sleep(0.3)
+                alive = blender_pids() & new
+                log("    kill 后仍存活：%s" % (sorted(alive) or "无"))
+            else:
+                log("    ⚠ 没找到本次启动的 blender 进程，无法验证崩溃续跑")
+            break
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+
+    ok = check("确实杀到了 Blender 进程", bool(killed))
+    try:
+        out = proc.communicate(timeout=240)[0].decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out = ""
+        ok &= check("CLI 在超时内结束", False)
+
+    pngs = sorted(glob.glob(os.path.join(out_dir, "smoke_*.png")))
+    ok &= check("续跑后 6 帧齐全", len(pngs) == 6, "实际 %d 张" % len(pngs))
+    restarted = ("退出码" in out) or ("重启" in out)
+    marks = [l.strip() for l in out.splitlines() if "退出码" in l or "重启" in l]
+    ok &= check("输出里有崩溃/重启痕迹", restarted, " | ".join(marks[:3]))
+    for l in out.splitlines():
+        if l.strip():
+            log("    %s" % l.strip())
+    return ok, out
+
+
+def case_eevee(blend, out_dir):
+    """场景三：切 EEVEE，验证引擎别名（5.2 里可能叫 BLENDER_EEVEE_NEXT）能落地。"""
+    log("\n[3/3] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
+    clean(out_dir)
+    t0 = time.time()
+    rc, out = run_cli([blend, "-s", "1", "-e", "2", "-E", "BLENDER_EEVEE", "--samples", "16",
+                       "-o", os.path.join(out_dir, "eevee_####"),
+                       "--state", os.path.join(out_dir, ".state_eevee.json"),
+                       "--log", os.path.join(out_dir, "eevee.log")], timeout=300)
+    pngs = sorted(glob.glob(os.path.join(out_dir, "eevee_*.png")))
+    ok = check("退出码 0", rc == 0, "rc=%s" % rc)
+    ok &= check("产出 2 张图", len(pngs) == 2, str([os.path.basename(p) for p in pngs]))
+    engine_line = [l for l in out.splitlines() if "实际设置" in l]
+    ok &= check("引擎落到 EEVEE", bool(engine_line) and "EEVEE" in engine_line[0],
+                engine_line[0].strip() if engine_line else out[-300:])
+    warm = [l for l in out.splitlines() if "预热帧" in l]
+    ok &= check("首帧被标记为预热", len(warm) == 1, warm[0].strip() if warm else "没找到预热帧标记")
+    log("    用时 %.1fs（EEVEE 首帧要编译 shader，慢是正常的）" % (time.time() - t0))
+    return ok, out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--keep", action="store_true", help="保留产物目录")
+    ap.add_argument("--only", choices=["1", "2", "3"], help="只跑某一个场景")
+    args = ap.parse_args()
+
+    if not os.path.exists(BLENDER):
+        raise SystemExit("找不到 Blender：%s（改脚本里的 BLENDER 常量）" % BLENDER)
+
+    os.makedirs(WORK, exist_ok=True)
+    blend = make_scene(os.path.join(WORK, "smoke.blend"))
+    log("场景文件：%s" % blend)
+
+    results = []
+    try:
+        if args.only in (None, "1"):
+            results.append(case_plain_render(blend, os.path.join(WORK, "out1")))
+        if args.only in (None, "2"):
+            results.append(case_kill_and_resume(blend, os.path.join(WORK, "out2")))
+        if args.only in (None, "3"):
+            results.append(case_eevee(blend, os.path.join(WORK, "out3")))
+    finally:
+        if not args.keep:
+            try:
+                import shutil
+                shutil.rmtree(WORK)
+            except Exception as e:
+                log("（清理失败：%r，产物留在 %s）" % (e, WORK))
+
+    all_ok = all(r[0] for r in results)
+    log("\n===== %s =====" % ("真机冒烟全部通过" if all_ok else "真机冒烟存在失败项"))
+    return 0 if all_ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

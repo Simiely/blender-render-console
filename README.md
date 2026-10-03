@@ -16,16 +16,107 @@
 
 ## 当前状态
 
-> **调研与验证阶段已完成，主程序尚未编写。** 详细结论见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+> **v0.2.0：命令行版本可用**（渲染 / 进度 / ETA / 崩溃续跑均已真机实测）。GUI 与 exe 打包是下一步，见 [DEVELOPMENT.md](./DEVELOPMENT.md) 第四节。
 
-已经验证通过的部分：
-
-| 验证项 | 结论 |
+| 能力 | 状态 |
 |---|---|
-| Blender 5.2 命令行渲染的真实输出格式 | 与网上流传的 4.x 解析代码**完全不同**，旧正则全部失效 |
-| EEVEE 能否在 `-b` 无头模式渲染 | ✅ 可以，无 GPU 报错 |
-| 驱动脚本 + 结构化进度回传 | ✅ `sys.stdout.flush()` 后可实时到达，时间戳与真实耗时吻合 |
-| 本机 Python 有无 tkinter | ❌ 没有，已打通从官方安装包提取 tcl/tk 的路线 |
+| 无头渲染 + 逐帧进度 | ✅ 真机实测（Cycles / EEVEE 各跑通） |
+| ETA 自算（剔除首帧预热 + EMA 平滑） | ✅ 真机实测 |
+| **崩溃 / 被杀后自动续跑** | ✅ 真机实测：渲染中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
+| 引擎 / 采样 / 分辨率 / 输出路径按命令行覆盖 | ✅ 不改动用户的 `.blend` |
+| 取消（Ctrl+C）并保留进度 | ✅ 单测覆盖 |
+| GUI 界面 | ⏳ 下一步 |
+| PyInstaller 单文件 exe | ⏳ 下一步 |
+
+---
+
+## 快速开始
+
+```bash
+# 渲染 1~240 帧，Cycles + OptiX，256 采样，输出到 out/frame_####.png
+python main.py 工程.blend -s 1 -e 240 -E CYCLES --samples 256 --device OPTIX -o out/frame_####
+
+# 只渲染若干指定帧
+python main.py 工程.blend -f 1-10,15,20-25 -o out/frame_####
+
+# 跑到一半 Ctrl+C 停掉，再执行同一条命令 → 从断点继续（不会重渲已完成的帧）
+python main.py 工程.blend -s 1 -e 240 -o out/frame_####
+
+# 想从头来：加 --no-resume
+```
+
+常用选项：
+
+| 选项 | 说明 |
+|---|---|
+| `-s / -e / --step` | 帧范围与步长 |
+| `-f` | 显式帧列表（`1-10,15,20-25`） |
+| `-o` | 输出模板（**必须含 `####`**）或输出目录 |
+| `-E` | 引擎：`CYCLES` / `BLENDER_EEVEE` / `BLENDER_WORKBENCH` |
+| `--samples` | 采样数（Cycles 渲染采样 / EEVEE TAA） |
+| `--device` | Cycles 设备：`CPU` / `CUDA` / `OPTIX` / `HIP` / `ONEAPI` |
+| `--res / --pct / --format` | 分辨率 / 分辨率百分比 / 输出格式 |
+| `--blender` | 手动指定 `blender.exe`（不给就自动扫描，扫不到会提示） |
+| `--max-restarts / --max-frame-attempts` | 最多重启几次 / 单帧最多尝试几次（默认 5 / 3） |
+| `--no-resume` | 忽略已有断点文件 |
+| `--verbose` | 连 Blender 原生输出一起打印 |
+| `--log` | 把 Blender 原始输出落盘 |
+
+输出长这样：
+
+```
+Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
+任务开始：D:\proj\scene.blend
+  帧数 6 | 输出 D:\proj\out\smoke_#### | 断点 D:\proj\out\.render_state.json
+  实际设置：引擎 CYCLES | 320x240 @100% | 采样 24 | 输出 D:\proj\out\smoke_####
+[1/6] 帧 1 完成 0.4s (预热帧，不计入基线) | 单帧 -- | 剩余 5 帧 | ETA --（尚无样本）
+[2/6] 帧 2 完成 0.3s | 单帧 0.3s | 剩余 4 帧 | ETA 1.3s（均值（样本 1））
+  ⚠ Blender 退出码 1（第 1 次重启），已完成 5/6，还剩 1 帧
+  第 1 次重启，剩余帧 [6]
+[6/6] 帧 6 完成 0.5s (预热帧，不计入基线) | 单帧 0.4s | 剩余 0 帧 | ETA 0.0s（EMA（样本 4））
+任务结束：完成 6/6 帧 | 失败 0 | 放弃 0 | 重启 1 次 | 用时 10.1s
+```
+
+---
+
+## 目录结构
+
+```
+.
+├── main.py                  # 入口（PyInstaller 也从这里打包）
+├── brconsole/
+│   ├── cli.py               # 命令行界面 + 终端事件渲染
+│   ├── core.py              # 调度核心：子进程 / 双通道进度 / 崩溃续跑
+│   ├── driver.py            # 运行在 Blender 进程内的驱动脚本（注入执行）
+│   ├── parser.py            # Blender 原生输出解析（5.2 格式）
+│   ├── eta.py               # ETA 估算（去预热 + EMA）
+│   ├── state.py             # 断点状态文件（原子落盘）
+│   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
+├── tests/                   # 单元测试（42 条）+ fake_blender.py
+├── tools/
+│   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
+│   ├── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
+│   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（GUI 阶段用）
+│   └── smoke_real_blender.py  # 真机冒烟：渲染 → 杀进程 → 续跑
+├── probes/                  # Blender 5.2 实测输出样本（正则的依据）
+└── AGENTS.md / DEVELOPMENT.md / CHANGELOG.md
+```
+
+---
+
+## 验证
+
+```bash
+# 单测（42 条，不依赖 Blender，约 30s）
+python -m unittest discover -s tests -p "test_*.py"
+
+# 真机冒烟（需要 Blender 5.2，约 30s）：渲染 → 中途杀 Blender → 续跑 → EEVEE 切换
+python tools/smoke_real_blender.py
+```
+
+两者覆盖的东西不一样：单测用的是 `tests/fake_blender.py`（输出与真机同构的假进程），
+验证**接线**（子进程管理、解析、续跑循环、取消）；真机冒烟验证**真机行为**
+（bpy API、路径替换、引擎别名、真的被杀之后能不能接上）。
 
 ---
 
@@ -38,46 +129,6 @@
 | 托管 Python | 3.13.12（`~/.workbuddy/binaries/python/versions/3.13.12`），**无 tkinter** |
 | 7-Zip | `C:\Program Files\7-Zip\7z.exe` |
 | PyPI | 走腾讯云镜像可直连；Clash 代理反而超时 |
-
----
-
-## 目录结构
-
-```
-.
-├── tools/
-│   ├── build_tkinter.py     # 从官方安装包提取并拼装 tkinter sidecar
-│   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
-│   └── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
-├── probes/
-│   ├── probe_cycles.log     # Cycles 原生输出实测样本
-│   └── probe_eevee.log      # EEVEE 无头渲染实测样本
-├── AGENTS.md                # 给 AI / 未来的自己
-├── DEVELOPMENT.md           # 架构 + 关键问题与方案
-└── CHANGELOG.md
-```
-
----
-
-## 快速开始
-
-主程序尚未编写。当前可复现的两件事：
-
-**1. 重建 tkinter 环境**（本机托管 Python 不带 tkinter）
-
-```bash
-python tools/build_tkinter.py
-```
-
-脚本会自动下载官方安装包、逐层剥离 WiX 容器、提取 tcl/tk 组件，并在隔离目录里拼装出一套可用的 tkinter。
-
-**2. 复现 Blender 输出格式实测**
-
-```bash
-python tools/probe_render.py
-```
-
-会在 `probes/` 下生成 Cycles 与 EEVEE 两条实测日志——进度解析的正则必须基于这两份样本，不要照抄网上 4.x 的方案。
 
 ---
 

@@ -11,7 +11,7 @@
 
 **要解决的痛点**：Blender GUI 渲染大工程时整个进程会崩（多为 Windows 显示驱动超时重置），且崩了之后要从头再来。
 
-**当前阶段**：调研与可行性验证已完成，主程序未编写。
+**当前阶段**：**命令行版本已可用**（v0.2.0）。调度核心 + driver + ETA + 崩溃续跑均已真机实测；GUI 与 exe 打包见第四节。
 
 ---
 
@@ -19,30 +19,37 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│  主程序 exe · GUI                            │
-│  帧范围 / 引擎 / 输出目录                     │
-│  进度条 + 预计结束时间 + 日志面板             │
+│  cli.py（当前） / GUI（下一步）                │
+│  只做展示与交互，不含业务逻辑                  │
 └──────────────────┬──────────────────────────┘
-                   │
+                   │ on_event(kind, payload)
 ┌──────────────────▼──────────────────────────┐
-│  调度核心 core.py                            │
-│  解析 JSON 进度行 · EMA 平滑 ETA · 崩溃续跑    │
-└──────────────────┬──────────────────────────┘
-                   │ subprocess（无黑窗）
+│  core.py · RenderJob                         │
+│  子进程管理 · 双通道读取 · 续跑循环 · 取消      │
+├──────────┬──────────────┬───────────────────┤
+│ parser.py│    eta.py     │     state.py      │
+│ 原生行解析│ 去预热+EMA ETA │  断点文件原子落盘  │
+└──────────┴──────────────┴───────────────────┘
+                   │ subprocess（无黑窗，Windows）
 ┌──────────────────▼──────────────────────────┐
 │  Blender 子进程  blender -b ... -P driver.py │
-│  无头模式，不创建 GUI 窗口                    │
+│  driver 源码由 core 释放到临时目录（onefile 兼容）│
 └──────────────────┬──────────────────────────┘
                    │
 ┌──────────────────▼──────────────────────────┐
 │  driver.py（运行在 Blender 内）               │
-│  逐帧 render + flush「##PROG##」JSON 行       │
+│  覆盖引擎/采样/分辨率 → 逐帧 render           │
+│  → flush「##PROG##」JSON 行                   │
 └──────────────────┬──────────────────────────┘
                    │ 进度行经 stdout 实时回传
 ┌──────────────────▼──────────────────────────┐
-│  产物：frame_####.png · render.log · state   │
+│  产物：frame_0001.png · blender.log · state   │
 └─────────────────────────────────────────────┘
 ```
+
+**依赖方向**：`cli` → `core` → {`parser`, `eta`, `state`}；`driver` 独立（跑在 Blender 里，
+和宿主代码只有 JSON 契约）。`core` 通过 `cmd_factory` 注入命令行拼装方式，
+所以测试可以换成假进程而不动业务逻辑（`tests/fake_blender.py`）。
 
 ### 三条设计主线
 
@@ -163,8 +170,44 @@
 
 - **问题**：想按常规做法读 `HKLM\SOFTWARE\BlenderFoundation` 定位 `blender.exe`。
 - **根因**：本机安全策略禁止启动 `reg.exe`（明确提示"不可通过其他 shell 绕过"）。另外实测发现 `D:\BlenderPortable\5.2\` **只有 config/datafiles/scripts**，是用户配置目录而**不是程序本体**，全盘唯一的 `blender.exe` 在 `C:\Program Files\Blender Foundation\Blender 5.2\`。
-- **解决**：探测逻辑改为文件系统扫描（常见安装路径 + 便携版目录模式匹配）+ 用户手动指定；不依赖注册表。
+- **解决**：探测逻辑改为文件系统扫描（常见安装路径 + 便携版目录模式匹配）+ 用户手动指定；不依赖注册表。已实现在 `brconsole/locate.py`。
 - **预防**：不要默认注册表可用；把"自动探测失败后手填路径"作为一等公民路径保留。
+
+---
+
+### 问题：write_still 不替换 `####`，而 frame_path 会重复追加帧号
+
+**TL;DR**：输出路径必须自己替换 `####` + 自己补扩展名，两边都不能交给 Blender。
+
+- **问题**：第一版 driver 直接把 `scene.render.filepath = "out/f_####"` 交给 `bpy.ops.render.render(write_still=True)`，结果磁盘上出现一个**真叫 `f_####.png` 的文件**，6 帧互相覆盖只剩 1 张。
+- **根因**：实测（同一场景三种写法对比）：
+  1. `write_still=True` **不替换** `####`，按 filepath 原样落盘 → `f_####.png`
+  2. 改成手动替换后（`f_0001`）以为可以用 `scene.render.frame_path(frame=f)` 算期望路径，结果它给出 `f_00010001.png` —— 因为 filepath 里已经没有 `#`，Blender 会在文件名后**再追加一次帧号**
+  3. `use_file_extension=True` 只在路径无扩展名时补，与上面两条叠加后更难预测
+- **解决**：`##PROG##` 里报的路径与真正写盘的路径都由 `driver.output_path_for(frame)` 统一算：手动替换 `####` → 模板自带扩展名就不再追加 → 补 `FORMAT_EXT` 映射的扩展名 → 渲染前 `use_file_extension = False`。渲染后再用 `os.path.exists` 复核，对不上就发 `warn`（实测这条 warn 救过一次）。
+- **预防**：任何"交给上游格式化"的路径 API，先用一个 3 帧的小实验把**真实落盘名**打印出来再写代码；尤其是帧号占位符这种"看起来一定会替换"的东西。
+
+---
+
+### 问题：`-b` 下 Cycles 不在 engine enum 列表里，按列表过滤会把可用引擎判成不可用
+
+**TL;DR**：Cycles 是 addon，启动初期 `RenderSettings.engine` 的 `enum_items` 只有 `['BLENDER_EEVEE']`，但**直接赋值 `'CYCLES'` 是成功的**。
+
+- **问题**：为了兼容 4.2+ 的 `BLENDER_EEVEE_NEXT` 改名，写了个"先读 runtime enum、在列表里挑别名"的函数。结果真机日志疯狂警告 `引擎 'CYCLES' 设置失败（当前可选：BLENDER_EEVEE）`。
+- **根因**：实测 `-b` 启动时 enum 只有 `['BLENDER_EEVEE']`；等到后续再读才变成 `['BLENDER_EEVEE', 'BLENDER_WORKBENCH', 'CYCLES']`——**enum_items 是延迟刷新的**，拿它当准入白名单必然误杀。
+- **解决**：改成"直接赋值 → 读回校验 → 失败再退别名 → 全失败才警告"，enum 列表只用于警告文案里给人看。顺带实测确认：5.2 只认 `BLENDER_EEVEE`（`BLENDER_EEVEE_NEXT` 会抛 TypeError），别名表按这个顺序退。
+- **预防**：把"运行时枚举值"当能力探测要非常小心，addon 注册时机不同结论就不同；**探测的终点应该是"试着做一次并读回验证"，不是"查清单"**。
+
+---
+
+### 问题：尝试次数记错地方会让崩溃续跑直接失效
+
+**TL;DR**：每轮开始时给所有待渲染帧 +1 尝试次数，会连"根本没轮到的帧"一起扣额度。
+
+- **问题**：单测 `test_persistent_crash_exhausts_that_frame` 期望 `done=[1,2,4]`（第 3 帧一直崩、第 4 帧最后跑出来），实际只拿到 `[1,2]` —— 第 4 帧从未渲染过，却被判定"尝试次数耗尽"直接放弃了。
+- **根因**：崩溃发生在第 3 帧，第 4 帧压根没开始。但"轮开始时批量 +1"让它平白扣掉 3 次额度，于是从续跑队列里消失。这正是崩溃续跑最典型的场景（崩在某帧、后面还有一堆没渲染），属于设计缺陷而不是小 bug。
+- **解决**：尝试次数改为**在收到该帧 `frame_start` 事件时才 +1**，并立刻落盘（崩溃后额度必须还在，否则永远耗不尽、无限重启）。
+- **预防**：给"重试额度"类的计数器计数时，先问一句"这个事件真的发生了吗"，不要用"本轮计划包含它"代替"实际执行过它"。
 
 ---
 
@@ -173,11 +216,19 @@
 按优先级：
 
 1. ~~**跑通 tkinter sidecar**~~ —— ✅ 2026-10-04 完成。`tools/build_tkinter.py` 全流程通过（下载 → 剥离 WiX 容器 → 定位 tcltk 组件 → 还原 430 个文件 → 自检）。
-2. **编写 `driver.py`**：在 Blender 内逐帧渲染、每帧 flush 一行 `##PROG##{JSON}`。已验证可实时回传。
-3. **编写调度核心**：子进程读取、双通道解析、EMA ETA、状态文件原子落盘、崩溃续跑循环。
-4. **编写 GUI**：任务配置 + 进度条 + ETA + 日志面板。
-5. **PyInstaller 打包**：`--onefile --windowed`，driver 脚本以字符串内嵌、运行时释放到临时目录（避免 onefile 模式下找不到外部文件）。
-6. **实测崩溃续跑**：人为在渲染中途杀掉 Blender 进程，验证能从断点接着渲染。
+2. ~~**编写 `driver.py`**~~ —— ✅ 2026-10-04 完成（`brconsole/driver.py`）。逐帧渲染 + 每帧 flush `##PROG##{JSON}`，并覆盖引擎/采样/分辨率/输出路径（不改 `.blend`）。真机跑通 Cycles 与 EEVEE。
+3. ~~**编写调度核心**~~ —— ✅ 2026-10-04 完成（`core.py` / `parser.py` / `eta.py` / `state.py`）。双通道读取、EMA ETA、状态文件原子落盘、崩溃续跑循环。
+4. ~~**崩溃续跑实测**~~ —— ✅ 2026-10-04 完成（`tools/smoke_real_blender.py`）：渲染中途 `taskkill` 掉 Blender，退出码 1 → 第 1 次重启 → 只渲染剩余帧 `[6]` → 最终 6/6。
+5. **编写 GUI**：任务配置 + 进度条 + ETA + 日志面板。
+   - 底座已就绪：`tools/build_tkinter.py` 拼好的 sidecar（本机 Python 无 tkinter）
+   - **给下一阶段的接口**：GUI 只需实现 `on_event(kind, payload)` 回调，并在后台线程跑 `RenderJob.run()`。
+     事件清单 = `core.py` 里的 emit 点：`job_start` / `run_start` / `frame_start` / `frame_done` /
+     `frame_error` / `native` / `stall` / `crash` / `restart` / `job_done` / `job_error`。
+     `run()` 不抛异常（错误收进 `result["error"]`），`cancel()` 幂等可反复调用。
+     进度展示务必覆盖「没有百分比可显示」的 `native.phase` 与 `stall` 两类事件，
+     否则大场景同步期会被当成死机（见上面「Cycles 场景同步阶段」那条）。
+6. **PyInstaller 打包**：`--onefile --windowed`。driver 脚本已按源码字符串内嵌并在运行时释放到临时目录
+   （`core.read_driver_source`），onefile 模式下不需要额外的 datas 配置。
 
 ---
 
@@ -189,4 +240,7 @@
 | `probes/probe_eevee.log` | EEVEE 单帧无头渲染原生输出（13 行，含首帧 10.25s 预热证据） |
 | `tools/probe_render.py` | 生成上面两份日志的探针 |
 | `tools/probe_driver.py` | 验证驱动脚本 JSON 进度实时性（时间戳与真实耗时吻合） |
-| `tools/build_tkinter.py` | tkinter 提取与拼装 |
+| `tools/build_tkinter.py` | tkinter 提取与拼装（GUI 阶段用） |
+| `tools/smoke_real_blender.py` | **真机冒烟**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 |
+| `tests/fake_blender.py` | 与真机同构的假 Blender（原生行 + JSON 进度 + 可指定帧崩溃），给续跑逻辑做端到端测试 |
+| `tests/` | 42 条单测：ETA / 原生行解析 / 状态文件 / 续跑与取消 / 命令行拼装 |

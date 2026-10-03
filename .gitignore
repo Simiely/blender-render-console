@@ -23,6 +23,9 @@ renders/
 *.log
 !probes/*.log
 
+# ===== 真机冒烟中间产物（tools/smoke_real_blender.py 自动生成/清理）=====
+tools/_smoke/
+
 # ===== 编辑器/系统 =====
 .vscode/
 .idea/
