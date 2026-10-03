@@ -2,6 +2,46 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-10-04
+
+**图形界面可用**：深色主题、选中工程自动读取渲染配置、进度条 + ETA + 日志面板、停止后可从断点续跑。
+真窗口截图逐项核对过布局与配色（用 `tools/capture_screen.py` 抓图 + 采样像素）。
+
+### 新增
+
+- `brconsole/gui.py` —— tkinter 界面：任务表单、开始/停止、进度条、状态与 ETA、日志面板；
+  渲染跑在后台线程，事件经 `queue` 回主线程刷新（tkinter 不能跨线程碰控件）
+- `brconsole/guimodel.py` —— 界面**逻辑层**（不 import tkinter，因此可单测）：
+  `FormModel` 表单校验与补全、`ProgressModel` 事件→状态字段、`LogModel` 待消费日志队列、`event_line` 事件文案
+- `brconsole/inspect.py` —— **读取 .blend 里已有的渲染配置**（引擎 / 采样 / 设备 / 分辨率 /
+  帧范围 / 输出格式与路径），选完工程自动预填表单；只读，不动用户的 `.blend`
+- `brconsole/theme.py` —— 深色主题（VS Code 配色），含下拉列表等 Tk 原生控件的配色
+- `brconsole/tkboot.py` —— 缺 tkinter 时自动带 sidecar 环境变量重启自己，用户只需 `python main.py`
+- `main.py` 支持 `python main.py`（打开界面）/ `--gui 工程.blend`（载入工程）/ `--demo`（自检跑一轮模拟任务）
+- `tools/capture_screen.py` —— 纯 ctypes(GDI) 抓窗口/全屏 PNG，支持 `--probe x,y` 采样像素颜色；
+  沙箱里 PowerShell 的 `Add-Type` 被拦、装 Pillow 不值当，索性自己写
+- `tests/test_gui_model.py`、`tests/test_inspect.py` —— 单测从 42 条加到 **89 条**
+
+### 本次实测确认的结论
+
+- **读取工程配置真实可行**：`blender -b 工程.blend -P 脚本` 约 3s 拿回全部字段（实测 smoke.blend：
+  CYCLES / 采样 8 / CPU / 160x120 / 帧 1-6），输出用 `##BRCINFO##` 标记行回传
+- **ttk 在 Windows 上默认主题不接受配色**：必须 `theme_use("clam")`，否则深色配置被静默忽略
+- **Blender 的默认输出路径是 `/tmp/`**（Windows 上也一样），要当"用户没设置"处理，退回工程目录
+- 深色界面下 `TEntry` / `TCombobox` / `TTLabelframe` / 进度条配色逐类显式设置才完整
+
+### 修掉的问题
+
+- `--gui` 启动时先 `import gui`（内含 `import tkinter`）再自举，导致缺 tkinter 时直接崩 —— 必须先自举再 import
+- 帧解析语义统一为"**显式帧列表优先**"（填了 `-f`/帧列表就只用它，不再与 `-s/-e` 合并）
+- 输出模板补全规则：没有扩展名的输入按"目录"处理，避免把 `D:/out` 填成 `D:/out_####`
+
+### 待办
+
+见 `DEVELOPMENT.md` 第四节第 6 项：PyInstaller `--onefile --windowed` 打包（含把 sidecar 塞进 exe、图标与版本信息）。
+
+---
+
 ## [0.2.0] - 2026-10-04
 
 **命令行版本可用**：无头渲染 + 实时进度 + 自算 ETA + 崩溃自动续跑，全部经真机实测。

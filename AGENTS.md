@@ -1,7 +1,7 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-04（commit `4ba682d`）命令行版可用 · driver + 调度核心 + CLI + 崩溃续跑实测
-> v0.2.0 详见 CHANGELOG
+> 📌 **文档基线**：2026-10-04（commit `8af61ca`）图形界面版可用 · GUI + 深色主题 + 自动读工程配置
+> v0.3.0 详见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ---
@@ -9,7 +9,7 @@
 ## 技术栈（精确版本）
 
 - **Blender 5.2.2 LTS**，内置 Python 3.13.13，引擎 Cycles / EEVEE，渲染设备 OptiX 或 CUDA
-- **宿主 Python 3.13.12**（托管版，**不含 tkinter**）——GUI 依赖需从官方安装包提取后拼装
+- **宿主 Python 3.13.12**（托管版，**不含 tkinter**）——靠 `sidecar/` 提供（`tools/build_tkinter.py` 生成，`tkboot.py` 负责自举）
 - 目标产物：PyInstaller 打包的 **单文件 GUI exe**（`--onefile --windowed`）
 - 平台：Windows（bash 走 Git Bash）
 
@@ -27,6 +27,10 @@
 10. **别拿 `RenderSettings.engine` 的 `enum_items` 当能力清单**：Cycles 是 addon，`-b` 启动初期 enum 里只有 `['BLENDER_EEVEE']`，但**直接赋值 `'CYCLES'` 是成功的**——enum 延迟刷新，按清单过滤会把可用引擎误判为不可用。另外引擎属性在 `scene.render.engine`，**不在 `scene.engine`**（写成后者会静默抛 AttributeError）。5.2 只认 `BLENDER_EEVEE`，不认 `BLENDER_EEVEE_NEXT`。
 11. **单帧重试次数只能在收到该帧 `frame_start` 时 +1**：早先的做法是"每轮开始时给所有待渲染帧 +1"，结果崩在第 3 帧时，压根没轮到的第 4 帧也被扣光额度直接放弃——崩溃续跑直接失效。额度还要立刻落盘，否则崩了之后永远耗不尽、无限重启。
 12. **读 Blender 的 stdout 要按 `\r` 切行**：采样进度是 `\r` 原地刷新的，只按 `\n` 切会让整轮进度挤成一行。现在用 `bufsize=0` + 分块 `read(256)` 再按 `\r`/`\n` 切（见 `core._pump`），既实时又不逐字节慢跑。
+13. **ttk 深色主题必须先切 `clam`**：Windows 上默认主题是 `vista`（系统原生绘制），`style.configure(background=...)` 被**静默忽略** —— 只有日志区变深、输入框还是白的。配色集中在 `theme.py`，改完用 `style.lookup("TEntry","fieldbackground")` 读回实际值确认。下拉列表是 Tk 原生 Listbox，要走 `root.option_add("*TCombobox*Listbox.background", ...)`。
+14. **界面里的耗时操作一律后台线程 + 事件回主线程**：tkinter 不是线程安全的，工作线程直接碰控件迟早随机崩。`gui.py` 的约定是「后台线程只 `queue.put()`，主线程 `root.after(80ms)` 取队列刷控件」；读工程配置也走 `__inspect__` 事件回主线程（见 `_handle`）。
+15. **`main.py` 必须先自举再 import gui**：`import brconsole.gui` 会连带 `import tkinter`，本机 Python 没有它 —— 顺序反了就是 `ModuleNotFoundError`，永远轮不到 `tkboot` 去带 sidecar 重启。
+16. **Blender 的默认输出路径 `/tmp/` 等于"没设置"**：`.blend` 里 `render.filepath` 默认就是它（Windows 上也一样），直接透传会填出一个不存在的目录；`inspect.output_template_from` 会把 `/tmp` 与 Windows 上的 `/` 开头路径都退回工程目录。
 
 ## 约定
 
@@ -43,11 +47,22 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（42 条，不依赖 Blender）
+# 单测（89 条，不依赖 Blender）
 python -m unittest discover -s tests -p "test_*.py"
 
-# 真机冒烟：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换（需要 Blender 5.2）
+# 真机冒烟：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置（需要 Blender 5.2）
 python tools/smoke_real_blender.py
+
+# 界面：直接打开 / 载入工程 / 自检跑一轮模拟任务（用假 Blender）
+python main.py
+python main.py --gui 工程.blend
+python main.py --demo
+
+# 抓界面截图（验证布局与配色；--probe 采样像素颜色）
+python tools/capture_screen.py C:\Temp\ui.png --window "blender-render-console · 无头渲染控制台" --probe "400,79;400,500"
+
+# 只读一个工程的渲染配置（排错用）
+python -m brconsole.inspect 工程.blend
 
 # 跑一次真实渲染
 python main.py 工程.blend -s 1 -e 10 -E CYCLES --samples 64 -o out/frame_####

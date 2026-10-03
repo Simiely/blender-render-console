@@ -16,21 +16,39 @@
 
 ## 当前状态
 
-> **v0.2.0：命令行版本可用**（渲染 / 进度 / ETA / 崩溃续跑均已真机实测）。GUI 与 exe 打包是下一步，见 [DEVELOPMENT.md](./DEVELOPMENT.md) 第四节。
+> **v0.3.0：图形界面可用**（深色主题 + 自动读取工程配置 + 崩溃续跑）。exe 打包是下一步，见 [DEVELOPMENT.md](./DEVELOPMENT.md) 第四节。
 
 | 能力 | 状态 |
 |---|---|
+| 图形界面（tkinter，深色主题） | ✅ 真窗口实测 |
+| **选中工程自动读取渲染配置** | ✅ 真机实测：引擎 / 采样 / 设备 / 分辨率 / 帧范围 / 输出路径一次填好 |
 | 无头渲染 + 逐帧进度 | ✅ 真机实测（Cycles / EEVEE 各跑通） |
 | ETA 自算（剔除首帧预热 + EMA 平滑） | ✅ 真机实测 |
-| **崩溃 / 被杀后自动续跑** | ✅ 真机实测：渲染中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
-| 引擎 / 采样 / 分辨率 / 输出路径按命令行覆盖 | ✅ 不改动用户的 `.blend` |
-| 取消（Ctrl+C）并保留进度 | ✅ 单测覆盖 |
-| GUI 界面 | ⏳ 下一步 |
+| **崩溃 / 被杀后自动续跑** | ✅ 真机实测：中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
+| 取消（停止按钮 / Ctrl+C）并保留进度 | ✅ 单测覆盖 |
+| 命令行模式 | ✅ |
 | PyInstaller 单文件 exe | ⏳ 下一步 |
 
 ---
 
 ## 快速开始
+
+### 图形界面
+
+```bash
+python main.py                       # 打开界面
+python main.py --gui 工程.blend       # 打开界面并直接载入该工程（自动读配置）
+```
+
+> 本机 Python **没有 tkinter**，界面靠 `sidecar/` 里的 tcl/tk 运行时。
+> 缺失时先跑一次 `python tools/build_tkinter.py`（约 3 分钟，纯文件提取、不安装任何东西），
+> 之后 `python main.py` 会自己带上 sidecar 启动。
+
+界面流程：选 `.blend` → **自动把工程里的引擎 / 采样 / 分辨率 / 帧范围 / 输出路径填好**
+（也可以点「读取工程配置」重读，或手改任意一项）→ 点「开始渲染」→ 看进度条 / ETA / 日志。
+停止或崩溃后再点一次「开始渲染」，只渲染没完成的帧。
+
+### 命令行
 
 ```bash
 # 渲染 1~240 帧，Cycles + OptiX，256 采样，输出到 out/frame_####.png
@@ -50,7 +68,7 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 | 选项 | 说明 |
 |---|---|
 | `-s / -e / --step` | 帧范围与步长 |
-| `-f` | 显式帧列表（`1-10,15,20-25`） |
+| `-f` | 显式帧列表（`1-10,15,20-25`），**填了就只用列表** |
 | `-o` | 输出模板（**必须含 `####`**）或输出目录 |
 | `-E` | 引擎：`CYCLES` / `BLENDER_EEVEE` / `BLENDER_WORKBENCH` |
 | `--samples` | 采样数（Cycles 渲染采样 / EEVEE TAA） |
@@ -62,7 +80,7 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 | `--verbose` | 连 Blender 原生输出一起打印 |
 | `--log` | 把 Blender 原始输出落盘 |
 
-输出长这样：
+终端输出长这样：
 
 ```
 Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
@@ -83,21 +101,27 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 
 ```
 .
-├── main.py                  # 入口（PyInstaller 也从这里打包）
+├── main.py                  # 入口：无参数 → GUI，带参数 → CLI（PyInstaller 也从这里打包）
 ├── brconsole/
-│   ├── cli.py               # 命令行界面 + 终端事件渲染
+│   ├── gui.py               # tkinter 界面：控件 + 后台线程 + 事件队列
+│   ├── guimodel.py          # 界面逻辑层（表单校验 / 事件→状态 / 日志缓冲，可单测）
+│   ├── theme.py             # 深色主题（ttk 必须切 clam 才接受配色）
+│   ├── inspect.py           # 读取 .blend 里已有的渲染配置
+│   ├── tkboot.py            # 缺 tkinter 时带 sidecar 自举重启
+│   ├── cli.py               # 命令行入口 + 终端事件渲染
 │   ├── core.py              # 调度核心：子进程 / 双通道进度 / 崩溃续跑
 │   ├── driver.py            # 运行在 Blender 进程内的驱动脚本（注入执行）
 │   ├── parser.py            # Blender 原生输出解析（5.2 格式）
 │   ├── eta.py               # ETA 估算（去预热 + EMA）
 │   ├── state.py             # 断点状态文件（原子落盘）
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
-├── tests/                   # 单元测试（42 条）+ fake_blender.py
+├── tests/                   # 89 条单测 + fake_blender.py
 ├── tools/
+│   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（本机 Python 无 tkinter）
+│   ├── smoke_real_blender.py  # 真机冒烟：渲染 → 杀进程 → 续跑 → EEVEE → 读配置
+│   ├── capture_screen.py    # 抓窗口/全屏 PNG（验证界面用，纯 ctypes）
 │   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
-│   ├── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
-│   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（GUI 阶段用）
-│   └── smoke_real_blender.py  # 真机冒烟：渲染 → 杀进程 → 续跑
+│   └── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
 ├── probes/                  # Blender 5.2 实测输出样本（正则的依据）
 └── AGENTS.md / DEVELOPMENT.md / CHANGELOG.md
 ```
@@ -107,16 +131,23 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（42 条，不依赖 Blender，约 30s）
+# 单测（89 条，不依赖 Blender，约 26s）
 python -m unittest discover -s tests -p "test_*.py"
 
-# 真机冒烟（需要 Blender 5.2，约 30s）：渲染 → 中途杀 Blender → 续跑 → EEVEE 切换
+# 真机冒烟（需要 Blender 5.2，约 40s）
 python tools/smoke_real_blender.py
+#   1/4 完整渲染 6 帧
+#   2/4 中途杀掉 Blender → 续跑
+#   3/4 EEVEE 引擎切换 + 首帧预热
+#   4/4 读取工程配置（无头 Blender 读 .blend）
+
+# 界面自检：自动填一套配置并用假 Blender 跑一轮
+python main.py --demo
 ```
 
-两者覆盖的东西不一样：单测用的是 `tests/fake_blender.py`（输出与真机同构的假进程），
-验证**接线**（子进程管理、解析、续跑循环、取消）；真机冒烟验证**真机行为**
-（bpy API、路径替换、引擎别名、真的被杀之后能不能接上）。
+单测用的是 `tests/fake_blender.py`（输出与真机同构的假进程），验证**接线**；
+真机冒烟验证**真机行为**（bpy API、路径替换、引擎别名、真被杀之后能不能接上）；
+界面则用 `tools/capture_screen.py` 抓真实窗口来核对布局与配色。
 
 ---
 
@@ -126,8 +157,8 @@ python tools/smoke_real_blender.py
 |---|---|
 | Blender | `C:\Program Files\Blender Foundation\Blender 5.2\blender.exe`（5.2.2 LTS，内置 Python 3.13.13） |
 | GPU | NVIDIA GeForce RTX 4070 Ti SUPER，16376 MiB，驱动 616.92 |
-| 托管 Python | 3.13.12（`~/.workbuddy/binaries/python/versions/3.13.12`），**无 tkinter** |
-| 7-Zip | `C:\Program Files\7-Zip\7z.exe` |
+| 托管 Python | 3.13.12（`~/.workbuddy/binaries/python/versions/3.13.12`），**无 tkinter** → 靠 `sidecar/` |
+| 7-Zip | `C:\Program Files\7-Zip\7z.exe`（提取 tcl/tk 用） |
 | PyPI | 走腾讯云镜像可直连；Clash 代理反而超时 |
 
 ---

@@ -11,7 +11,7 @@
 
 **要解决的痛点**：Blender GUI 渲染大工程时整个进程会崩（多为 Windows 显示驱动超时重置），且崩了之后要从头再来。
 
-**当前阶段**：**命令行版本已可用**（v0.2.0）。调度核心 + driver + ETA + 崩溃续跑均已真机实测；GUI 与 exe 打包见第四节。
+**当前阶段**：**图形界面版本已可用**（v0.3.0）。GUI + 自动读工程配置 + 深色主题均已真窗口实测；只剩 exe 打包，见第四节。
 
 ---
 
@@ -19,8 +19,8 @@
 
 ```
 ┌─────────────────────────────────────────────┐
-│  cli.py（当前） / GUI（下一步）                │
-│  只做展示与交互，不含业务逻辑                  │
+│  gui.py（tkinter）/ cli.py                    │
+│  只做展示与交互，业务逻辑在 guimodel.py        │
 └──────────────────┬──────────────────────────┘
                    │ on_event(kind, payload)
 ┌──────────────────▼──────────────────────────┐
@@ -30,6 +30,11 @@
 │ parser.py│    eta.py     │     state.py      │
 │ 原生行解析│ 去预热+EMA ETA │  断点文件原子落盘  │
 └──────────┴──────────────┴───────────────────┘
+
+另有三条旁路（都不进渲染主循环）：
+    inspect.py  选工程时另起一个无头 Blender 读 .blend 里的渲染配置 → 预填表单
+    theme.py    深色主题（ttk 必须切 clam，否则配色配置一律无效）
+    tkboot.py   本机 Python 无 tkinter → 带 sidecar 环境变量重启自己一次
                    │ subprocess（无黑窗，Windows）
 ┌──────────────────▼──────────────────────────┐
 │  Blender 子进程  blender -b ... -P driver.py │
@@ -47,9 +52,14 @@
 └─────────────────────────────────────────────┘
 ```
 
-**依赖方向**：`cli` → `core` → {`parser`, `eta`, `state`}；`driver` 独立（跑在 Blender 里，
+**依赖方向**：`gui`/`cli` → `core` → {`parser`, `eta`, `state`}；`driver` 独立（跑在 Blender 里，
 和宿主代码只有 JSON 契约）。`core` 通过 `cmd_factory` 注入命令行拼装方式，
 所以测试可以换成假进程而不动业务逻辑（`tests/fake_blender.py`）。
+
+**GUI 的线程模型**（改界面代码前必读）：
+`RenderJob.run()` 跑在后台线程，它的 `on_event` 只 `queue.put()`；主线程用 `root.after(80ms)`
+定时取队列刷控件。tkinter 不是线程安全的，工作线程里碰控件迟早随机崩。
+同理，「读取工程配置」也是一次后台线程 + 一个 `__inspect__` 事件回主线程。
 
 ### 三条设计主线
 
@@ -211,6 +221,39 @@
 
 ---
 
+### 问题：ttk 主题不接受颜色配置，桌面深色界面白忙一场
+
+**TL;DR**：Windows 上 ttk 默认用 `vista` 主题，`style.configure(background=...)` 一律被忽略；必须切到 `clam` 才可完全自定义。
+
+- **问题**：给界面配了整套深色（面板 #252526、输入框 #3c3c3c），跑起来只有日志区是深色，输入框依然是白的。
+- **根因**：ttk 在 Windows 上默认主题是 `vista`，它由系统绘制原生控件，**大部分颜色选项直接不生效**（不是报错，是静默忽略）。
+- **解决**：`theme.apply()` 里先 `style.theme_use("clam")` 再逐类控件配色；下拉列表是 Tk 原生 Listbox，不走 ttk，得用 `root.option_add("*TCombobox*Listbox.background", ...)` 单独设。
+- **预防**：改主题前先用 `style.lookup("TEntry", "fieldbackground")` 读回实际生效值，别靠眼睛猜；界面结果用 `tools/capture_screen.py` 抓真实窗口（可 `--probe x,y` 采样像素颜色）来确认，而不是读代码想象。
+
+---
+
+### 问题：读取工程配置要另起一个 Blender，且输出必须带标记
+
+**TL;DR**：`blender -b 工程.blend -P 脚本` 才能拿到里面的配置，一次约 2~3 秒；从 stdout 里捞 JSON 必须靠独特标记。
+
+- **问题**：想让界面"选中工程就自动填好参数"，但 .blend 是二进制，不启动 Blender 读不了。
+- **根因**：Blender 的工程数据只能由 Blender 自己解析；同时 Blender 会往 stdout 打一堆自己的日志，裸 JSON 根本定位不准。
+- **解决**：`inspect.py` —— 释放一段只读脚本（**绝不 save_mainfile**），输出一行 `##BRCINFO##{JSON}`，宿主按标记行反查。读取放后台线程（3 秒左右不能卡界面），失败也给明确错误文案（超时/路径错/工程损坏）。
+- **预防**：跟 Blender 对话的地方一律"独特标记 + flush"（driver 的 `##PROG##` 同理）；任何"要起外部进程"的界面动作都得先设计好"慢"的反馈。
+
+---
+
+### 问题：Blender 的默认输出路径 `/tmp/` 不是用户设置的目录
+
+**TL;DR**：`.blend` 里 `render.filepath` 默认就是 `/tmp/`（Windows 上也是这个内部路径），直接拿来当输出目录会填出一个不存在的路径。
+
+- **问题**：读回来的 `output_path` 是 `/tmp\`，界面上就填了 `/tmp\frame_####`。
+- **根因**：Blender 内部用 POSIX 风格路径，默认输出位置写死成 `/tmp/`；在 Windows 上这个目录不存在。
+- **解决**：`output_template_from()` 判定 `/tmp`（含结尾分隔符）与"Windows 上 `/` 开头的路径"都视为**未设置**，退回工程所在目录 + `<工程名>_####`。
+- **预防**：读上游配置时，要能区分"默认值"和"用户真的填过"——默认值直接透传往往得到无效路径。
+
+---
+
 ## 四、下一步（待办）
 
 按优先级：
@@ -219,16 +262,13 @@
 2. ~~**编写 `driver.py`**~~ —— ✅ 2026-10-04 完成（`brconsole/driver.py`）。逐帧渲染 + 每帧 flush `##PROG##{JSON}`，并覆盖引擎/采样/分辨率/输出路径（不改 `.blend`）。真机跑通 Cycles 与 EEVEE。
 3. ~~**编写调度核心**~~ —— ✅ 2026-10-04 完成（`core.py` / `parser.py` / `eta.py` / `state.py`）。双通道读取、EMA ETA、状态文件原子落盘、崩溃续跑循环。
 4. ~~**崩溃续跑实测**~~ —— ✅ 2026-10-04 完成（`tools/smoke_real_blender.py`）：渲染中途 `taskkill` 掉 Blender，退出码 1 → 第 1 次重启 → 只渲染剩余帧 `[6]` → 最终 6/6。
-5. **编写 GUI**：任务配置 + 进度条 + ETA + 日志面板。
-   - 底座已就绪：`tools/build_tkinter.py` 拼好的 sidecar（本机 Python 无 tkinter）
-   - **给下一阶段的接口**：GUI 只需实现 `on_event(kind, payload)` 回调，并在后台线程跑 `RenderJob.run()`。
-     事件清单 = `core.py` 里的 emit 点：`job_start` / `run_start` / `frame_start` / `frame_done` /
-     `frame_error` / `native` / `stall` / `crash` / `restart` / `job_done` / `job_error`。
-     `run()` 不抛异常（错误收进 `result["error"]`），`cancel()` 幂等可反复调用。
-     进度展示务必覆盖「没有百分比可显示」的 `native.phase` 与 `stall` 两类事件，
-     否则大场景同步期会被当成死机（见上面「Cycles 场景同步阶段」那条）。
-6. **PyInstaller 打包**：`--onefile --windowed`。driver 脚本已按源码字符串内嵌并在运行时释放到临时目录
-   （`core.read_driver_source`），onefile 模式下不需要额外的 datas 配置。
+5. ~~**编写 GUI**~~ —— ✅ 2026-10-04 完成（`gui.py` / `guimodel.py` / `theme.py` / `inspect.py` / `tkboot.py`）。
+   任务配置 + 进度条 + ETA + 日志面板 + 深色主题 + **选中工程自动读配置**，真窗口截图验证通过。
+6. **PyInstaller 打包**：`--onefile --windowed`。已经处理好的部分：
+   - driver 与 inspect 脚本都以**源码字符串内嵌**、运行时释放到临时目录（onefile 下包内文件不在磁盘上）
+   - `tkboot` 会在缺少 tkinter 时找 `sidecar/`；打包时要把 sidecar 一起塞进 exe
+     （建议用 `--add-data "sidecar;sidecar"`，并让 `tkboot` 在 `sys._MEIPASS` 下也找一遍 —— 这是下一步要改的点）
+   - 界面图标、版本信息（`--version-file`）还没做
 
 ---
 
@@ -241,6 +281,7 @@
 | `tools/probe_render.py` | 生成上面两份日志的探针 |
 | `tools/probe_driver.py` | 验证驱动脚本 JSON 进度实时性（时间戳与真实耗时吻合） |
 | `tools/build_tkinter.py` | tkinter 提取与拼装（GUI 阶段用） |
-| `tools/smoke_real_blender.py` | **真机冒烟**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 |
+| `tools/smoke_real_blender.py` | **真机冒烟**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 |
+| `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 可采样像素颜色 |
 | `tests/fake_blender.py` | 与真机同构的假 Blender（原生行 + JSON 进度 + 可指定帧崩溃），给续跑逻辑做端到端测试 |
-| `tests/` | 42 条单测：ETA / 原生行解析 / 状态文件 / 续跑与取消 / 命令行拼装 |
+| `tests/` | 89 条单测：ETA / 原生行解析 / 状态文件 / 续跑与取消 / 命令行拼装 / 界面逻辑 / 工程配置解析 |
