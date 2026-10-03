@@ -1,0 +1,30 @@
+# ===== 构建产物 =====
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+
+# ===== tkinter 提取中间产物（用 tools/build_tkinter.py 可重新生成）=====
+_tkfix/
+_tkbuild/
+sidecar/
+
+# ===== 探针渲染产物（二进制，不入库）=====
+probes/*.png
+probes/*.blend
+probes/*.exr
+probe.blend
+drv_*.png
+probe_*.png
+
+# ===== 运行期输出 =====
+renders/
+*.log
+!probes/*.log
+
+# ===== 编辑器/系统 =====
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

@@ -1,0 +1,202 @@
+CMD: C:\Program Files\Blender Foundation\Blender 5.2\blender.exe -b C:\Users\wandou\WorkBuddy\2026-10-04-00-25-54\blender_render_console\_probe\probe.blend -s 1 -e 4 -a
+RC: 0   WALL: 4.60s   LINES: 199
+======================================================================
+[    2.12s] 00:01.953  blend            | Read blend: "C:\Users\wandou\WorkBuddy\2026-10-04-00-25-54\blender_render_console\_probe\probe.blend"
+[    2.15s] 00:01.984  render           | Rendering animation (frames 1..4)
+[    2.16s] 00:01.984  render           | Rendering frame 1
+[    2.16s] 00:01.984  render           | Start rendering: Scene, ViewLayer
+[    2.16s] 00:01.984  render           | Engine: Cycles
+[    2.60s] 00:02.437  render           | Fra: 1 | Mem: 0M | Synchronizing object | Cube
+[    2.60s] Blender 5.2.2 LTS (hash d13f752e3b9c built 2026-09-15 01:37:04)
+[    2.60s] 00:02.437  render           | Fra: 1 | Mem: 0M | Synchronizing object | Light
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 0M | Initializing
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 0M | Waiting for render to start
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 0M | Updating Scene
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 0M | Updating Shaders
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 0M | Loading render kernels (may take a few minutes the first time)
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Procedurals
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Background
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Scene Attribute
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Camera
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Meshes Flags
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Objects
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Objects | Copying Transformations to device
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Particle Systems
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Meshes
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Objects | Applying Static Transformations
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Building
+[    2.61s] 00:02.437  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Building BVH
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Building BVH 0%
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Mesh | Computing attributes
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Mesh | Copying Attributes to device
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Mesh | Computing normals
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Mesh | Copying Mesh to device
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Objects Flags
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Primitive Offsets
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Images
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Volume
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Camera Volume
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Lookup Tables
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Lights
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Lights | Computing tree
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Integrator
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Film
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Lookup Tables
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Baking
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Updating Device | Writing constant memory
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Loading denoising kernels (may take a few minutes the first time)
+[    2.62s] 00:02.453  render           | Fra: 1 | Mem: 1M | Sample 0/24
+[    2.64s] 00:02.469  render           | Fra: 1 | Remaining: 00:00.27 | Mem: 6M | Sample 1/24
+[    3.36s] 00:03.187  render           | Fra: 1 | Mem: 6M | Sample 24/24
+[    3.36s] 00:03.187  render           | Fra: 1 | Mem: 6M | Finished
+[    3.49s] 00:03.328  render           | Saved: 'C:\Users\wandou\WorkBuddy\2026-10-04-00-25-54\blender_render_console\_probe\probe_0001.png'
+[    3.49s] 00:03.328  render           | Time: 00:01.33 (Saving: 00:00.11)
+[    3.49s] 00:03.328  render           | Rendering frame 2
+[    3.49s] 00:03.328  render           | Start rendering: Scene, ViewLayer
+[    3.49s] 00:03.328  render           | Engine: Cycles
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Synchronizing object | Light
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Synchronizing object | Cube
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Initializing
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Waiting for render to start
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Updating Scene
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Updating Shaders
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 0M | Loading render kernels (may take a few minutes the first time)
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Procedurals
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Background
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Scene Attribute
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Camera
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Meshes Flags
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Objects
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Objects | Copying Transformations to device
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Particle Systems
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Meshes
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Objects | Applying Static Transformations
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Building
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Building BVH
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Building BVH 0%
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Mesh | Computing attributes
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Mesh | Copying Attributes to device
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Mesh | Computing normals
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Mesh | Copying Mesh to device
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Objects Flags
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Primitive Offsets
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Images
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Volume
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Camera Volume
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Lookup Tables
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Lights
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Lights | Computing tree
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Integrator
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Film
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Lookup Tables
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Baking
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Updating Device | Writing constant memory
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Loading denoising kernels (may take a few minutes the first time)
+[    3.54s] 00:03.375  render           | Fra: 2 | Mem: 1M | Sample 0/24
+[    3.55s] 00:03.375  render           | Fra: 2 | Remaining: 00:00.18 | Mem: 6M | Sample 1/24
+[    3.71s] 00:03.547  render           | Fra: 2 | Mem: 6M | Sample 24/24
+[    3.71s] 00:03.547  render           | Fra: 2 | Mem: 6M | Finished
+[    3.79s] 00:03.625  render           | Saved: 'C:\Users\wandou\WorkBuddy\2026-10-04-00-25-54\blender_render_console\_probe\probe_0002.png'
+[    3.79s] 00:03.625  render           | Time: 00:00.29 (Saving: 00:00.05)
+[    3.79s] 00:03.625  render           | Rendering frame 3
+[    3.79s] 00:03.625  render           | Start rendering: Scene, ViewLayer
+[    3.79s] 00:03.625  render           | Engine: Cycles
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Synchronizing object | Light
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Synchronizing object | Cube
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Initializing
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Waiting for render to start
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Updating Scene
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Updating Shaders
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 0M | Loading render kernels (may take a few minutes the first time)
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Procedurals
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Background
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Scene Attribute
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Camera
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Meshes Flags
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Objects
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Objects | Copying Transformations to device
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Particle Systems
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Meshes
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Objects | Applying Static Transformations
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Building
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Building BVH
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Building BVH 0%
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Mesh | Computing attributes
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Mesh | Copying Attributes to device
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Mesh | Computing normals
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Mesh | Copying Mesh to device
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Objects Flags
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Primitive Offsets
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Images
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Volume
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Camera Volume
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Lookup Tables
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Lights
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Lights | Computing tree
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Integrator
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Film
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Lookup Tables
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Baking
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Updating Device | Writing constant memory
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Loading denoising kernels (may take a few minutes the first time)
+[    3.84s] 00:03.672  render           | Fra: 3 | Mem: 1M | Sample 0/24
+[    3.84s] 00:03.672  render           | Fra: 3 | Remaining: 00:00.04 | Mem: 6M | Sample 1/24
+[    4.00s] 00:03.844  render           | Fra: 3 | Mem: 6M | Sample 24/24
+[    4.00s] 00:03.844  render           | Fra: 3 | Mem: 6M | Finished
+[    4.03s] 00:03.859  render           | Saved: 'C:\Users\wandou\WorkBuddy\2026-10-04-00-25-54\blender_render_console\_probe\probe_0003.png'
+[    4.03s] 00:03.859  render           | Time: 00:00.24 (Saving: 00:00.00)
+[    4.03s] 00:03.859  render           | Rendering frame 4
+[    4.03s] 00:03.859  render           | Start rendering: Scene, ViewLayer
+[    4.03s] 00:03.859  render           | Engine: Cycles
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Synchronizing object | Cube
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Synchronizing object | Light
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Initializing
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Waiting for render to start
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Updating Scene
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Updating Shaders
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 0M | Loading render kernels (may take a few minutes the first time)
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Procedurals
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Background
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Scene Attribute
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Camera
+[    4.07s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Meshes Flags
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Objects
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Objects | Copying Transformations to device
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Particle Systems
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Particle Systems | Copying Particles to device
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Meshes
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Objects | Applying Static Transformations
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Scene BVH | Building
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Scene BVH | Building BVH
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Scene BVH | Copying BVH to device
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Mesh | Computing attributes
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Mesh | Copying Attributes to device
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Mesh | Computing normals
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Mesh | Copying Mesh to device
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Objects Flags
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Primitive Offsets
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Images
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Volume
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Camera Volume
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Lookup Tables
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Lights
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Lights | Computing tree
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Integrator
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Film
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Lookup Tables
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Baking
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Updating Device | Writing constant memory
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Loading denoising kernels (may take a few minutes the first time)
+[    4.08s] 00:03.906  render           | Fra: 4 | Mem: 1M | Sample 0/24
+[    4.08s] 00:03.906  render           | Fra: 4 | Remaining: 00:00.04 | Mem: 6M | Sample 1/24
+[    4.23s] 00:04.062  render           | Fra: 4 | Mem: 6M | Sample 24/24
+[    4.23s] 00:04.062  render           | Fra: 4 | Mem: 6M | Finished
+[    4.25s] 00:04.094  render           | Saved: 'C:\Users\wandou\WorkBuddy\2026-10-04-00-25-54\blender_render_console\_probe\probe_0004.png'
+[    4.25s] 00:04.094  render           | Time: 00:00.22 (Saving: 00:00.00)
+[    4.57s] Blender quit
