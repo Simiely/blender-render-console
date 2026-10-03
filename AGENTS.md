@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-04（commit `PENDING`）完成四件套初始化
+> 📌 **文档基线**：2026-10-04（commit `ffd358d`）完成四件套初始化
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ---
@@ -34,6 +34,10 @@
 ## 常用命令
 
 ```bash
+# 推送 —— 本机 schannel 的证书吊销检查会失败（CRYPT_E_REVOCATION_OFFLINE），
+# 必须显式指定 openssl 后端，否则 push 报错
+git -c http.sslBackend=openssl push origin main
+
 # 复现 Blender 输出格式实测（生成 probes/*.log）
 python tools/probe_render.py
 
