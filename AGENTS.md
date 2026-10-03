@@ -1,7 +1,7 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-04（commit `3fe65d7`）调研与验证阶段 · 四件套初始化
-> v0.2.0（命令行版可用：driver + 调度核心 + CLI + 崩溃续跑实测）见 CHANGELOG
+> 📌 **文档基线**：2026-10-04（commit `4ba682d`）命令行版可用 · driver + 调度核心 + CLI + 崩溃续跑实测
+> v0.2.0 详见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ---
