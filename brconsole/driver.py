@@ -14,6 +14,8 @@
 坑位提示（改本文件前必读 AGENTS.md「关键坑」）：
 - 每个输出行必须 `sys.stdout.flush()`，`-b` 下 stdout 非行缓冲，不 flush 会被块缓冲吞住
 - Blender 自带的 `Remaining` 是帧内剩余，外层不要拿它当总 ETA
+- 指定场景**必须自己激活 + 回读校验**：命令行 `-S 不存在的场景` 时 Blender 只打一行
+  `Can't find scene: 'xx'` 就照常渲染默认场景，退出码还是 0（实测 5.2.2）
 """
 
 import json
@@ -97,6 +99,48 @@ def load_job():
         raise SystemExit("driver: 找不到 job.json（argv=%s）" % (rest,))
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def activate_scene(name):
+    """把要渲染的场景切成当前场景，返回 (实际场景, 名字是否对得上)。
+
+    `name` 为空 = 用户没指定，用工程里激活的那个（= Blender 打开工程时显示的场景）。
+
+    ⚠️ 为什么不用命令行 `-S`：那条路名字写错时 Blender **只打一行
+    `Can't find scene: 'xx'` 就继续渲默认场景，退出码还是 0**（实测 5.2.2）——
+    用户会拿到一整套错场景的图却以为一切正常。所以自己切 + 回读校验，
+    对不上就明确告警，外层还能据此把实际场景名写进日志。
+    """
+    import bpy
+
+    cur = bpy.context.scene
+    if not name:
+        return cur, True
+    target = bpy.data.scenes.get(name)
+    if target is None:
+        warn("工程里没有场景 '%s'（现有：%s），已改用默认场景 '%s'"
+             % (name, ", ".join(s.name for s in bpy.data.scenes), cur.name))
+        return cur, False
+    if cur.name == name:
+        return cur, True
+
+    # ① 后台模式下 bpy.context.window 实测是有的（5.2.2），直接切
+    try:
+        bpy.context.window.scene = target
+        if bpy.context.scene.name == name:
+            return bpy.context.scene, True
+    except Exception:
+        pass
+    # ② 退一步：从 window_manager 里挑一个能写的窗口
+    for w in list(getattr(bpy.context.window_manager, "windows", []) or []):
+        try:
+            w.scene = target
+            if bpy.context.scene.name == name:
+                return bpy.context.scene, True
+        except Exception:
+            continue
+    warn("切换场景到 '%s' 失败，仍在渲染 '%s'" % (name, bpy.context.scene.name))
+    return bpy.context.scene, False
 
 
 def apply_overrides(sc):
@@ -247,12 +291,14 @@ def output_path_for(frame):
 def main():
     import bpy
 
-    sc = bpy.context.scene
     job = JOB
+    requested = job.get("scene")
+    sc, scene_ok = activate_scene(requested)
     frames = [int(f) for f in job["frames"]]
 
     emit("start", frames=frames, blend=bpy.data.filepath,
-         scene=sc.name, engine=sc.render.engine,
+         scene=sc.name, scene_requested=requested, scene_ok=scene_ok,
+         engine=sc.render.engine,
          frame_start=sc.frame_start, frame_end=sc.frame_end)
 
     apply_overrides(sc)

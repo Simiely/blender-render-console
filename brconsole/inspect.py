@@ -11,8 +11,14 @@ r"""读取 .blend 里**已有的**渲染配置。
 2. 输出必须带独特标记 —— Blender 自己会往 stdout 打一堆东西，裸 JSON 捞不准
 3. 打开大工程可能要几十秒 —— 调用方必须放到后台线程 + 给足超时（`timeout` 参数）
 
-⚠️ 已知代价：读一次就要启动一次 Blender（实测小工程约 2s，大工程更久）。
-所以界面是"选文件/点按钮才读"，不做定时轮询。
+**多场景**：一个 .blend 里可以有多个场景（每个场景各有一套引擎/采样/分辨率/帧范围/
+输出路径）。所以脚本一次派出**两份**数据：
+- 顶层字段 = 工程里**激活**的那个场景（= Blender 打开工程时显示的那个），保持向后兼容
+- `scene_details = [{name, engine, ...}, ...]` = 每个场景各一份，界面切换场景时按它重填表单
+
+一次读全比"切一次场景起一次 Blender"划算得多（读一次 ≈ 起一次 Blender，实测小工程约 2s）。
+
+⚠️ 已知代价：读一次就要启动一次 Blender。所以界面是"选文件/点按钮才读"，不做定时轮询。
 """
 
 import json
@@ -46,39 +52,52 @@ def samples_of(sc):
         pass
     return None
 
-try:
-    sc = bpy.context.scene
+def detail_of(sc):
+    """一个场景的完整渲染配置。
+
+    界面上切换场景时要拿这份重填表单 —— 引擎/采样/分辨率/帧范围/输出路径
+    都是**每个场景各有一套**的，不能只换一个名字。
+    """
     r = sc.render
-    info = {
-        "ok": True,
-        "blend": bpy.data.filepath,
-        "scene": sc.name,
-        "scenes": [s.name for s in bpy.data.scenes],
-        "blender_version": bpy.app.version_string,
+    d = {
+        "name": sc.name,
+        "engine": r.engine,
+        "samples": samples_of(sc),
+        "resolution": [int(r.resolution_x), int(r.resolution_y)],
+        "resolution_percentage": int(r.resolution_percentage),
         "frame_start": int(sc.frame_start),
         "frame_end": int(sc.frame_end),
         "frame_step": int(getattr(sc, "frame_step", 1) or 1),
         "fps": float(r.fps) / float(getattr(r, "fps_base", 1) or 1),
-        "engine": r.engine,
-        "resolution": [int(r.resolution_x), int(r.resolution_y)],
-        "resolution_percentage": int(r.resolution_percentage),
         "file_format": r.image_settings.file_format,
         "color_mode": r.image_settings.color_mode,
         "output_path": r.filepath,
         "use_file_extension": bool(r.use_file_extension),
-        "samples": samples_of(sc),
-        "cycles_device": None,
-        "compute_device_type": None,
         "camera": (sc.camera.name if sc.camera else None),
         "frame_current": int(sc.frame_current),
+        "cycles_device": None,
+        "compute_device_type": None,
     }
     if r.engine == "CYCLES":
-        info["cycles_device"] = sc.cycles.device
+        d["cycles_device"] = sc.cycles.device
         try:
             prefs = bpy.context.preferences.addons["cycles"].preferences
-            info["compute_device_type"] = prefs.compute_device_type
+            d["compute_device_type"] = prefs.compute_device_type
         except Exception:
             pass
+    return d
+
+try:
+    sc = bpy.context.scene
+    info = detail_of(sc)                      # 顶层 = 激活场景那份（向后兼容）
+    info.update({
+        "ok": True,
+        "blend": bpy.data.filepath,
+        "scene": sc.name,
+        "scenes": [s.name for s in bpy.data.scenes],
+        "scene_details": [detail_of(s) for s in bpy.data.scenes],
+        "blender_version": bpy.app.version_string,
+    })
     emit(info)
 except Exception as e:
     emit({"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
@@ -103,9 +122,19 @@ def output_template_from(output_path, blend="", default_name="frame"):
 
     工程里的路径通常长这样：`/tmp/` 或 `/tmp/render_` 或 `/tmp/render_####.png`。
     分别对应：目录 → `目录/frame_####`；前缀 → `前缀_####`；带占位符 → 原样。
+
+    `//` 是 Blender 的"相对 .blend 所在目录"（**默认输出路径就是 `//`**），
+    必须先展开成绝对路径再判断，否则会被下面"以 / 开头 = Windows 上不存在"那条规则误杀，
+    结果是"读到的输出路径永远是工程名_####"、多个场景之间也看不出区别。
     """
     p = (output_path or "").strip()
-    # Blender 的默认输出路径就是 `/tmp/`（Windows 上也一样），等于"用户没设置"；
+    if p.startswith("//"):
+        if not blend:
+            p = ""
+        else:
+            rel = p[2:].replace("\\", "/").lstrip("/")
+            p = os.path.join(os.path.dirname(os.path.abspath(blend)), rel)
+    # Blender 的默认输出路径是 `/tmp/`（Windows 上也一样），等于"用户没设置"；
     # 而 `/` 开头的路径在 Windows 上根本不存在 —— 两种情况都退回工程目录。
     if p.replace("\\", "/").rstrip("/") == "/tmp":
         p = ""
@@ -170,15 +199,51 @@ def read_blend_info(blender_exe, blend, timeout=180, keep_script=False):
 
 
 def summarize(info):
-    """给人看的摘要（界面日志用）。"""
+    """给人看的摘要（界面日志用）。多场景时顺带报一下总数。"""
     if not info or not info.get("ok"):
         return "读取失败：%s" % (info or {}).get("error", "未知错误")
     res = info.get("resolution") or [0, 0]
+    names = scene_names(info)
+    scene_txt = str(info.get("scene"))
+    if len(names) > 1:
+        scene_txt += "（工程共 %d 个场景）" % len(names)
     return ("工程 %s · 场景 %s · 引擎 %s · %sx%s@%s%% · 采样 %s · 帧 %s-%s/%s · 输出 %s"
-            % (os.path.basename(info.get("blend", "")), info.get("scene"),
+            % (os.path.basename(info.get("blend", "")), scene_txt,
                info.get("engine"), res[0], res[1], info.get("resolution_percentage"),
-               info.get("samples"), info.get("frame_start"), info.get("frame_end"),
+               "-" if info.get("samples") is None else info.get("samples"),
+               info.get("frame_start"), info.get("frame_end"),
                info.get("frame_step"), info.get("output_path")))
+
+
+def scene_names(info):
+    """工程里的场景名列表（顺序与 Blender 里一致）。
+
+    读失败时返回空列表；`scenes` 缺失（老版本脚本的结果）就退回顶层那一个名字。
+    """
+    if not info or not info.get("ok"):
+        return []
+    names = [str(n) for n in (info.get("scenes") or []) if n]
+    if names:
+        return names
+    return [str(info["scene"])] if info.get("scene") else []
+
+
+def scene_detail(info, name=None):
+    """取某个场景的配置详情；`name` 为空 = 取激活场景那份。
+
+    找不到指定场景时返回 None —— 调用方要明确提示，不能悄悄退回别的场景。
+    """
+    if not info or not info.get("ok"):
+        return None
+    want = str(name or info.get("scene") or "")
+    for d in (info.get("scene_details") or []):
+        if str(d.get("name")) == want:
+            return d
+    if want and want == str(info.get("scene") or ""):
+        return info                      # 顶层本来就是激活场景那份
+    if not want and not (info.get("scene_details") or []):
+        return info
+    return None
 
 
 if __name__ == "__main__":              # 手动排错用：python -m brconsole.inspect 工程.blend

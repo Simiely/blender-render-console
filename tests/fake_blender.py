@@ -55,7 +55,8 @@ def main():
         native("Fra: %d | Mem: 1M | Loading render kernels (may take a few minutes the first time)" % frames[0])
         native("Fra: %d | Mem: 1M | Updating Scene BVH | Building" % frames[0])
 
-    emit("start", frames=frames, blend=job.get("blend", "x.blend"), engine="CYCLES")
+    emit("start", frames=frames, blend=job.get("blend", "x.blend"), engine="CYCLES",
+         scene=job.get("scene") or "Scene", scene_requested=job.get("scene"))
     emit("info", engine="CYCLES", res=[320, 240], pct=100, output=tpl, samples=24)
 
     # 进程启动计次：core 每重启一轮就一个新进程，靠它区分「第一次」和「续跑」

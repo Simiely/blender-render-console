@@ -7,6 +7,7 @@
 只测 service 层是测不出接线断没断的。
 """
 
+import json
 import os
 import shutil
 import sys
@@ -313,6 +314,14 @@ class TestParseRestartLimit(unittest.TestCase):
         self.assertEqual(parse_restart_limit(0), 0)
         self.assertEqual(parse_restart_limit("10"), 10)
 
+    def test_chinese_labels_from_gui(self):
+        """界面的「崩溃后重启」下拉现在直接给中文文案，解析器必须认（否则静默退回默认）。"""
+        self.assertEqual(parse_restart_limit("1 次"), 1)
+        self.assertEqual(parse_restart_limit("3 次"), 3)
+        self.assertEqual(parse_restart_limit("5 次（默认）"), 5)
+        self.assertEqual(parse_restart_limit("10 次"), 10)
+        self.assertEqual(parse_restart_limit("一直重启，直到全部渲完"), UNLIMITED)
+
     def test_unlimited_words(self):
         for w in ("unlimited", "INFINITE", "无限", "一直", "-1", "-99", "none"):
             self.assertEqual(parse_restart_limit(w), UNLIMITED, w)
@@ -329,6 +338,68 @@ class TestParseRestartLimit(unittest.TestCase):
         cfg2 = JobConfig(blend="a.blend", frames=[1], output_template="o/f_####",
                          max_restarts=5)
         self.assertFalse(cfg2.unlimited_restarts)
+
+
+class TestSceneSelection(_Base):
+    """多场景：场景名要一路传到 job.json（driver 靠它切场景），且换场景不能续跑。"""
+
+    def test_scene_reaches_job_json(self):
+        job, cfg, events = self.make_job(frames=(1,), scene="SceneA")
+        seen = {}
+        inner = job.cmd_factory
+
+        def spy(blender_exe, blend, driver_path, job_json, extra_args=()):
+            with open(job_json, "r", encoding="utf-8") as f:
+                seen.update(json.load(f))
+            return inner(blender_exe, blend, driver_path, job_json, extra_args)
+
+        job.cmd_factory = spy
+        r = self.run_job(job, events)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(seen.get("scene"), "SceneA")
+
+    def test_scene_survives_to_event_stream(self):
+        """driver 的 start 里带的场景名要透传到 core 事件（界面日志靠它显示用了哪个场景）。"""
+        job, cfg, events = self.make_job(frames=(1,), scene="SceneA")
+        self.run_job(job, events)
+        infos = [ev for k, ev in events if k == "engine_info"]
+        self.assertEqual(infos[0]["scene"], "SceneA")
+
+    def test_switching_scene_does_not_resume(self):
+        """同一个工程换场景：帧号一样但内容完全是另一张图，必须从头渲染。"""
+        job, cfg, ev = self.make_job(frames=(1, 2), scene="SceneA")
+        self.run_job(job, ev)
+
+        job2, cfg2, ev2 = self.make_job(frames=(1, 2), scene="SceneB")
+        r = self.run_job(job2, ev2)
+        warns = [e["msg"] for k, e in ev2 if k == "warn"]
+        self.assertTrue(any("不匹配" in w for w in warns), warns)
+        starts = [e["frame"] for k, e in ev2 if k == "frame_start"]
+        self.assertEqual(starts, [1, 2])
+        self.assertTrue(r["ok"])
+
+    def test_same_scene_still_resumes(self):
+        """换了场景不能续跑，但**没换**场景必须照旧能续跑（别把续跑功能一起改坏）。"""
+        job, cfg, ev = self.make_job(frames=(1, 2, 3), scene="SceneA",
+                                     extra=["--fail-at", "2"], max_restarts=0)
+        self.run_job(job, ev)
+
+        job2, cfg2, ev2 = self.make_job(frames=(1, 2, 3), scene="SceneA")
+        self.run_job(job2, ev2)
+        starts = [e["frame"] for k, e in ev2 if k == "frame_start"]
+        self.assertEqual(starts, [2, 3])
+
+    def test_state_file_records_scene(self):
+        job, cfg, ev = self.make_job(frames=(1,), scene="SceneA")
+        self.run_job(job, ev)
+        self.assertEqual(JobState.load(self.state).scene, "SceneA")
+
+    def test_no_scene_is_allowed(self):
+        """不指定场景 = 用工程里激活的那个，配置里留 None，不能报错。"""
+        job, cfg, events = self.make_job(frames=(1,))
+        r = self.run_job(job, events)
+        self.assertTrue(r["ok"], r)
+        self.assertIsNone(cfg.scene)
 
 
 class TestCmdFactory(unittest.TestCase):

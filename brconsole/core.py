@@ -14,6 +14,7 @@ import io
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -38,26 +39,35 @@ DEFAULT_STALL_AFTER = 60.0
 
 UNLIMITED = -1          # “一直重启，直到所有帧渲染完”
 
+# 「一直重启」的各种写法。界面的下拉直接给中文文案（"一直重启，直到全部渲完"），
+# 所以这里必须用**包含**判断，不能像早期那样精确匹配几个英文单词。
+UNLIMITED_WORDS = ("unlimited", "infinite", "inf", "none", "无限", "一直")
+
 
 def parse_restart_limit(value, default=5):
     """把界面/命令行的输入翻译成重启次数上限。
 
-    `'unlimited' / 'infinite' / '无限' / '-1' / '一直'` → `UNLIMITED`（-1，不限次数）；
-    数字字符串 → 对应整数（0 = 崩了就停，不重启）。空值走默认。
+    接受三类写法：
+    - 数字，可带单位后缀：`'5'`、`'5 次（默认）'`、`'10 次'` → 对应整数
+    - 「一直重启」：`'unlimited'` / `'无限'` / `'一直重启，直到全部渲完'` → `UNLIMITED`（-1）
+    - 负数 `'-1'` → `UNLIMITED`（历史写法，保持兼容）
+
+    空值、看不懂的字符串走 `default`（这一点很关键：界面下拉里存的是**显示文案**，
+    不认中文就会静默退回默认值 —— 用户选了"1 次"实际按 5 次跑，是最难查的那种 bug）。
     """
     if value is None:
         return default
     s = str(value).strip().lower()
     if not s:
         return default
-    if s in ("unlimited", "infinite", "inf", "none", "unlimited ", "无限", "一直", "一直重启"):
+    if any(w in s for w in UNLIMITED_WORDS):
         return UNLIMITED
     if s.startswith("-"):
         return UNLIMITED
-    try:
-        return int(s)
-    except ValueError:
-        return default
+    m = re.match(r"\+?(\d+)", s)
+    if m:
+        return int(m.group(1))
+    return default
 
 
 class JobConfig(object):
@@ -67,13 +77,15 @@ class JobConfig(object):
                  device=None, resolution=None, resolution_percentage=None,
                  file_format=None, state_path=None, log_path=None,
                  max_restarts=5, max_frame_attempts=3, extra_args=(),
-                 resume=True, restart_delay=2.0, max_no_progress_rounds=3):
+                 resume=True, restart_delay=2.0, max_no_progress_rounds=3, scene=None):
         self.blend = os.path.abspath(blend)
         self.frames = [int(f) for f in frames]
         self.output_template = output_template
         self.engine = engine
         self.samples = samples
         self.device = device
+        # 场景名；None/空 = 用工程里激活的那个（= Blender 打开工程时默认显示的场景）
+        self.scene = (scene or "").strip() or None
         self.resolution = tuple(resolution) if resolution else None
         self.resolution_percentage = resolution_percentage
         self.file_format = file_format
@@ -92,8 +104,9 @@ class JobConfig(object):
         return self.max_restarts is None or self.max_restarts < 0
 
     def signature(self):
-        """判断新旧 state 是否属于同一任务（blend / 输出 / 帧范围变了就别续）。"""
-        return (os.path.abspath(self.blend), self.output_template, tuple(self.frames))
+        """判断新旧 state 是否属于同一任务（blend / 输出 / 帧范围 / 场景变了就别续）。"""
+        return (os.path.abspath(self.blend), self.output_template,
+                tuple(self.frames), self.scene or "")
 
 
 def default_cmd_factory(blender_exe, blend, driver_path, job_json, extra_args=()):
@@ -187,9 +200,12 @@ class RenderJob(object):
 
         old = JobState.load(state_path) if (cfg.resume and os.path.exists(state_path)) else None
         if old is not None:
+            # 场景也要比：同一个工程换个场景，帧号往往一样但内容完全是另一张图，
+            # 续跑会把上一个场景的进度算进来（产物全错还看不出来）
             same = (os.path.abspath(old.blend) == os.path.abspath(cfg.blend)
                     and old.output_template == cfg.output_template
-                    and tuple(old.frames) == tuple(cfg.frames))
+                    and tuple(old.frames) == tuple(cfg.frames)
+                    and (old.scene or "") == (cfg.scene or ""))
             if same:
                 self.state = old
                 if old.done:
@@ -210,7 +226,7 @@ class RenderJob(object):
                 state_path, blend=cfg.blend, frames=cfg.frames,
                 output_template=cfg.output_template, engine=cfg.engine,
                 samples=cfg.samples, device=cfg.device, resolution=cfg.resolution,
-                file_format=cfg.file_format)
+                file_format=cfg.file_format, scene=cfg.scene)
             self.state.save()
         return state_path
 
@@ -255,7 +271,8 @@ class RenderJob(object):
         state = self.state
         if kind == "start":
             emit("engine_info", blend=ev.get("blend"), engine=ev.get("engine"),
-                 scene=ev.get("scene"), frames=ev.get("frames"))
+                 scene=ev.get("scene"), frames=ev.get("frames"),
+                 scene_requested=ev.get("scene_requested"))
         elif kind == "engine_set":
             emit("engine_set", requested=ev.get("requested"), actual=ev.get("actual"))
         elif kind == "device_set":
@@ -362,6 +379,7 @@ class RenderJob(object):
 
             emit("job_start", total=self.state.total, frames=list(self.state.frames),
                  blend=cfg.blend, output=cfg.output_template, state_path=state_path,
+                 scene=cfg.scene,
                  unlimited_restarts=cfg.unlimited_restarts,
                  max_restarts=cfg.max_restarts if not cfg.unlimited_restarts else None,
                  max_no_progress_rounds=cfg.max_no_progress_rounds)
@@ -386,6 +404,7 @@ class RenderJob(object):
                         "resolution": list(cfg.resolution) if cfg.resolution else None,
                         "resolution_percentage": cfg.resolution_percentage,
                         "file_format": cfg.file_format,
+                        "scene": cfg.scene,
                     }, f, ensure_ascii=False)
 
                 cmd = self.cmd_factory(self.blender_exe, cfg.blend, driver_path,

@@ -16,9 +16,98 @@ sys.path.insert(0, ROOT)
 
 from brconsole import tkboot  # noqa: E402
 from brconsole.cli import parse_frames  # noqa: E402
-from brconsole.guimodel import (FormModel, LogModel, ProgressModel, event_line,  # noqa: E402
-                                guess_state_path, state_summary)
+from brconsole.core import parse_restart_limit  # noqa: E402
+from brconsole.guimodel import (DEFAULT_RESTART_OPTION, RESTART_OPTIONS,  # noqa: E402
+                                SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
+                                FormModel, LogModel, ProgressModel, event_line,
+                                fields_from_detail, guess_state_path, scene_to_config,
+                                state_summary)
 from brconsole.state import JobState  # noqa: E402
+
+
+class TestRestartOptions(unittest.TestCase):
+    """「崩溃后重启」下拉：文案是中文，且解析器认这些文案。
+
+    历史 bug：界面用的是裸值列表（`1/3/5/10/unlimited`），下拉里直接显示出英文
+    `unlimited`，而配套的中文文案从没被用上。
+    """
+
+    EXPECTED = {"1 次": 1, "3 次": 3, "5 次（默认）": 5, "10 次": 10,
+                "一直重启，直到全部渲完": -1}
+
+    def test_options_are_all_chinese_labels(self):
+        self.assertEqual(set(RESTART_OPTIONS), set(self.EXPECTED))
+        for label in RESTART_OPTIONS:
+            self.assertNotIn("unlimited", label.lower(), label)
+
+    def test_every_label_parses_to_expected_value(self):
+        for label, want in self.EXPECTED.items():
+            self.assertEqual(parse_restart_limit(label), want, label)
+
+    def test_default_option_is_the_five_times_one(self):
+        self.assertEqual(DEFAULT_RESTART_OPTION, "5 次（默认）")
+        self.assertEqual(parse_restart_limit(DEFAULT_RESTART_OPTION), 5)
+
+
+class TestSceneHelpers(unittest.TestCase):
+    def test_placeholders_are_not_scene_names(self):
+        """占位文案不能被当成场景名传给 Blender（否则会渲染到默认场景还报成功）。"""
+        self.assertIsNone(scene_to_config(SCENE_DEFAULT_LABEL))
+        self.assertIsNone(scene_to_config(SCENE_NEED_READ_LABEL))
+        self.assertIsNone(scene_to_config(""))
+        self.assertIsNone(scene_to_config(None))
+        self.assertEqual(scene_to_config("Scene.001"), "Scene.001")
+        self.assertEqual(scene_to_config("  洋房场景  "), "洋房场景")
+
+    def test_fields_from_detail(self):
+        detail = {
+            "name": "SceneA", "engine": "cycles", "samples": 64,
+            "resolution": [1920, 1080], "resolution_percentage": 50,
+            "frame_start": 1, "frame_end": 24, "frame_step": 2,
+            "file_format": "png", "cycles_device": "CPU", "output_path": "/tmp/",
+        }
+        f = fields_from_detail(detail, "D:/proj/house.blend")
+        self.assertEqual(f["engine"], "CYCLES")          # 大写归一
+        self.assertEqual(f["file_format"], "PNG")
+        self.assertEqual(f["samples"], "64")
+        self.assertEqual(f["device"], "CPU")
+        self.assertEqual((f["width"], f["height"]), ("1920", "1080"))
+        self.assertEqual(f["pct"], "50")
+        self.assertEqual((f["start"], f["end"], f["step"]), ("1", "24", "2"))
+        # Blender 默认的 /tmp/ 等于没设置 → 退回工程目录
+        self.assertTrue(f["output"].replace("\\", "/").endswith("proj/house_####"), f)
+
+    def test_fields_from_detail_skips_unknown_values(self):
+        """拿不准的字段宁可不填，也不要写个错值进表单。"""
+        f = fields_from_detail({"engine": "SOMETHING_NEW", "file_format": "AVI",
+                                "cycles_device": "GPU", "compute_device_type": "METAL"},
+                               "D:/a/b.blend")
+        self.assertNotIn("engine", f)
+        self.assertNotIn("file_format", f)
+        self.assertNotIn("device", f)                    # METAL 不在我们支持的下拉里
+
+    def test_fields_from_detail_empty(self):
+        self.assertEqual(fields_from_detail(None), {})
+        self.assertEqual(fields_from_detail({}, "D:/a/b.blend"), {})
+
+    def test_form_passes_scene_to_config(self):
+        d = tempfile.mkdtemp(prefix=".brc-gui-")
+        try:
+            blend = os.path.join(d, "s.blend")
+            with open(blend, "wb") as f:
+                f.write(b"BLENDER")
+            cfg, errors, _ = FormModel(blend=blend, output=os.path.join(d, "o_####"),
+                                       start="1", end="2",
+                                       scene="Scene.002").to_config(parse_frames)
+            self.assertEqual(errors, [])
+            self.assertEqual(cfg.scene, "Scene.002")
+            # 占位文案要走 None（= 用工程里激活的那个场景）
+            cfg2, _, _ = FormModel(blend=blend, output=os.path.join(d, "o_####"),
+                                   start="1", end="2",
+                                   scene=SCENE_NEED_READ_LABEL).to_config(parse_frames)
+            self.assertIsNone(cfg2.scene)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class TestCompleteOutput(unittest.TestCase):

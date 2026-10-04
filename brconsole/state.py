@@ -20,7 +20,7 @@ class JobState(object):
     """一次渲染任务的断点状态。"""
 
     def __init__(self, path, blend="", frames=(), output_template="", engine=None,
-                 samples=None, device=None, resolution=None, file_format=None):
+                 samples=None, device=None, resolution=None, file_format=None, scene=None):
         self.path = path
         self.version = STATE_VERSION
         self.blend = blend
@@ -31,6 +31,8 @@ class JobState(object):
         self.device = device
         self.resolution = list(resolution) if resolution else None
         self.file_format = file_format
+        # 渲染的场景名；空 = 工程里激活的那个。换场景不能续跑（帧号一样但内容不同）
+        self.scene = scene or ""
         self.created = time.time()
         self.updated = time.time()
         # 键在内存里是 int，落盘时转 str（JSON 只接受字符串键）
@@ -51,7 +53,7 @@ class JobState(object):
             return None
         st = cls(path)
         for k in ("version", "blend", "output_template", "engine", "samples",
-                  "device", "file_format", "created", "updated"):
+                  "device", "file_format", "scene", "created", "updated"):
             if k in d:
                 setattr(st, k, d[k])
         st.frames = [int(x) for x in d.get("frames", [])]
@@ -73,6 +75,7 @@ class JobState(object):
             "device": self.device,
             "resolution": self.resolution,
             "file_format": self.file_format,
+            "scene": self.scene,
             "created": round(self.created, 3),
             "updated": round(time.time(), 3),
             "done": {str(k): v for k, v in sorted(self.done.items())},

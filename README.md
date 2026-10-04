@@ -18,15 +18,16 @@
 
 ## 当前状态
 
-> **v0.4.0：单文件 exe 已可用** —— `dist/blender-render-console.exe`（双击即界面）/ `dist/brc.exe`（命令行）。
-> 深色主题、选中工程自动读配置、崩溃续跑、**「一直重启，直到全部渲完」**均已真机实测；
-> exe 带应用图标（含窗口图标）与文件属性里的版本信息。
+> **v0.5.0：支持多场景工程** —— 一个 .blend 里有多个场景时，界面上直接选要渲哪个场景
+> （切换后引擎 / 采样 / 分辨率 / 帧范围 / 输出路径按该场景重填）；命令行对应 `-S 场景名`。
+> 单文件 exe 仍可用：`dist/blender-render-console.exe`（双击即界面）/ `dist/brc.exe`（命令行）。
 
 | 能力 | 状态 |
 |---|---|
 | **单文件 exe**（PyInstaller onefile，内含 tcl/tk） | ✅ 打包后自检 + 真窗口截图验证 |
 | 图形界面（tkinter，深色主题） | ✅ 真窗口实测 |
 | **选中工程自动读取渲染配置** | ✅ 真机实测：引擎 / 采样 / 设备 / 分辨率 / 帧范围 / 输出路径一次填好 |
+| **多场景工程选场景渲染** | ✅ 真机实测：双场景（64x48 / 128x96）分别渲出，**以产物尺寸为证**；场景名写错有明确告警 |
 | 无头渲染 + 逐帧进度 | ✅ 真机实测（Cycles / EEVEE 各跑通） |
 | ETA 自算（剔除首帧预热 + EMA 平滑） | ✅ 真机实测 |
 | **崩溃 / 被杀后自动续跑** | ✅ 真机实测：中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
@@ -79,6 +80,11 @@ python main.py --demo                 # 自检：自动填配置 + 用内置假 
 （也可以点「读取工程配置」重读，或手改任意一项）→ 点「开始渲染」→ 看进度条 / ETA / 日志。
 停止或崩溃后再点一次「开始渲染」，只渲染没完成的帧。
 
+工程里**有多个场景**时：「读取工程配置」会把**每个场景**的参数一次读回来，
+「场景」下拉变成可选（默认是工程里激活的那个），切换后上面的参数立即按该场景重填
+—— 引擎 / 采样 / 分辨率 / 帧范围 / 输出路径都是**每个场景各有一套**的。
+只有一个场景时下拉只作展示；某个场景没设相机的话会提前告警（Blender 会拒绝渲染它）。
+
 长任务可以把「崩溃后重启」选成**「一直重启，直到全部渲完」**（次数不限）。
 它旁边还有一个「连续这么多轮一帧都没推进就停」（默认 3 轮）：
 如果在同一处反复崩、一帧都渲不出来，说明问题不在"重启次数不够"，程序会停下并明确提示，
@@ -93,6 +99,9 @@ python main.py 工程.blend -s 1 -e 240 -E CYCLES --samples 256 --device OPTIX -
 # 只渲染若干指定帧
 python main.py 工程.blend -f 1-10,15,20-25 -o out/frame_####
 
+# 工程里有多个场景时：指定要渲哪个场景（不给 = 用工程里激活的那个）
+python main.py 工程.blend -S 室内场景 -s 1 -e 240 -o out/frame_####
+
 # 跑到一半 Ctrl+C 停掉，再执行同一条命令 → 从断点继续（不会重渲已完成的帧）
 python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 
@@ -105,6 +114,7 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 |---|---|
 | `-s / -e / --step` | 帧范围与步长 |
 | `-f` | 显式帧列表（`1-10,15,20-25`），**填了就只用列表** |
+| `-S / --scene` | 渲染哪个场景（工程有多个场景时用）；不给 = 工程里激活的那个。名字写错会明确告警并回落到默认场景 |
 | `-o` | 输出模板（**必须含 `####`**）或输出目录 |
 | `-E` | 引擎：`CYCLES` / `BLENDER_EEVEE` / `BLENDER_WORKBENCH` |
 | `--samples` | 采样数（Cycles 渲染采样 / EEVEE TAA） |
@@ -123,7 +133,7 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 ```
 Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 任务开始：D:\proj\scene.blend
-  帧数 12 | 输出 D:\proj\out\smoke_#### | 断点 D:\proj\out\.render_state.json | 重启次数不限（连续 3 轮无进展才停）
+  帧数 12 | 输出 D:\proj\out\smoke_#### | 断点 D:\proj\out\.render_state.json | 重启次数不限（连续 3 轮无进展才停） | 场景 室内场景
   实际设置：引擎 CYCLES | 320x240 @100% | 采样 24 | 输出 D:\proj\out\smoke_####
 [1/12] 帧 1 完成 0.4s (预热帧，不计入基线) | 单帧 -- | 剩余 11 帧 | ETA --（尚无样本）
 [2/12] 帧 2 完成 0.3s | 单帧 0.3s | 剩余 10 帧 | ETA 3.0s（均值（样本 1））
@@ -144,7 +154,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   ├── gui.py               # tkinter 界面：控件 + 后台线程 + 事件队列
 │   ├── guimodel.py          # 界面逻辑层（表单校验 / 事件→状态 / 日志缓冲，可单测）
 │   ├── theme.py             # 深色主题（ttk 必须切 clam 才接受配色）
-│   ├── inspect.py           # 读取 .blend 里已有的渲染配置
+│   ├── inspect.py           # 读取 .blend 里已有的渲染配置（一次读回**所有场景**）
 │   ├── tkboot.py            # 缺 tkinter 时带 sidecar 自举重启
 │   ├── cli.py               # 命令行入口 + 终端事件渲染
 │   ├── core.py              # 调度核心：子进程 / 双通道进度 / 崩溃续跑
@@ -155,12 +165,12 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 101 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 126 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
 │   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（本机 Python 无 tkinter）
-│   ├── smoke_real_blender.py  # 真机冒烟 5 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 「一直重启」A/B
+│   ├── smoke_real_blender.py  # 真机冒烟 6 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 「一直重启」A/B → 多场景
 │   ├── capture_screen.py    # 抓窗口/全屏 PNG（验证界面用，纯 ctypes）；--list 列窗口标题
 │   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
 │   └── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
@@ -173,16 +183,17 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（101 条，不依赖 Blender，约 29s）
-python -m unittest discover -s tests -p "test_*.py"
+# 单测（126 条，不依赖 Blender，约 36s）
+python -m unittest discover -s tests -t tests -p "test_*.py"
 
-# 真机冒烟（需要 Blender 5.2，约 90s）
+# 真机冒烟（需要 Blender 5.2，约 120s）
 python tools/smoke_real_blender.py
-#   1/5 完整渲染 6 帧
-#   2/5 中途杀掉 Blender → 续跑
-#   3/5 EEVEE 引擎切换 + 首帧预热
-#   4/5 读取工程配置（无头 Blender 读 .blend）
-#   5/5 「一直重启」A/B 对照：同一份"连崩 6 次"的启动器，5 次上限 vs 不限次数
+#   1/6 完整渲染 6 帧
+#   2/6 中途杀掉 Blender → 续跑
+#   3/6 EEVEE 引擎切换 + 首帧预热
+#   4/6 读取工程配置（无头 Blender 读 .blend）
+#   5/6 「一直重启」A/B 对照：同一份"连崩 6 次"的启动器，5 次上限 vs 不限次数
+#   6/6 多场景 -S 选场景（以产物尺寸为证）+ 场景名写错时的告警
 
 # 打包（产出后自动跑 5 项自检：--help / exe 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
 python tools/build_exe.py --both

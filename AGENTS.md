@@ -1,7 +1,7 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-04（commit `828d63e`）v0.4.0 · 单文件 exe 已交付（GUI + 命令行，带图标与版本信息）
-> v0.4.0 详见 CHANGELOG
+> 📌 **文档基线**：2026-10-04（commit `待回填`）v0.5.0 · 多场景选择（界面下拉 / `-S`）+ 单文件 exe
+> v0.5.0 详见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ---
@@ -45,6 +45,9 @@
 26. **`.bat` 可以直接当 `subprocess` 的 `args[0]`**（CreateProcess 会自己拉 cmd.exe），退出码与参数原样传递 —— 用来做"确定性地崩"的启动器很方便。但**转交路径必须用反斜杠**（`C:/...` 会找不到而返回 1），且批处理里读计数器别用 `set /p`（会吃进行尾 CR），要用 `for /f "usebackq delims="`。
 27. **跨进程的时序断言要能证伪**：「监测到新帧就 kill 掉 Blender 数崩溃次数」实测在 5~7 之间浮动（有一次 kill 打到了已退出的 PID）。要么把随机性消除，要么改成 A/B 对照实验（本项目：同一份"连崩 6 次"启动器，`--max-restarts 5` 必须放弃且 0 帧产出、`unlimited` 必须渲完 12 帧）。
 28. **Win32 的资源 API 只认绝对路径**：`GetFileVersionInfoSizeW` 传相对路径**返回 0**（不报错），于是 `_exe_file_version()` 静默返回 `None`，现象是"版本资源没写进 exe"，实际是路径没规范化。凡是读 PE 资源（版本 / 图标）的函数，入口一律先 `os.path.abspath()`。
+29. **指定场景必须回读校验**：`blender -b x.blend -S 不存在的场景` 只往 stdout 打一行英文 `Can't find scene: 'xx'`，**退出码仍是 0**，然后照常用默认场景渲染（实测 5.2.2）—— 选错场景会静默渲出一整套错图。所以 `driver.activate_scene()` 自己切（`bpy.context.window.scene = target`，实测 `-b` 下 window **不是** None，切完渲染出的就是目标场景）+ 回读校验 + 中文告警；界面还在按下「开始渲染」前拦一道（读到的场景列表里没有这个名字就报错）。
+30. **`//` 是"相对 .blend 目录"，不是绝对路径**：Blender 的**默认**输出路径就长这样，它和 `/tmp` 一样以 `/` 开头，会被 `output_template_from()` 里"Windows 上以 `/` 开头 = 不存在"那条规则一起丢掉 → 输出模板永远退化成 `工程名_####`，多场景之间也看不出区别。判断之前先把 `//xxx` 展开成 `<工程目录>/xxx`。
+31. **界面下拉别维护"显示值 / 实际值"两张表**：本项目曾同时有 `RESTART_CHOICES`（中文文案 → 值）和 `RESTART_VALUES`（裸值），界面写的是后者 → 下拉框里直接显示 `1/3/5/10/unlimited`，英文 `unlimited` 露在界面上，而中文那套**从没被任何控件引用**（死代码）。现在下拉只放中文文案，交给 `core.parse_restart_limit` 解析（`"5 次（默认）"`→5、`"一直重启，直到全部渲完"`→不限）。能用同一个字符串既显示又解析，就别搞映射层。
 
 ## 约定
 
@@ -61,10 +64,10 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（101 条，不依赖 Blender）
-python -m unittest discover -s tests -p "test_*.py"
+# 单测（126 条，不依赖 Blender）
+python -m unittest discover -s tests -t tests -p "test_*.py"
 
-# 真机冒烟 5 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B（需要 Blender 5.2）
+# 真机冒烟 6 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景（需要 Blender 5.2）
 python tools/smoke_real_blender.py
 
 # 打包成两个单文件 exe（产出后自动跑 5 项自检：--help / 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
@@ -88,6 +91,9 @@ python -m brconsole.inspect 工程.blend
 
 # 跑一次真实渲染
 python main.py 工程.blend -s 1 -e 10 -E CYCLES --samples 64 -o out/frame_####
+
+# 工程有多个场景时，指定要渲哪个场景（不给 = 用工程里激活的那个）
+python main.py 工程.blend -S 室内场景 -s 1 -e 10 -o out/frame_####
 
 # 一直重启，直到全部渲完（带 3 轮无进展兜底）
 python main.py 工程.blend -s 1 -e 240 -o out/frame_#### --max-restarts unlimited --max-no-progress 3

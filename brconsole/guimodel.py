@@ -18,16 +18,82 @@ from .state import JobState
 
 KEEP = ""          # 下拉框里"保持工程设置"对应的实际值就是空
 
-# 「最多重启几次」下拉选项：(显示文案, 实际值)；unlimited = 一直重启直到渲完
-RESTART_CHOICES = [("1 次", "1"), ("3 次", "3"), ("5 次（默认）", "5"), ("10 次", "10"),
-                   ("一直重启，直到全部渲完", "unlimited")]
-RESTART_VALUES = [v for _, v in RESTART_CHOICES]
+# 场景下拉的两个占位文案（都不是真实场景名，交给 scene_to_config 过滤掉）
+SCENE_DEFAULT_LABEL = "（用工程默认场景）"
+SCENE_NEED_READ_LABEL = "（先读取工程配置）"
+SCENE_PLACEHOLDERS = (SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL)
+
+# 「最多重启几次」下拉的选项。
+#
+# ⚠️ 这里**只放显示文案**，不再维护「文案 ↔ 实际值」两张表：早期版本的界面
+# 用的是 `RESTART_VALUES`（裸的 `1/3/5/10/unlimited`），于是下拉里直接显示出了
+# 英文 `unlimited`，而旁边那套中文文案（`RESTART_CHOICES`）从来没被任何控件用过。
+# 现在文案本身就是要解析的输入，翻译交给 `core.parse_restart_limit`（它认中文）。
+RESTART_OPTIONS = ["1 次", "3 次", "5 次（默认）", "10 次", "一直重启，直到全部渲完"]
+DEFAULT_RESTART_OPTION = RESTART_OPTIONS[2]
+
 ENGINES = [("保持工程设置（用 .blend 里的）", KEEP), ("Cycles", "CYCLES"),
            ("EEVEE", "BLENDER_EEVEE"), ("Workbench", "BLENDER_WORKBENCH")]
 DEVICES = [("保持工程设置", KEEP), ("CPU", "CPU"), ("CUDA", "CUDA"),
            ("OptiX", "OPTIX"), ("HIP", "HIP"), ("oneAPI", "ONEAPI")]
 FORMATS = [("保持工程设置", KEEP), ("PNG", "PNG"), ("JPEG", "JPEG"),
            ("OpenEXR", "OPEN_EXR"), ("TIFF", "TIFF")]
+
+
+def scene_to_config(label):
+    """场景下拉的显示值 → `JobConfig.scene`。
+
+    占位文案和空值都表示"不指定，用工程里激活的那个场景"。
+    """
+    s = str(label or "").strip()
+    if not s or s in SCENE_PLACEHOLDERS:
+        return None
+    return s
+
+
+def fields_from_detail(detail, blend=""):
+    """一个场景的配置详情 → 表单字段 dict（界面只负责把它 set 到控件上）。
+
+    `detail` 来自 `inspect.read_blend_info()` 的 `scene_details[i]`（或顶层那份）。
+    拿不准的字段**不放进结果** —— 宁可不改，也不要写一个错值进去。典型是
+    Cycles 的 GPU 后端名：它来自用户偏好设置，`-b` 下常常读不到。
+    """
+    from .inspect import output_template_from
+
+    if not detail:
+        return {}
+    out = {}
+    if detail.get("frame_start") is not None:
+        out["start"] = str(detail["frame_start"])
+    if detail.get("frame_end") is not None:
+        out["end"] = str(detail["frame_end"])
+    if detail.get("frame_step"):
+        out["step"] = str(detail["frame_step"])
+    engine = (detail.get("engine") or "").upper()
+    if engine in [v for _, v in ENGINES]:
+        out["engine"] = engine
+    if detail.get("samples") is not None:
+        out["samples"] = str(detail["samples"])
+    # 设备：只有能确定才改（GPU 后端名来自偏好设置）
+    if (detail.get("cycles_device") or "").upper() == "CPU":
+        out["device"] = "CPU"
+    else:
+        cdt = (detail.get("compute_device_type") or "").upper()
+        if cdt in [v for _, v in DEVICES]:
+            out["device"] = cdt
+    res = detail.get("resolution") or []
+    if len(res) == 2:
+        out["width"] = str(res[0])
+        out["height"] = str(res[1])
+    if detail.get("resolution_percentage"):
+        out["pct"] = str(detail["resolution_percentage"])
+    fmt = (detail.get("file_format") or "").upper()
+    if fmt in [v for _, v in FORMATS]:
+        out["file_format"] = fmt
+    tpl = output_template_from(detail.get("output_path"), blend)
+    if tpl:
+        out["output"] = tpl
+    return out
 
 
 class FormModel(object):
@@ -48,8 +114,9 @@ class FormModel(object):
         self.height = kw.get("height", "")
         self.pct = kw.get("pct", "")
         self.file_format = kw.get("file_format", KEEP)
+        self.scene = kw.get("scene", SCENE_DEFAULT_LABEL)   # 场景名，或占位文案
         self.resume = kw.get("resume", True)
-        self.max_restarts = kw.get("max_restarts", "5")
+        self.max_restarts = kw.get("max_restarts", DEFAULT_RESTART_OPTION)
         self.max_no_progress = kw.get("max_no_progress", "3")
         self.max_frame_attempts = kw.get("max_frame_attempts", "3")
         self.show_native = kw.get("show_native", False)
@@ -142,6 +209,7 @@ class FormModel(object):
             engine=self.engine or None, samples=samples,
             device=self.device or None, resolution=resolution,
             resolution_percentage=pct, file_format=self.file_format or None,
+            scene=scene_to_config(self.scene),
             state_path=None, log_path=None,
             max_restarts=parse_restart_limit(self.max_restarts, default=5),
             max_frame_attempts=3 if attempts is None else attempts,
@@ -359,7 +427,7 @@ def event_line(kind, ev):
     if kind == "settings":
         return "实际设置：引擎 %s · %sx%s@%s%% · 采样 %s" % (
             ev.get("engine"), (ev.get("res") or [0, 0])[0], (ev.get("res") or [0, 0])[1],
-            ev.get("pct"), ev.get("samples"))
+            ev.get("pct"), "-" if ev.get("samples") is None else ev.get("samples"))
     if kind == "device_set":
         return "渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or []))
     if kind == "engine_set" and ev.get("requested") != ev.get("actual"):
@@ -372,8 +440,11 @@ def event_line(kind, ev):
     if kind == "job_error":
         return "✗ %s" % ev.get("error")
     if kind == "job_start":
-        return "开始：%s（共 %s 帧）→ %s" % (
-            ev.get("blend"), ev.get("total"), ev.get("output"))
+        scene = ev.get("scene")
+        return "开始：%s（共 %s 帧%s）→ %s" % (
+            ev.get("blend"), ev.get("total"),
+            " · 场景 %s" % scene if scene else " · 用工程默认场景",
+            ev.get("output"))
     return None
 
 

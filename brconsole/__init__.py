@@ -12,4 +12,4 @@
     locate.py  blender.exe 探测（文件系统扫描，不用注册表）
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

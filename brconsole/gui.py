@@ -24,10 +24,13 @@ from tkinter import filedialog, messagebox, ttk
 from . import locate, theme
 from .cli import parse_frames
 from .core import RenderJob
-from .guimodel import (DEVICES, ENGINES, FORMATS, RESTART_VALUES, FormModel,
-                       LogModel, ProgressModel, event_line, guess_state_path,
+from .guimodel import (DEFAULT_RESTART_OPTION, DEVICES, ENGINES, FORMATS,
+                       RESTART_OPTIONS, SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
+                       SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
+                       event_line, fields_from_detail, guess_state_path, scene_to_config,
                        state_summary)
-from .inspect import output_template_from, read_blend_info, summarize as summarize_blend
+from .inspect import (read_blend_info, scene_detail, scene_names,
+                      summarize as summarize_blend)
 
 POLL_MS = 80
 LOG_MAX_LINES = 4000
@@ -79,6 +82,7 @@ class App(object):
         self.stopping = False
         self._inspected_path = None      # 已经读过配置的工程，避免重复读
         self._inspecting = False
+        self._scene_info = None          # 最近一次读到的工程配置（含各场景详情）
 
         root.title("%s · 无头渲染控制台" % TITLE)
         _apply_icon(root)
@@ -108,6 +112,7 @@ class App(object):
         box.columnconfigure(1, weight=1)          # 只有主输入列吃掉多余宽度
 
         self.v_blend = tk.StringVar()
+        self.v_scene = tk.StringVar(value=SCENE_NEED_READ_LABEL)
         self.v_blender = tk.StringVar()
         self.v_output = tk.StringVar()
         self.v_frames = tk.StringVar()
@@ -123,7 +128,7 @@ class App(object):
         self.v_format = tk.StringVar(value=FORMATS[0][1])
         self.v_resume = tk.BooleanVar(value=True)
         self.v_native = tk.BooleanVar(value=False)
-        self.v_restarts = tk.StringVar(value="5")
+        self.v_restarts = tk.StringVar(value=DEFAULT_RESTART_OPTION)
         self.v_no_progress = tk.StringVar(value="3")
         self.v_attempts = tk.StringVar(value="3")
 
@@ -134,6 +139,17 @@ class App(object):
         self.ent_blend.bind("<FocusOut>", lambda _e: self.maybe_inspect())
         ttk.Button(box, text="浏览…", width=9, command=self.pick_blend).grid(
             row=r, column=4, **pad)
+
+        r += 1
+        ttk.Label(box, text="场景").grid(row=r, column=0, sticky="w", **pad)
+        self.cmb_scene = ttk.Combobox(box, textvariable=self.v_scene, width=26,
+                                      state="disabled", values=[SCENE_NEED_READ_LABEL])
+        self.cmb_scene.grid(row=r, column=1, sticky="w", **pad)
+        self.cmb_scene.bind("<<ComboboxSelected>>", self.on_scene_change)
+        self.lbl_scene = ttk.Label(
+            box, text="读取工程配置后可用；工程里只有一个场景时不用管它",
+            style="Muted.TLabel")
+        self.lbl_scene.grid(row=r, column=2, columnspan=2, sticky="w", **pad)
 
         r += 1
         ttk.Label(box, text="Blender").grid(row=r, column=0, sticky="w", **pad)
@@ -195,8 +211,8 @@ class App(object):
         ttk.Checkbutton(opts, text="从断点续跑（未完成的帧接着渲染）",
                         variable=self.v_resume).pack(side="left")
         ttk.Label(opts, text="崩溃后重启").pack(side="left", padx=(12, 2))
-        ttk.Combobox(opts, textvariable=self.v_restarts, width=18, state="readonly",
-                     values=RESTART_VALUES).pack(side="left")
+        ttk.Combobox(opts, textvariable=self.v_restarts, width=22, state="readonly",
+                     values=RESTART_OPTIONS).pack(side="left")
         ttk.Label(opts, text="单帧最多尝试").pack(side="left", padx=(12, 2))
         ttk.Entry(opts, textvariable=self.v_attempts, width=4).pack(side="left")
 
@@ -330,9 +346,13 @@ class App(object):
 
         self._inspecting = True
         self._inspected_path = blend
+        # 换工程了：旧工程的场景列表立刻作废，读完再填（否则会拿旧场景名去渲染）
+        self._scene_info = None
+        self._reset_scene_combo()
         self.btn_inspect.configure(state="disabled")
         self.lbl_inspect.configure(text="正在读取工程配置…", style="Muted.TLabel")
-        self.log.add("读取工程配置：%s" % os.path.basename(blend))
+        self.log.add("读取工程配置：%s（一次会把工程里所有场景都读出来）"
+                     % os.path.basename(blend))
         threading.Thread(target=self._inspect_worker, args=(blender, blend),
                          daemon=True).start()
 
@@ -351,46 +371,94 @@ class App(object):
             self.lbl_inspect.configure(text="读取失败（可手填下面的参数）",
                                        style="Muted.TLabel")
             self.log.add("! 读取工程配置失败：%s" % msg.replace("\n", " "))
+            self._scene_info = None
+            self._reset_scene_combo()
             return
 
-        self.v_start.set(str(info.get("frame_start", self.v_start.get())))
-        self.v_end.set(str(info.get("frame_end", self.v_end.get())))
-        self.v_step.set(str(info.get("frame_step", 1)))
-        engine = (info.get("engine") or "").upper()
-        if engine in [v for _, v in ENGINES]:
-            self.v_engine.set(engine)
-        if info.get("samples"):
-            self.v_samples.set(str(info["samples"]))
-        # 设备：只有能确定才改（Cycles 的 GPU 后端名来自偏好设置）
-        if (info.get("cycles_device") or "").upper() == "CPU":
-            self.v_device.set("CPU")
-        else:
-            cdt = (info.get("compute_device_type") or "").upper()
-            if cdt in [v for _, v in DEVICES]:
-                self.v_device.set(cdt)
-        res = info.get("resolution") or []
-        if len(res) == 2:
-            self.v_w.set(str(res[0]))
-            self.v_h.set(str(res[1]))
-        if info.get("resolution_percentage"):
-            self.v_pct.set(str(info["resolution_percentage"]))
-        fmt = (info.get("file_format") or "").upper()
-        if fmt in [v for _, v in FORMATS]:
-            self.v_format.set(fmt)
-        tpl = output_template_from(info.get("output_path"), self.v_blend.get().strip())
-        if tpl:
-            self.v_output.set(tpl)
+        self._scene_info = info
+        names = scene_names(info)
+        active = info.get("scene") or ""
+        # 顶层字段就是「激活场景」那一份，直接拿来填表单
+        self._fill_from_detail(info, active)
 
-        short = "%s · %s · %sx%s · 采样 %s · 帧 %s-%s" % (
-            info.get("engine"), info.get("scene"),
-            (res or [0, 0])[0], (res or [0, 0])[1], info.get("samples"),
-            info.get("frame_start"), info.get("frame_end"))
-        self.lbl_inspect.configure(text="已读取：" + short, style="OK.TLabel")
+        res = info.get("resolution") or [0, 0]
+        self.lbl_inspect.configure(
+            text="已读取：%s · 场景 %s · %sx%s · 采样 %s · 帧 %s-%s" % (
+                info.get("engine"), active, res[0], res[1],
+                "-" if info.get("samples") is None else info.get("samples"),
+                info.get("frame_start"), info.get("frame_end")),
+            style="OK.TLabel")
         self.log.add("已读取工程配置：" + summarize_blend(info))
-        scenes = info.get("scenes") or []
-        if len(scenes) > 1:
-            self.log.add("注意：工程里有多个场景 %s，当前只读第一条（%s）"
-                         % (scenes, info.get("scene")))
+        self._update_scene_combo(names, active)
+        self._report_scene_camera(info, active)
+
+    def _fill_from_detail(self, detail, name=""):
+        """按一个场景的配置重填表单（引擎/采样/分辨率/帧范围/输出路径都是 per-scene 的）。"""
+        fields = fields_from_detail(detail, self.v_blend.get().strip())
+        for key, var in (("start", self.v_start), ("end", self.v_end),
+                         ("step", self.v_step), ("engine", self.v_engine),
+                         ("samples", self.v_samples), ("device", self.v_device),
+                         ("width", self.v_w), ("height", self.v_h),
+                         ("pct", self.v_pct), ("file_format", self.v_format),
+                         ("output", self.v_output)):
+            if key in fields:
+                var.set(fields[key])
+        return fields
+
+    def _update_scene_combo(self, names, active):
+        """场景下拉：只有一个场景时只显示名字，多个时可切换。"""
+        if not names:
+            self._reset_scene_combo()
+            return
+        self.cmb_scene.configure(values=names, state="readonly")
+        self.v_scene.set(active if active in names else names[0])
+        if len(names) == 1:
+            self.lbl_scene.configure(text="工程里只有这一个场景", style="Muted.TLabel")
+        else:
+            self.lbl_scene.configure(
+                text="工程有 %d 个场景，可切换（切换后参数按该场景重填）" % len(names),
+                style="OK.TLabel")
+            self.log.add("注意：工程里有 %d 个场景：%s。当前用「%s」（Blender 里激活的那个），"
+                         "可在「场景」里切换。" % (len(names), "、".join(names), active))
+
+    def _reset_scene_combo(self):
+        self.cmb_scene.configure(values=[SCENE_NEED_READ_LABEL], state="disabled")
+        self.v_scene.set(SCENE_NEED_READ_LABEL)
+        self.lbl_scene.configure(text="读取工程配置后可用；工程里只有一个场景时不用管它",
+                                 style="Muted.TLabel")
+
+    def _report_scene_camera(self, detail, name):
+        """没有相机的场景 Blender 会直接拒绝渲染 —— 早点说，别等按下开始才报错。"""
+        if detail and not detail.get("camera"):
+            self.log.add("! 场景「%s」没有设置相机，渲染这个场景会失败（在 Blender 里给它指定相机）"
+                         % name)
+
+    def on_scene_change(self, _event=None):
+        """切换场景：按该场景的配置重填表单（不用再起一次 Blender）。"""
+        name = self.v_scene.get()
+        if name in SCENE_PLACEHOLDERS:
+            return
+        info = self._scene_info or {}
+        if os.path.abspath(info.get("blend") or "") != os.path.abspath(self.v_blend.get().strip()):
+            self.log.add("! 换过工程了，请点「读取工程配置」重新读一次再切换场景")
+            return
+        detail = scene_detail(info, name)
+        if detail is None:
+            self.log.add("! 读到的配置里没有场景「%s」，请点「读取工程配置」重新读一次" % name)
+            return
+
+        self._fill_from_detail(detail, name)
+        res = detail.get("resolution") or [0, 0]
+        self.lbl_inspect.configure(
+            text="场景 %s：%s · %sx%s · 采样 %s · 帧 %s-%s" % (
+                name, detail.get("engine"), res[0], res[1],
+                "-" if detail.get("samples") is None else detail.get("samples"),
+                detail.get("frame_start"), detail.get("frame_end")),
+            style="OK.TLabel")
+        self.log.add("已切换到场景 %s（引擎 %s · %sx%s · 帧 %s-%s）"
+                     % (name, detail.get("engine"), res[0], res[1],
+                        detail.get("frame_start"), detail.get("frame_end")))
+        self._report_scene_camera(detail, name)
 
     def pick_output(self):
         d = filedialog.askdirectory(title="选择输出目录")
@@ -428,6 +496,7 @@ class App(object):
     # ---------------- 启动 / 停止 ----------------
     def _collect_form(self):
         self.form.blend = self.v_blend.get()
+        self.form.scene = self.v_scene.get()
         self.form.blender = self.v_blender.get()
         self.form.output = self.v_output.get()
         self.form.frames = self.v_frames.get()
@@ -463,6 +532,11 @@ class App(object):
             messagebox.showerror("配置有问题", "blender.exe 不存在：%s" % blender)
             return
 
+        bad = self._scene_conflict()
+        if bad:
+            messagebox.showerror("配置有问题", bad)
+            return
+
         self.job = RenderJob(cfg, blender, cmd_factory=self.cmd_factory)
         self.stopping = False
         self.btn_start.configure(state="disabled")
@@ -470,7 +544,26 @@ class App(object):
         self.pb["value"] = 0
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
-        self._log("开始渲染：%s（%d 帧）" % (cfg.blend, len(cfg.frames)))
+        self._log("开始渲染：%s%s（%d 帧）"
+                  % (cfg.blend, "（场景 %s）" % cfg.scene if cfg.scene else "", len(cfg.frames)))
+
+    def _scene_conflict(self):
+        """选了场景、但该工程里没这个名字 → 拦下来。
+
+        为什么要在界面拦：命令行 `-S 不存在的场景` 时 Blender **只打一行英文提示就
+        照常渲染默认场景、退出码还是 0**（实测 5.2.2），不拦就会静默渲出一整套错图。
+        """
+        scene = scene_to_config(self.v_scene.get())
+        info = self._scene_info
+        if not scene or not info:
+            return ""
+        if os.path.abspath(info.get("blend") or "") != os.path.abspath(self.v_blend.get().strip()):
+            return ""                      # 配置是上一个工程读的，别拿它下判断
+        names = scene_names(info)
+        if names and scene not in names:
+            return ("工程里没有场景「%s」。\n\n现有场景：%s\n\n"
+                    "点「读取工程配置」刷新一遍再选。" % (scene, "、".join(names)))
+        return ""
 
     def _worker(self):
         """后台线程：只负责跑任务，事件一律入队。"""

@@ -16,6 +16,7 @@ import glob
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -113,7 +114,7 @@ def check(name, ok, detail=""):
 
 def case_plain_render(blend, out_dir):
     """场景一：完整跑一轮，6 帧全出。"""
-    log("\n[1/5] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
+    log("\n[1/6] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "6", "-E", "CYCLES", "--samples", "8",
@@ -133,7 +134,7 @@ def case_plain_render(blend, out_dir):
 
 def case_kill_and_resume(blend, out_dir):
     """场景二：渲染中途杀掉 Blender，验证会自动重启并从断点接上。"""
-    log("\n[2/5] 中途杀掉 Blender，验证崩溃续跑")
+    log("\n[2/6] 中途杀掉 Blender，验证崩溃续跑")
     clean(out_dir)
     # 每帧要够慢（~1s），否则检测循环会一帧都抓不到中间态，等于没测到崩溃
     cmd = [PY, os.path.join(ROOT, "main.py"), blend, "-s", "1", "-e", "6",
@@ -187,7 +188,7 @@ def case_kill_and_resume(blend, out_dir):
 
 def case_eevee(blend, out_dir):
     """场景三：切 EEVEE，验证引擎别名（5.2 里可能叫 BLENDER_EEVEE_NEXT）能落地。"""
-    log("\n[3/5] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
+    log("\n[3/6] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "2", "-E", "BLENDER_EEVEE", "--samples", "16",
@@ -208,7 +209,7 @@ def case_eevee(blend, out_dir):
 
 def case_inspect(blend):
     """场景四：只读工程配置（不渲染）——验证 inspect.py 的 bpy 取数逻辑。"""
-    log("\n[4/5] 读取工程配置（无头 Blender 读 .blend，不渲染）")
+    log("\n[4/6] 读取工程配置（无头 Blender 读 .blend，不渲染）")
     from brconsole.inspect import output_template_from, read_blend_info
     t0 = time.time()
     info = read_blend_info(BLENDER, blend)
@@ -230,6 +231,110 @@ def case_inspect(blend):
     return ok, ""
 
 
+MULTI_SCENE_SCRIPT = r'''
+import sys
+import bpy
+
+path = sys.argv[sys.argv.index("--") + 1]
+
+
+def setup(sc, res, frames, filepath):
+    cam_data = bpy.data.cameras.new(sc.name + "_cam")
+    cam = bpy.data.objects.new(sc.name + "_cam", cam_data)
+    sc.collection.objects.link(cam)
+    sc.camera = cam                 # 没有相机的场景 Blender 直接拒绝渲染
+    sc.render.engine = "BLENDER_WORKBENCH"
+    sc.render.resolution_x, sc.render.resolution_y = res
+    sc.render.resolution_percentage = 100
+    sc.render.image_settings.file_format = "PNG"
+    sc.frame_start, sc.frame_end = frames
+    sc.render.filepath = filepath
+
+
+a = bpy.data.scenes[0]              # 最后一个场景删不掉，所以是给默认场景改名
+a.name = "SceneA"
+setup(a, (64, 48), (1, 2), "//outA/frame_")
+
+b = bpy.data.scenes.new("SceneB")
+setup(b, (128, 96), (10, 11), "//outB/shot_")
+
+bpy.ops.wm.save_as_mainfile(filepath=path)
+print("MULTI-SCENE-SAVED", path)
+'''
+
+
+def make_multi_scene(path):
+    """造一个**双场景**工程：SceneA=64x48、SceneB=128x96，各带一个相机。
+
+    激活场景保持默认的 SceneA —— 这样"指定了一个不存在的场景名"时，能靠产物尺寸
+    看出 Blender 是不是偷偷回落到了 SceneA。
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    script = os.path.join(WORK, "_mk_multi_scene.py")
+    with open(script, "w", encoding="utf-8", newline="\n") as f:
+        f.write(MULTI_SCENE_SCRIPT)
+    p = subprocess.run([BLENDER, "-b", "--factory-startup", "-P", script, "--", path],
+                       capture_output=True)
+    if not os.path.exists(path):
+        raise SystemExit("建多场景工程失败，rc=%s\n%s"
+                         % (p.returncode,
+                            p.stdout.decode("utf-8", "replace")[-800:]))
+    return path
+
+
+def png_size(path):
+    """读 PNG 头里的宽高 —— 用来核对"渲的是哪个场景"，不引第三方图像库。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(33)
+    except OSError:
+        return None
+    if head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return struct.unpack(">II", head[16:24])
+
+
+def case_multi_scene(blend, out_dir):
+    """场景六：多场景直选。
+
+    两个场景的分辨率刻意不同（64x48 / 128x96），所以**产物尺寸就是"渲的是哪个场景"
+    的硬证据**，比看日志可靠。另单验一条：场景名写错时 Blender 会静默回落到默认场景
+    （退出码仍是 0），我们必须有明确告警，不能让它悄悄过去。
+
+    ⚠️ 这一项**不能**传 `--res`：一覆盖分辨率，两个场景就分不出来了。
+    """
+    log("\n[6/6] 多场景：-S 选场景（含场景名写错时的告警与回落）")
+    ok = True
+    for name, want in (("SceneA", (64, 48)), ("SceneB", (128, 96))):
+        d = os.path.join(out_dir, name.lower())
+        clean(d)
+        os.makedirs(d, exist_ok=True)
+        rc, out = run_cli([blend, "-S", name, "-f", "1", "--blender", BLENDER,
+                           "-o", os.path.join(d, "s_####"),
+                           "--state", os.path.join(d, ".state.json"),
+                           "--no-resume"], timeout=300)
+        pngs = sorted(glob.glob(os.path.join(d, "s_*.png")))
+        got = png_size(pngs[0]) if pngs else None
+        log("  [%s] rc=%s | 产物 %s" % (name, rc, got))
+        ok &= check("  %s：渲出 %dx%d" % (name, want[0], want[1]), got == want,
+                    "实际 %s，%d 张" % (got, len(pngs)))
+        ok &= check("  %s：命令行回显了场景名" % name, ("场景 %s" % name) in out)
+
+    d = os.path.join(out_dir, "badname")
+    clean(d)
+    os.makedirs(d, exist_ok=True)
+    rc, out = run_cli([blend, "-S", "NoSuchScene", "-f", "1", "--blender", BLENDER,
+                       "-o", os.path.join(d, "s_####"),
+                       "--state", os.path.join(d, ".state.json"),
+                       "--no-resume"], timeout=300)
+    pngs = sorted(glob.glob(os.path.join(d, "s_*.png")))
+    got = png_size(pngs[0]) if pngs else None
+    log("  [NoSuchScene] rc=%s | 产物 %s（默认场景 SceneA = 64x48）" % (rc, got))
+    ok &= check("  场景名写错：有明确告警", "没有场景" in out)
+    ok &= check("  场景名写错：回落到默认场景并照常渲完", got == (64, 48), str(got))
+    return ok, ""
+
+
 CANARY_FAILS = 6        # 故意大于默认上限 5 —— 这样两个分支的结果才会分叉
 
 
@@ -240,7 +345,7 @@ def make_canary(path, blender, fails=CANARY_FAILS):
     什么时候被杀，每次跑都不一样，实测崩溃次数在 5~7 之间浮动，断言必然时灵时不灵。
     而"一直重启"要验证的恰恰是**次数**，所以把"崩"变成确定事件；真渲染仍由真 Blender 完成。
 
-    （外部 taskkill 的真实场景另有 [2/5] 覆盖，两者互补。）
+    （外部 taskkill 的真实场景另有 [2/6] 覆盖，两者互补。）
     """
     # ⚠️ 这里用了 % 风格格式化，所以批处理自己的 % 全部要写成 %% 转义；
     # ⚠️ 转交路径必须是反斜杠 —— cmd.exe 不认正斜杠，写成 `C:/...exe` 会找不到而返回 1，
@@ -273,7 +378,7 @@ def case_unlimited_restart(blend12, out_dir, fails=CANARY_FAILS):
     两侧都关掉 no-progress 护栏（`--max-no-progress 0`），否则护栏会先于重启上限生效，
     分不清到底是谁让任务停下的 —— 少一个变量的对照才说明问题。
     """
-    log("\n[5/5] 「一直重启」A/B 对照：同一个「连崩 %d 次」启动器，两种上限" % fails)
+    log("\n[5/6] 「一直重启」A/B 对照：同一个「连崩 %d 次」启动器，两种上限" % fails)
     ok = True
 
     for tag, limit, expect_giveup in (("A 上限 5 次", "5", True),
@@ -316,7 +421,7 @@ def case_unlimited_restart(blend12, out_dir, fails=CANARY_FAILS):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留产物目录")
-    ap.add_argument("--only", choices=["1", "2", "3", "4", "5"], help="只跑某一个场景")
+    ap.add_argument("--only", choices=["1", "2", "3", "4", "5", "6"], help="只跑某一个场景")
     args = ap.parse_args()
 
     if not os.path.exists(BLENDER):
@@ -325,7 +430,8 @@ def main():
     os.makedirs(WORK, exist_ok=True)
     blend = make_scene(os.path.join(WORK, "smoke.blend"))
     blend12 = make_scene(os.path.join(WORK, "smoke12.blend"), frames=12)
-    log("场景文件：%s / %s" % (blend, blend12))
+    blend_multi = make_multi_scene(os.path.join(WORK, "multi.blend"))
+    log("场景文件：%s / %s / %s" % (blend, blend12, blend_multi))
 
     results = []
     try:
@@ -339,6 +445,8 @@ def main():
             results.append(case_inspect(blend))
         if args.only in (None, "5"):
             results.append(case_unlimited_restart(blend12, os.path.join(WORK, "out5")))
+        if args.only in (None, "6"):
+            results.append(case_multi_scene(blend_multi, os.path.join(WORK, "out6")))
     finally:
         if not args.keep:
             try:

@@ -60,6 +60,8 @@ def build_parser():
     p.add_argument("-e", "--end", type=int, help="结束帧")
     p.add_argument("--step", type=int, default=1, help="帧步长（默认 1）")
     p.add_argument("-f", "--frames", help="显式帧列表，如 1-10,15,20-25")
+    p.add_argument("-S", "--scene",
+                   help="渲染哪个场景（工程里有多个场景时用）；不给就用工程里激活的那个")
     p.add_argument("-o", "--output", help="输出模板（含 ####，如 out/frame_####）或输出目录")
     p.add_argument("-E", "--engine", help="引擎：CYCLES / BLENDER_EEVEE / BLENDER_WORKBENCH")
     p.add_argument("--samples", type=int, help="采样数（Cycles 渲染采样 / EEVEE TAA）")
@@ -155,7 +157,8 @@ class ConsoleReporter(object):
             self._line("  实际设置：引擎 %s | %sx%s @%s%% | 采样 %s | 输出 %s"
                        % (ev.get("engine"), (ev.get("res") or [0, 0])[0],
                           (ev.get("res") or [0, 0])[1], ev.get("pct"),
-                          ev.get("samples"), ev.get("output")))
+                          "-" if ev.get("samples") is None else ev.get("samples"),
+                          ev.get("output")))
             return
         if kind == "job_start":
             if ev.get("unlimited_restarts"):
@@ -164,9 +167,10 @@ class ConsoleReporter(object):
                 policy = "重启次数不限（%s）" % guard
             else:
                 policy = "最多重启 %s 次" % ev.get("max_restarts")
-            self._line("任务开始：%s\n  帧数 %d | 输出 %s | 断点 %s | %s"
+            self._line("任务开始：%s\n  帧数 %d | 输出 %s | 断点 %s | %s | 场景 %s"
                        % (ev.get("blend"), ev.get("total"), ev.get("output"),
-                          ev.get("state_path"), policy))
+                          ev.get("state_path"), policy,
+                          ev.get("scene") or "（工程默认）"))
             return
         if kind == "job_done":
             self._line("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s"
@@ -272,6 +276,7 @@ def main(argv=None):
         blend=blend, frames=frames, output_template=out, engine=args.engine,
         samples=args.samples, device=args.device, resolution=resolution,
         resolution_percentage=args.pct, file_format=args.file_format,
+        scene=args.scene,
         state_path=args.state, log_path=args.log,
         max_restarts=parse_restart_limit(args.max_restarts, default=5),
         max_frame_attempts=args.max_frame_attempts,
