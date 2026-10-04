@@ -36,6 +36,51 @@ class BITMAPINFO(ctypes.Structure):
                 ("bmiColors", wintypes.DWORD * 3)]
 
 
+def list_windows():
+    """列出所有可见的顶层窗口标题（排查"找不到窗口"用）。"""
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    P = ctypes.c_void_p
+    user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(ctypes.c_bool, P, P), P]
+    user32.GetWindowTextLengthW.argtypes = [P]
+    user32.GetWindowTextW.argtypes = [P, ctypes.c_wchar_p, ctypes.c_int]
+    user32.IsWindowVisible.argtypes = [P]
+    out = []
+
+    def cb(h, _):
+        if user32.IsWindowVisible(h):
+            n = user32.GetWindowTextLengthW(h)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(h, buf, n + 1)
+                if buf.value.strip():
+                    out.append(buf.value)
+        return True
+
+    user32.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, P, P)(cb), None)
+    return out
+
+
+def find_window(title):
+    """先按完整标题精确匹配，找不到再退化成**子串**匹配（大小写不敏感）。
+
+    为什么需要退化：窗口标题经常带着动态后缀
+    （如 `blender-render-console · 无头渲染控制台`），
+    精确匹配要求调用方把整串抄全，改一次标题就抓不到。
+    """
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    P = ctypes.c_void_p
+    user32.FindWindowW.argtypes = [P, ctypes.c_wchar_p]
+    user32.FindWindowW.restype = P
+    hwnd = user32.FindWindowW(None, title)
+    if hwnd:
+        return hwnd
+    needle = title.lower()
+    for w in list_windows():
+        if needle in w.lower():
+            return user32.FindWindowW(None, w)
+    return None
+
+
 def grab(window_title=None):
     """返回 (width, height, RGB 字节串，按上到下排列)。
 
@@ -68,9 +113,10 @@ def grab(window_title=None):
 
     hwnd = None
     if window_title:
-        hwnd = user32.FindWindowW(None, window_title)
+        hwnd = find_window(window_title)
         if not hwnd:
-            raise SystemExit("找不到窗口：%s" % window_title)
+            raise SystemExit("找不到窗口：%s\n（可用标题见 tools/capture_screen.py --list）"
+                             % window_title)
         user32.SetForegroundWindow(hwnd)
 
     if hwnd:
@@ -160,6 +206,10 @@ def main():
     args = [a for a in sys.argv[1:]]
     title = None
     probes = []
+    if "--list" in args:
+        for w in list_windows():
+            print(w)
+        return
     for flag in ("--window", "--probe"):
         while flag in args:
             i = args.index(flag)

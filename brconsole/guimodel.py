@@ -12,10 +12,16 @@
 import os
 from collections import deque
 
+from .core import parse_restart_limit
 from .eta import fmt_duration
 from .state import JobState
 
 KEEP = ""          # 下拉框里"保持工程设置"对应的实际值就是空
+
+# 「最多重启几次」下拉选项：(显示文案, 实际值)；unlimited = 一直重启直到渲完
+RESTART_CHOICES = [("1 次", "1"), ("3 次", "3"), ("5 次（默认）", "5"), ("10 次", "10"),
+                   ("一直重启，直到全部渲完", "unlimited")]
+RESTART_VALUES = [v for _, v in RESTART_CHOICES]
 ENGINES = [("保持工程设置（用 .blend 里的）", KEEP), ("Cycles", "CYCLES"),
            ("EEVEE", "BLENDER_EEVEE"), ("Workbench", "BLENDER_WORKBENCH")]
 DEVICES = [("保持工程设置", KEEP), ("CPU", "CPU"), ("CUDA", "CUDA"),
@@ -44,6 +50,7 @@ class FormModel(object):
         self.file_format = kw.get("file_format", KEEP)
         self.resume = kw.get("resume", True)
         self.max_restarts = kw.get("max_restarts", "5")
+        self.max_no_progress = kw.get("max_no_progress", "3")
         self.max_frame_attempts = kw.get("max_frame_attempts", "3")
         self.show_native = kw.get("show_native", False)
 
@@ -119,11 +126,13 @@ class FormModel(object):
         if bool(width) != bool(height):
             errors.append("分辨率要填就宽高都填")
 
-        for label, v in (("最多重启次数", self.max_restarts),
-                         ("单帧最多尝试", self.max_frame_attempts)):
-            n = opt_int(v, label)
-            if n is not None and n < 0:
-                errors.append("%s 不能是负数" % label)
+        attempts = opt_int(self.max_frame_attempts, "单帧最多尝试")
+        if attempts is not None and attempts < 0:
+            attempts = 0                       # 负数没有意义，按「不限」处理
+            warns.append("单帧最多尝试填了负数，按「不限」处理")
+        no_progress = opt_int(self.max_no_progress, "连续无进展上限")
+        if no_progress is not None and no_progress < 0:
+            errors.append("连续无进展上限不能是负数")
 
         if errors:
             return None, errors, warns
@@ -134,9 +143,10 @@ class FormModel(object):
             device=self.device or None, resolution=resolution,
             resolution_percentage=pct, file_format=self.file_format or None,
             state_path=None, log_path=None,
-            max_restarts=int(self.max_restarts or 5),
-            max_frame_attempts=int(self.max_frame_attempts or 3),
-            resume=bool(self.resume))
+            max_restarts=parse_restart_limit(self.max_restarts, default=5),
+            max_frame_attempts=3 if attempts is None else attempts,
+            resume=bool(self.resume),
+            max_no_progress_rounds=int(self.max_no_progress or 3))
         return cfg, errors, warns
 
     def as_dict(self):
@@ -214,6 +224,8 @@ class ProgressModel(object):
                 ev.get("ok"), ev.get("failed"))
         elif kind == "give_up":
             self.last_message = "重启次数已达上限，停止"
+        elif kind == "no_progress":
+            self.last_message = "连续 %s 轮没有任何帧推进，停止" % ev.get("rounds")
         elif kind == "warn":
             self.last_message = ev.get("msg", "")
         elif kind == "job_done":
@@ -338,6 +350,10 @@ def event_line(kind, ev):
         return "! %s" % ev.get("msg", "")
     if kind == "give_up":
         return "✗ 重启次数已达上限，停止（剩余 %s）" % ev.get("remaining")
+    if kind == "no_progress":
+        return ("✗ 连续 %s 轮一帧都没推进（已完成 %s/%s），停止 —— 重试解决不了的问题，"
+                "看看是不是工程/显存本身有问题（剩余 %s）"
+                % (ev.get("rounds"), ev.get("done"), ev.get("total"), ev.get("remaining")))
     if kind == "resume":
         return "断点续跑：已完成 %s/%s 帧" % (len(ev.get("done") or []), ev.get("total"))
     if kind == "settings":

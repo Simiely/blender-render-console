@@ -35,20 +35,20 @@ def log(msg):
     print(msg, flush=True)
 
 
-def make_scene(path):
+def make_scene(path, frames=6, samples=8):
     """用 --factory-startup 造一个极简场景（不依赖任何已有 .blend）。"""
     expr = (
         "import bpy;"
         "sc=bpy.context.scene;"
         "sc.render.engine='CYCLES';"
         "sc.cycles.device='CPU';"
-        "sc.cycles.samples=8;"
+        "sc.cycles.samples=%d;"
         "sc.render.resolution_x=160;"
         "sc.render.resolution_y=120;"
         "sc.render.resolution_percentage=100;"
-        "sc.frame_start=1;sc.frame_end=6;"
+        "sc.frame_start=1;sc.frame_end=%d;"
         "sc.render.image_settings.file_format='PNG';"
-        "bpy.ops.wm.save_as_mainfile(filepath=r'%s')" % path
+        "bpy.ops.wm.save_as_mainfile(filepath=r'%s')" % (samples, frames, path)
     )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     p = subprocess.run([BLENDER, "-b", "--factory-startup", "--python-expr", expr],
@@ -113,7 +113,7 @@ def check(name, ok, detail=""):
 
 def case_plain_render(blend, out_dir):
     """场景一：完整跑一轮，6 帧全出。"""
-    log("\n[1/4] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
+    log("\n[1/5] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "6", "-E", "CYCLES", "--samples", "8",
@@ -133,7 +133,7 @@ def case_plain_render(blend, out_dir):
 
 def case_kill_and_resume(blend, out_dir):
     """场景二：渲染中途杀掉 Blender，验证会自动重启并从断点接上。"""
-    log("\n[2/4] 中途杀掉 Blender，验证崩溃续跑")
+    log("\n[2/5] 中途杀掉 Blender，验证崩溃续跑")
     clean(out_dir)
     # 每帧要够慢（~1s），否则检测循环会一帧都抓不到中间态，等于没测到崩溃
     cmd = [PY, os.path.join(ROOT, "main.py"), blend, "-s", "1", "-e", "6",
@@ -187,7 +187,7 @@ def case_kill_and_resume(blend, out_dir):
 
 def case_eevee(blend, out_dir):
     """场景三：切 EEVEE，验证引擎别名（5.2 里可能叫 BLENDER_EEVEE_NEXT）能落地。"""
-    log("\n[3/4] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
+    log("\n[3/5] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "2", "-E", "BLENDER_EEVEE", "--samples", "16",
@@ -208,7 +208,7 @@ def case_eevee(blend, out_dir):
 
 def case_inspect(blend):
     """场景四：只读工程配置（不渲染）——验证 inspect.py 的 bpy 取数逻辑。"""
-    log("\n[4/4] 读取工程配置（无头 Blender 读 .blend，不渲染）")
+    log("\n[4/5] 读取工程配置（无头 Blender 读 .blend，不渲染）")
     from brconsole.inspect import output_template_from, read_blend_info
     t0 = time.time()
     info = read_blend_info(BLENDER, blend)
@@ -230,10 +230,93 @@ def case_inspect(blend):
     return ok, ""
 
 
+CANARY_FAILS = 6        # 故意大于默认上限 5 —— 这样两个分支的结果才会分叉
+
+
+def make_canary(path, blender, fails=CANARY_FAILS):
+    """造一个「前 fails 次启动直接失败，之后原样转交真 Blender」的 .bat 启动器。
+
+    为什么不用"外部 taskkill"来制造崩溃：那依赖时序 —— blender 什么时候渲完、
+    什么时候被杀，每次跑都不一样，实测崩溃次数在 5~7 之间浮动，断言必然时灵时不灵。
+    而"一直重启"要验证的恰恰是**次数**，所以把"崩"变成确定事件；真渲染仍由真 Blender 完成。
+
+    （外部 taskkill 的真实场景另有 [2/5] 覆盖，两者互补。）
+    """
+    # ⚠️ 这里用了 % 风格格式化，所以批处理自己的 % 全部要写成 %% 转义；
+    # ⚠️ 转交路径必须是反斜杠 —— cmd.exe 不认正斜杠，写成 `C:/...exe` 会找不到而返回 1，
+    #    那样"永远崩"和"该崩几次"就分不清了（踩过一次）。
+    blender_native = blender.replace("/", "\\")
+    bat = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        'set "F=%%~dp0runs.txt"\r\n'
+        "set N=0\r\n"
+        # 用 for /f 读计数器而不是 set /p：set /p 会把行尾的 CR 一起吃进来，
+        # 之后 `set /a N=%N%+1` 直接算错（实测计数永远停在 1，四次要崩的变成"全都崩"）
+        'if exist "%%F%%" for /f "usebackq delims=" %%%%i in ("%%F%%") do set N=%%%%i\r\n'
+        "set /a N=%%N%%+1\r\n"
+        '> "%%F%%" echo %%N%%\r\n'
+        "if %%N%% LEQ %d exit /b 1\r\n"
+        '"%s" %%*\r\n' % (fails, blender_native)
+    )
+    with open(path, "w", encoding="ascii", newline="") as f:
+        f.write(bat)
+    return path
+
+
+def case_unlimited_restart(blend12, out_dir, fails=CANARY_FAILS):
+    """场景五：「一直重启」的 A/B 对照 —— 同样的连续崩溃，不同旋钮，结果必须分叉。
+
+    A：`--max-restarts 5`（默认上限）→ 必须放弃，一帧都渲不出来
+    B：`--max-restarts unlimited`   → 必须撑过全部崩溃，把 12 帧渲完
+
+    两侧都关掉 no-progress 护栏（`--max-no-progress 0`），否则护栏会先于重启上限生效，
+    分不清到底是谁让任务停下的 —— 少一个变量的对照才说明问题。
+    """
+    log("\n[5/5] 「一直重启」A/B 对照：同一个「连崩 %d 次」启动器，两种上限" % fails)
+    ok = True
+
+    for tag, limit, expect_giveup in (("A 上限 5 次", "5", True),
+                                      ("B 不限次数", "unlimited", False)):
+        d = os.path.join(out_dir, tag[:1])
+        clean(d)
+        os.makedirs(d, exist_ok=True)
+        canary = make_canary(os.path.join(d, "canary.bat"), BLENDER, fails)
+        rc, out = run_cli([blend12, "-s", "1", "-e", "12",
+                           "-E", "CYCLES", "--samples", "8", "--res", "160x120",
+                           "--device", "CPU", "--blender", canary,
+                           "--max-restarts", limit, "--max-no-progress", "0",
+                           "-o", os.path.join(d, "smoke_####"),
+                           "--state", os.path.join(d, ".state.json"),
+                           "--log", os.path.join(d, "blender.log")], timeout=600)
+        pngs = sorted(glob.glob(os.path.join(d, "smoke_*.png")))
+        m = re.search(r"重启 (\d+) 次", out)
+        restarts = int(m.group(1)) if m else -1
+        log("  [%s] 重启 %s 次 | 产出 %d 张 | rc=%s" % (tag, restarts, len(pngs), rc))
+
+        if expect_giveup:
+            ok &= check("  A：因「已达上限」停下", "已达上限" in out)
+            ok &= check("  A：一帧都没渲出来（上限确实咬住了）", len(pngs) == 0,
+                        "实际 %d 张" % len(pngs))
+        else:
+            ok &= check("  B：没有出现「已达上限」", "已达上限" not in out)
+            ok &= check("  B：启动时声明了「重启次数不限」", "重启次数不限" in out)
+            ok &= check("  B：重启 %d 次（已超过默认上限 5）" % fails, restarts >= fails,
+                        "实际 %s 次" % restarts)
+            ok &= check("  B：12 帧全部渲完", len(pngs) == 12, "实际 %d 张" % len(pngs))
+            ok &= check("  B：汇总为 完成 12/12", "完成 12/12" in out,
+                        " | ".join(l.strip() for l in out.splitlines()
+                                   if "任务结束" in l)[:160])
+        for l in out.splitlines():
+            if any(k in l for k in ("任务开始", "重启", "任务结束", "已达上限", "无进展")):
+                log("      %s" % l.strip())
+    return ok, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留产物目录")
-    ap.add_argument("--only", choices=["1", "2", "3", "4"], help="只跑某一个场景")
+    ap.add_argument("--only", choices=["1", "2", "3", "4", "5"], help="只跑某一个场景")
     args = ap.parse_args()
 
     if not os.path.exists(BLENDER):
@@ -241,7 +324,8 @@ def main():
 
     os.makedirs(WORK, exist_ok=True)
     blend = make_scene(os.path.join(WORK, "smoke.blend"))
-    log("场景文件：%s" % blend)
+    blend12 = make_scene(os.path.join(WORK, "smoke12.blend"), frames=12)
+    log("场景文件：%s / %s" % (blend, blend12))
 
     results = []
     try:
@@ -253,6 +337,8 @@ def main():
             results.append(case_eevee(blend, os.path.join(WORK, "out3")))
         if args.only in (None, "4"):
             results.append(case_inspect(blend))
+        if args.only in (None, "5"):
+            results.append(case_unlimited_restart(blend12, os.path.join(WORK, "out5")))
     finally:
         if not args.keep:
             try:

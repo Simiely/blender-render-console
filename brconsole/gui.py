@@ -24,8 +24,9 @@ from tkinter import filedialog, messagebox, ttk
 from . import locate, theme
 from .cli import parse_frames
 from .core import RenderJob
-from .guimodel import (DEVICES, ENGINES, FORMATS, FormModel, LogModel,
-                       ProgressModel, event_line, guess_state_path, state_summary)
+from .guimodel import (DEVICES, ENGINES, FORMATS, RESTART_VALUES, FormModel,
+                       LogModel, ProgressModel, event_line, guess_state_path,
+                       state_summary)
 from .inspect import output_template_from, read_blend_info, summarize as summarize_blend
 
 POLL_MS = 80
@@ -98,6 +99,7 @@ class App(object):
         self.v_resume = tk.BooleanVar(value=True)
         self.v_native = tk.BooleanVar(value=False)
         self.v_restarts = tk.StringVar(value="5")
+        self.v_no_progress = tk.StringVar(value="3")
         self.v_attempts = tk.StringVar(value="3")
 
         r = 0
@@ -167,16 +169,31 @@ class App(object):
         opts.grid(row=r, column=1, columnspan=3, sticky="w")
         ttk.Checkbutton(opts, text="从断点续跑（未完成的帧接着渲染）",
                         variable=self.v_resume).pack(side="left")
-        ttk.Label(opts, text="最多重启").pack(side="left", padx=(12, 2))
-        ttk.Entry(opts, textvariable=self.v_restarts, width=4).pack(side="left")
+        ttk.Label(opts, text="崩溃后重启").pack(side="left", padx=(12, 2))
+        ttk.Combobox(opts, textvariable=self.v_restarts, width=18, state="readonly",
+                     values=RESTART_VALUES).pack(side="left")
         ttk.Label(opts, text="单帧最多尝试").pack(side="left", padx=(12, 2))
         ttk.Entry(opts, textvariable=self.v_attempts, width=4).pack(side="left")
+
+        r += 1
+        opts_b = ttk.Frame(box)
+        opts_b.grid(row=r, column=1, columnspan=3, sticky="w")
+        ttk.Label(opts_b, text="连续这么多轮一帧都没推进就停").pack(side="left")
+        ttk.Entry(opts_b, textvariable=self.v_no_progress, width=4).pack(side="left", padx=3)
+        ttk.Label(opts_b, text="轮（“一直重启”的兜底，0=不限制）",
+                  style="Muted.TLabel").pack(side="left", padx=(2, 0))
 
         r += 1
         opts2 = ttk.Frame(box)
         opts2.grid(row=r, column=1, columnspan=3, sticky="w")
         ttk.Checkbutton(opts2, text="显示 Blender 原生输出（排错用，日志会长很多）",
                         variable=self.v_native).pack(side="left")
+        # 说明：下拉的取值 "unlimited" 是给 parse_restart_limit 读的，界面上显示的是
+        # 「一直重启，直到全部渲完」，所以旁边补一句人话解释
+        self.lbl_restart_note = ttk.Label(
+            opts2, text="选「一直重启，直到全部渲完」= 次数不限（仍受上面无进展轮数兜底）",
+            style="Muted.TLabel")
+        self.lbl_restart_note.pack(side="left", padx=(16, 0))
 
         r += 1
         info = ttk.Frame(box)
@@ -401,6 +418,7 @@ class App(object):
         self.form.file_format = self.v_format.get()
         self.form.resume = self.v_resume.get()
         self.form.max_restarts = self.v_restarts.get()
+        self.form.max_no_progress = self.v_no_progress.get()
         self.form.max_frame_attempts = self.v_attempts.get()
         self.form.show_native = self.v_native.get()
 

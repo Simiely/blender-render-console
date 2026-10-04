@@ -36,6 +36,8 @@ def main():
     p.add_argument("--exit-code", type=int, default=3)
     p.add_argument("--fail-first-run-only", action="store_true",
                    help="只在第一次启动时崩（靠 job.json 旁的 .fake_run_count 计次）")
+    p.add_argument("--fail-runs", type=int, default=0,
+                   help="前 N 次启动都在 --fail-at 帧崩，之后正常（测「一直重启直到完成」用）")
     p.add_argument("--sleep", type=float, default=0.05, help="每帧假装渲染多久")
     p.add_argument("--no-native", action="store_true", help="不吐原生行")
     p.add_argument("--eof-early", action="store_true", help="不发 all_done 就退出（模拟被杀）")
@@ -74,7 +76,10 @@ def main():
         emit("frame_start", frame=f, index=i, total=len(frames), path=path)
         time.sleep(args.sleep)
         if args.fail_at and f == args.fail_at:
-            if not args.fail_first_run_only or run_index <= 1:
+            crash_now = run_index <= 1 if args.fail_first_run_only else True
+            if args.fail_runs:
+                crash_now = run_index <= args.fail_runs
+            if crash_now:
                 native("Fra: %d | Mem: 6M | Sample 12/24" % f)
                 sys.stdout.flush()
                 sys.exit(args.exit_code)

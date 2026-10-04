@@ -18,7 +18,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from brconsole.core import JobConfig, RenderJob, default_cmd_factory  # noqa: E402
+from brconsole.core import (UNLIMITED, JobConfig, RenderJob,  # noqa: E402
+                            default_cmd_factory, parse_restart_limit)
 from brconsole.state import JobState  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_blender.py")
@@ -247,6 +248,87 @@ class TestFailureModes(_Base):
         st = JobState.load(self.state)
         self.assertIsNotNone(st)                    # 进度仍在，下次可续
         self.assertGreaterEqual(len(st.done), 1)
+
+
+class TestRestartPolicy(_Base):
+    """「最多重启几次」与「一直重启直到渲完」两种策略。"""
+
+    def test_unlimited_keeps_going_until_done(self):
+        """前 3 轮都在第 3 帧崩，第 4 轮正常 —— 无限重启应该跑到底。"""
+        # 单帧尝试次数也要放开：否则帧额度会先耗尽，「一直重启」形同虚设
+        job, cfg, events = self.make_job(
+            extra=["--fail-at", "3", "--fail-runs", "3"],
+            max_restarts=-1, max_no_progress_rounds=0, max_frame_attempts=0)
+        r = self.run_job(job, events)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["done"], [1, 2, 3, 4])
+        self.assertGreaterEqual(r["restarts"], 3)
+        self.assertEqual(len(self.produced()), 4)
+
+    def test_limited_restarts_still_stops(self):
+        """同样的崩法，但上限设 1 次 —— 到点就停，剩余帧留着下次续跑。"""
+        job, cfg, events = self.make_job(
+            extra=["--fail-at", "3", "--fail-runs", "3"],
+            max_restarts=1, max_no_progress_rounds=0)
+        r = self.run_job(job, events)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["restarts"], 2)          # 崩到第 2 次时已超上限
+        self.assertTrue(any(k == "give_up" for k, _ in events))
+        # 进度仍在，下次同一条命令能续跑
+        self.assertTrue(any(k == "frame_done" for k, _ in events))
+
+    def test_no_progress_guard_stops_unlimited_mode(self):
+        """一直崩在同一帧：无进展护栏必须兜住，否则「一直重启」就是死循环。"""
+        job, cfg, events = self.make_job(
+            extra=["--fail-at", "2"],
+            max_restarts=-1, max_no_progress_rounds=2, max_frame_attempts=99)
+        r = self.run_job(job, events)
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["stopped_by_no_progress"], r)
+        kinds = [k for k, _ in events]
+        self.assertIn("no_progress", kinds)
+        self.assertNotIn("give_up", kinds)          # 不是因为次数上限停的
+        self.assertLessEqual(r["restarts"], 4)      # 确实很快停下来了
+
+    def test_no_progress_guard_can_be_disabled(self):
+        job, cfg, events = self.make_job(extra=["--fail-at", "3", "--fail-runs", "2"],
+                                         max_restarts=-1, max_no_progress_rounds=0,
+                                         max_frame_attempts=0)
+        r = self.run_job(job, events)
+        self.assertTrue(r["ok"], r)
+
+    def test_progress_resets_the_counter(self):
+        """有推进就不该累计无进展轮数（每轮都完成一帧）。"""
+        job, cfg, events = self.make_job(extra=["--fail-at", "3", "--fail-runs", "2"],
+                                         max_restarts=-1, max_no_progress_rounds=2,
+                                         max_frame_attempts=0)
+        r = self.run_job(job, events)
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(r["stopped_by_no_progress"])
+
+
+class TestParseRestartLimit(unittest.TestCase):
+    def test_numeric(self):
+        self.assertEqual(parse_restart_limit("5"), 5)
+        self.assertEqual(parse_restart_limit(0), 0)
+        self.assertEqual(parse_restart_limit("10"), 10)
+
+    def test_unlimited_words(self):
+        for w in ("unlimited", "INFINITE", "无限", "一直", "-1", "-99", "none"):
+            self.assertEqual(parse_restart_limit(w), UNLIMITED, w)
+
+    def test_defaults(self):
+        self.assertEqual(parse_restart_limit(""), 5)
+        self.assertEqual(parse_restart_limit(None), 5)
+        self.assertEqual(parse_restart_limit("abc"), 5)
+
+    def test_config_flag(self):
+        cfg = JobConfig(blend="a.blend", frames=[1], output_template="o/f_####",
+                        max_restarts=UNLIMITED)
+        self.assertTrue(cfg.unlimited_restarts)
+        cfg2 = JobConfig(blend="a.blend", frames=[1], output_template="o/f_####",
+                         max_restarts=5)
+        self.assertFalse(cfg2.unlimited_restarts)
 
 
 class TestCmdFactory(unittest.TestCase):

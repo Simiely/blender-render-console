@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import locate
-from .core import JobConfig, RenderJob
+from .core import JobConfig, RenderJob, parse_restart_limit
 from .eta import fmt_duration
 
 
@@ -71,8 +71,12 @@ def build_parser():
     p.add_argument("--deep-scan", action="store_true", help="自动探测时连便携版目录一起扫（慢）")
     p.add_argument("--state", help="断点状态文件路径（默认输出目录下 .render_state.json）")
     p.add_argument("--log", help="Blender 原始输出落盘路径")
-    p.add_argument("--max-restarts", type=int, default=5, help="最多重启几次（默认 5）")
-    p.add_argument("--max-frame-attempts", type=int, default=3, help="单帧最多尝试几次（默认 3）")
+    p.add_argument("--max-restarts", default="5",
+                   help="最多重启几次；填 unlimited / -1 / 无限 = 一直重启直到全部渲染完（默认 5）")
+    p.add_argument("--max-no-progress", type=int, default=3,
+                   help="连续这么多轮一帧都没推进就停（「一直重启」模式唯一的兜底，默认 3；0=不限制）")
+    p.add_argument("--max-frame-attempts", type=int, default=3,
+                   help="单帧最多尝试几次（默认 3）")
     p.add_argument("--no-resume", action="store_true", help="忽略已有断点，从头渲染")
     p.add_argument("--verbose", action="store_true", help="打印 Blender 原生输出")
     p.add_argument("--keep-workdir", action="store_true", help="保留临时目录（排错用）")
@@ -126,10 +130,10 @@ class ConsoleReporter(object):
             self._progress("  渲染帧 %d ..." % ev.get("frame"))
             return
         if kind == "frame_error":
-            self._line("  ✗ 帧 %s 渲染失败：%s" % (ev.get("frame"), ev.get("err")))
+            self._line("  × 帧 %s 渲染失败：%s" % (ev.get("frame"), ev.get("err")))
             return
         if kind == "crash":
-            self._line("  ⚠ Blender 退出码 %s（第 %s 次重启），已完成 %s/%s，还剩 %s 帧"
+            self._line("  ※ Blender 退出码 %s（第 %s 次重启），已完成 %s/%s，还剩 %s 帧"
                        % (ev.get("rc"), ev.get("restart_index"),
                           ev.get("done"), ev.get("total"), len(ev.get("remaining") or [])))
             return
@@ -154,9 +158,15 @@ class ConsoleReporter(object):
                           ev.get("samples"), ev.get("output")))
             return
         if kind == "job_start":
-            self._line("任务开始：%s\n  帧数 %d | 输出 %s | 断点 %s"
+            if ev.get("unlimited_restarts"):
+                n = ev.get("max_no_progress_rounds") or 0
+                guard = ("连续 %s 轮无进展才停" % n) if n > 0 else "不做无进展兜底"
+                policy = "重启次数不限（%s）" % guard
+            else:
+                policy = "最多重启 %s 次" % ev.get("max_restarts")
+            self._line("任务开始：%s\n  帧数 %d | 输出 %s | 断点 %s | %s"
                        % (ev.get("blend"), ev.get("total"), ev.get("output"),
-                          ev.get("state_path")))
+                          ev.get("state_path"), policy))
             return
         if kind == "job_done":
             self._line("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s"
@@ -169,10 +179,16 @@ class ConsoleReporter(object):
                 self._line("  未完成 —— 再次执行同一条命令即可从断点继续")
             return
         if kind == "job_error":
-            self._line("  ✗ %s" % ev.get("error"))
+            self._line("  × %s" % ev.get("error"))
             return
         if kind == "give_up":
             self._line("  重启次数已达上限，停止。剩余帧 %s" % ev.get("remaining"))
+            return
+        if kind == "no_progress":
+            self._line("  连续 %s 轮一帧都没推进（已完成 %s/%s），停止 —— 重试解决不了的问题，"
+                       "检查工程或显存（剩余 %s）"
+                       % (ev.get("rounds"), ev.get("done"), ev.get("total"),
+                          ev.get("remaining")))
             return
         if kind == "device_set":
             self._line("  渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or [])))
@@ -183,7 +199,23 @@ class ConsoleReporter(object):
             return
 
 
+def make_console_robust():
+    """让终端输出在 cp936 这类小字符集下也不会抛 UnicodeEncodeError。
+
+    实测：Windows 控制台代码页是 936 时，`✗`(U+2717) / `⚠`(U+26A0) **编不出来**，
+    `stream.write()` 直接抛 UnicodeEncodeError；而那个异常会被事件回调的 try/except 吞掉，
+    现象是"该打的错误信息一个字都没打、进程只返回 1" —— 非常难查。
+    两道保险：① 符号全部换成 cp936 里有的（`×` / `※`）；② 这里再兜一层 errors="replace"。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
+    make_console_robust()
     args = build_parser().parse_args(argv)
 
     blend = os.path.abspath(args.blend)
@@ -241,7 +273,9 @@ def main(argv=None):
         samples=args.samples, device=args.device, resolution=resolution,
         resolution_percentage=args.pct, file_format=args.file_format,
         state_path=args.state, log_path=args.log,
-        max_restarts=args.max_restarts, max_frame_attempts=args.max_frame_attempts,
+        max_restarts=parse_restart_limit(args.max_restarts, default=5),
+        max_frame_attempts=args.max_frame_attempts,
+        max_no_progress_rounds=args.max_no_progress,
         resume=not args.no_resume)
 
     job = RenderJob(cfg, blender, keep_workdir=args.keep_workdir)
@@ -256,5 +290,13 @@ def main(argv=None):
         print("已取消，用时 %s（进度已保存，再跑同一条命令可续跑）"
               % fmt_duration(time.time() - t0))
         return 130
+
+    if not result.get("ok") and result.get("error"):
+        # 兜底再打一次失败原因：事件回调万一自己炸了（实测遇到过控制台编码问题
+        # 把 `job_error` 整条吞掉），至少这里还能看到到底为什么没渲成
+        print("失败原因：%s" % result["error"])
+    if result.get("reporter_error"):
+        print("（提示：输出回调报错 %s —— 界面/终端这边没能把上面的事件显示出来）"
+              % result["reporter_error"])
 
     return 0 if result.get("ok") else 1

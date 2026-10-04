@@ -112,7 +112,11 @@ class JobState(object):
 
     # ---------- 查询 ----------
     def remaining(self, max_attempts=3, frames=None):
-        """还剩哪些帧要渲染：未完成 且 未失败 且 还有重试额度。"""
+        """还剩哪些帧要渲染：未完成 且 未失败 且 还有重试额度。
+
+        `max_attempts <= 0` 表示**不限次数**（配合「一直重启直到渲完」使用 ——
+        否则单帧额度会比重启次数先用完，那个选项就形同虚设）。
+        """
         pool = list(frames) if frames else list(self.frames)
         out = []
         for f in pool:
@@ -121,13 +125,15 @@ class JobState(object):
                 continue
             if f in self.failed:
                 continue
-            if self.attempts.get(f, 0) >= max_attempts:
+            if max_attempts > 0 and self.attempts.get(f, 0) >= max_attempts:
                 continue
             out.append(f)
         return sorted(set(out))
 
     def exhausted(self, max_attempts=3):
         """重试额度耗尽的帧 —— 界面要把它们明确说成「放弃」，而不是静默跳过。"""
+        if max_attempts <= 0:
+            return []
         return sorted(f for f, n in self.attempts.items()
                       if n >= max_attempts and f not in self.done)
 

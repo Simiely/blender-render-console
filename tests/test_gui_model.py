@@ -96,10 +96,26 @@ class TestFormValidation(unittest.TestCase):
         self.assertIsNone(cfg)
         self.assertTrue(any("采样" in e for e in errors))
 
-    def test_negative_restarts(self):
+    def test_negative_restarts_means_unlimited(self):
+        """-1 / unlimited 是合法输入，表示「一直重启直到渲完」，不该报错。"""
         cfg, errors, _ = self._form(max_restarts="-1").to_config(parse_frames)
-        self.assertIsNone(cfg)
-        self.assertTrue(any("不能是负数" in e for e in errors))
+        self.assertEqual(errors, [])
+        self.assertTrue(cfg.unlimited_restarts)
+
+    def test_unlimited_word(self):
+        cfg, errors, _ = self._form(max_restarts="unlimited").to_config(parse_frames)
+        self.assertEqual(errors, [])
+        self.assertTrue(cfg.unlimited_restarts)
+
+    def test_no_progress_limit(self):
+        cfg, errors, _ = self._form(max_no_progress="5").to_config(parse_frames)
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.max_no_progress_rounds, 5)
+
+    def test_zero_frame_attempts_means_unlimited(self):
+        cfg, errors, _ = self._form(max_frame_attempts="0").to_config(parse_frames)
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.max_frame_attempts, 0)
 
     def test_numeric_options(self):
         cfg, errors, _ = self._form(samples="128", pct="50", width="1920",

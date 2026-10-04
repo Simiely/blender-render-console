@@ -29,9 +29,35 @@ MARK = "##PROG##"
 _SENTINEL = object()
 CREATE_NO_WINDOW = 0x08000000          # Windows：起子进程不弹黑窗
 DEFAULT_DRIVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "driver.py")
+# 打包后 .py 模块在 PYZ 归档里、磁盘上没有，driver 源码由打包脚本另存到这里（见 read_driver_source）
+FROZEN_PY_SUBDIR = ("_brc", "py")
 
 # 静默多久之后提示一次「还在干活」——大场景同步阶段可能长达数分钟
 DEFAULT_STALL_AFTER = 60.0
+
+
+UNLIMITED = -1          # “一直重启，直到所有帧渲染完”
+
+
+def parse_restart_limit(value, default=5):
+    """把界面/命令行的输入翻译成重启次数上限。
+
+    `'unlimited' / 'infinite' / '无限' / '-1' / '一直'` → `UNLIMITED`（-1，不限次数）；
+    数字字符串 → 对应整数（0 = 崩了就停，不重启）。空值走默认。
+    """
+    if value is None:
+        return default
+    s = str(value).strip().lower()
+    if not s:
+        return default
+    if s in ("unlimited", "infinite", "inf", "none", "unlimited ", "无限", "一直", "一直重启"):
+        return UNLIMITED
+    if s.startswith("-"):
+        return UNLIMITED
+    try:
+        return int(s)
+    except ValueError:
+        return default
 
 
 class JobConfig(object):
@@ -41,7 +67,7 @@ class JobConfig(object):
                  device=None, resolution=None, resolution_percentage=None,
                  file_format=None, state_path=None, log_path=None,
                  max_restarts=5, max_frame_attempts=3, extra_args=(),
-                 resume=True, restart_delay=2.0):
+                 resume=True, restart_delay=2.0, max_no_progress_rounds=3):
         self.blend = os.path.abspath(blend)
         self.frames = [int(f) for f in frames]
         self.output_template = output_template
@@ -58,6 +84,12 @@ class JobConfig(object):
         self.extra_args = list(extra_args or ())
         self.resume = resume
         self.restart_delay = restart_delay
+        # 「一直重启」的护栏：连续这么多轮一帧都没推进就停 —— 没有它就是真死循环
+        self.max_no_progress_rounds = max_no_progress_rounds
+
+    @property
+    def unlimited_restarts(self):
+        return self.max_restarts is None or self.max_restarts < 0
 
     def signature(self):
         """判断新旧 state 是否属于同一任务（blend / 输出 / 帧范围变了就别续）。"""
@@ -76,9 +108,27 @@ def default_cmd_factory(blender_exe, blend, driver_path, job_json, extra_args=()
 
 
 def read_driver_source(path=None):
-    """读 driver 源码字符串 —— onefile 打包后包内文件不在磁盘上，必须注入。"""
-    with io.open(path or DEFAULT_DRIVER, "r", encoding="utf-8") as f:
-        return f.read()
+    """读 driver 源码字符串 —— onefile 打包后包内文件不在磁盘上，必须靠注入。
+
+    ⚠️ 打包版**不能**直接读 `brconsole/driver.py`：PyInstaller 把 .py 模块收进 PYZ 归档，
+    `_MEIPASS/brconsole/` 下根本没有这个文件（只有数据文件才落到磁盘上）。
+    所以打包脚本会把 driver.py 另存一份到 `_brc/py/driver.py`，这里优先找它。
+    """
+    p = path or DEFAULT_DRIVER
+    if not os.path.exists(p):
+        base = getattr(sys, "_MEIPASS", None)
+        if base:
+            cand = os.path.join(base, *FROZEN_PY_SUBDIR, "driver.py")
+            if os.path.exists(cand):
+                p = cand
+    try:
+        with io.open(p, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        raise RuntimeError(
+            "读不到 driver 源码：%s（%s）\n"
+            "打包版请检查 tools/build_exe.py 有没有把 brconsole/driver.py 当数据文件带进 _brc/py/"
+            % (p, e))
 
 
 class RenderJob(object):
@@ -265,7 +315,7 @@ class RenderJob(object):
         result = {
             "ok": False, "done": [], "failed": {}, "exhausted": [],
             "elapsed": 0.0, "restarts": 0, "state_path": None,
-            "cancelled": False, "error": None,
+            "cancelled": False, "error": None, "reporter_error": None,
         }
 
         def emit(kind, **kw):
@@ -273,8 +323,13 @@ class RenderJob(object):
             if callable(on_event):
                 try:
                     on_event(kind, kw)
-                except Exception:
-                    pass        # 界面回调出错不该把渲染搞挂
+                except Exception as e:
+                    # 回调出错不该把渲染搞挂，但**必须留痕**：
+                    # 这里原来是静默 `pass`，结果 CLI 遇到控制台编码问题时（`✗` 在 cp936 下
+                    # 无法编码 → UnicodeEncodeError）一个字的错误信息都打不出来，
+                    # 表现成"静默退出、只返回 1"，白白排查了很久。
+                    if result.get("reporter_error") is None:
+                        result["reporter_error"] = "%s: %s" % (type(e).__name__, e)
 
         # ---- 日志 ----
         if cfg.log_path:
@@ -306,10 +361,14 @@ class RenderJob(object):
             job_json = os.path.join(self.workdir, "job.json")
 
             emit("job_start", total=self.state.total, frames=list(self.state.frames),
-                 blend=cfg.blend, output=cfg.output_template, state_path=state_path)
+                 blend=cfg.blend, output=cfg.output_template, state_path=state_path,
+                 unlimited_restarts=cfg.unlimited_restarts,
+                 max_restarts=cfg.max_restarts if not cfg.unlimited_restarts else None,
+                 max_no_progress_rounds=cfg.max_no_progress_rounds)
 
             pending = self.state.remaining(cfg.max_frame_attempts)
             restarts = 0
+            no_progress = 0
             while pending:
                 if self._cancel.is_set():
                     break
@@ -342,22 +401,31 @@ class RenderJob(object):
                     break
 
                 # 没崩但还有剩余帧：说明 driver 提前退出（比如被 -a 参数带偏），
-                # 同样按续跑处理，但最多再来 max_restarts 轮，避免死循环
+                # 同样按续跑处理，只是次数照样计数
+                restarts += 1
                 if rc != 0:
-                    restarts += 1
                     emit("crash", rc=rc, restart_index=restarts,
                          remaining=pending_after, done=self.state.done_count,
                          total=self.state.total)
                 else:
-                    restarts += 1
-                    emit("warn", msg="子进程正常退出但仍有 %d 帧未完成，继续渲染" % len(pending_after))
+                    emit("warn", msg="子进程正常退出但仍有 %d 帧未完成，继续渲染"
+                         % len(pending_after))
 
-                if restarts > cfg.max_restarts:
+                # ---- 护栏：连续多轮一帧都没推进 ----
+                # 「一直重启直到完成」模式下，这是唯一能兜住死循环的终止条件：
+                # 崩溃是随机的，但"崩在同一处、一帧都渲不出来"说明改重试也没用。
+                if len(pending_after) < len(pending):
+                    no_progress = 0
+                else:
+                    no_progress += 1
+                if cfg.max_no_progress_rounds > 0 and no_progress >= cfg.max_no_progress_rounds:
+                    emit("no_progress", rounds=no_progress, remaining=pending_after,
+                         done=self.state.done_count, total=self.state.total)
+                    break
+
+                if not cfg.unlimited_restarts and restarts > cfg.max_restarts:
                     emit("give_up", restarts=restarts, remaining=pending_after)
                     break
-                if pending_after == pending:
-                    # 一轮下来一帧都没推进 —— 再试一次就够，别把 GPU 烤着
-                    emit("warn", msg="本轮没有任何帧推进，剩余尝试次数将很快耗尽")
                 pending = pending_after
 
             # ---- 收尾 ----
@@ -365,6 +433,8 @@ class RenderJob(object):
             result["failed"] = dict(self.state.failed)
             result["exhausted"] = self.state.exhausted(cfg.max_frame_attempts)
             result["restarts"] = restarts
+            result["stopped_by_no_progress"] = (cfg.max_no_progress_rounds > 0
+                                                and no_progress >= cfg.max_no_progress_rounds)
             result["cancelled"] = self._cancel.is_set()
             result["ok"] = self.state.is_complete()
             result["total"] = self.state.total

@@ -11,7 +11,9 @@
 
 **要解决的痛点**：Blender GUI 渲染大工程时整个进程会崩（多为 Windows 显示驱动超时重置），且崩了之后要从头再来。
 
-**当前阶段**：**图形界面版本已可用**（v0.3.0）。GUI + 自动读工程配置 + 深色主题均已真窗口实测；只剩 exe 打包，见第四节。
+**当前阶段**：**已交付**（v0.4.0）。GUI + 自动读工程配置 + 深色主题 + 崩溃续跑 + 「一直重启直到渲完」均已真机实测；
+`dist/` 下有两个可直接分发的单文件 exe（图形界面版 / 命令行版）。
+剩余可选项见第四节第 7 项（图标与版本信息）。
 
 ---
 
@@ -254,6 +256,144 @@
 
 ---
 
+### 问题：打包后的 exe 起不来 tkinter（`version conflict for package "Tcl"`）
+
+**TL;DR**：exe 自带 Tcl 8.6.15，而系统里另一个软件把 `TCL_LIBRARY` 指向了 Tcl 8.6.12，沿用即冲突。
+
+- **问题**：exe 双击后**无窗口、无报错**（`--windowed` 连 stderr 都没有），进程还活着 —— 看着像"界面没画出来"。
+- **根因**：改用命令行版（`console=True`）跑同一段代码，才看到
+  `Can't find a usable init.tcl ... version conflict for package "Tcl": have 8.6.15, need exactly 8.6.12`。
+  本机 `TCL_LIBRARY` / `TK_LIBRARY` 被另一个软件（`D:\Tool\LoginStateSwitcher\_internal\_tcl_data`）设成了全局环境变量；
+  `tkboot.apply_frozen_env()` 原先用 `os.environ.setdefault`（本着"别覆盖用户环境"的好意），结果正好沿用了那个错的目录。
+  同时 tkinter 自己推导的路径（`<_MEIPASS>/lib/tcl8.6`）跟我们的布局（`_brc/tcl/tcl8.6`）也对不上。
+- **解决**：`apply_frozen_env()` 改为**赋值覆盖** `TCL_LIBRARY` / `TK_LIBRARY`；并把 `_brc/DLLs` 也加进 `sys.path`
+  （`_tkinter.pyd` 是顶层扩展模块，只进 PATH 找不到它）。
+- **预防**：排查"GUI 起不来"**先切命令行版**拿 traceback —— `--windowed` 会把错误吃得干干净净。
+  另外"尊重既有环境变量"在**自带运行时的场景下是反的**：我们比系统更清楚该用哪份 DLL。
+
+---
+
+### 问题：Tcl 只打包了 tcl8.6 / tk8.6，缺兄弟包目录
+
+**TL;DR**：`_brc/tcl` 下必须有 `dde1.4` / `reg1.3` / `tcl8`，否则 Windows 上 Tk 初始化到一半失败。
+
+- **问题**：按"只带用得到的两个目录"的思路打包，漏掉了 `dde1.4` / `reg1.3` / `tcl8`。
+- **根因**：Tcl 的 `auto_path` 是 `[file dirname $tcl_library]`（即 `_brc/tcl`），
+  而 Windows 上 Tk 要 `package require dde` / `registry`，它们的 `pkgIndex.tcl` 就在同级的 `dde1.4` / `reg1.3` 下。
+- **解决**：spec 里改用 `Tree(sidecar/tcl, prefix="_brc/tcl")` 整棵打包，并把这些文件写进 `check_sidecar()` 的前置检查。
+- **预防**：带"目录即环境"的运行时（Tcl / Python site / JAVA_HOME）不要挑子目录，宁可多带几 MB；
+  这类缺文件的报错出现在**它内部初始化的中途**，根因离现象很远。
+
+---
+
+### 问题：「一直重启直到渲完」被单帧重试额度抢先耗尽
+
+**TL;DR**：只放开重启次数没用 —— 崩够几次之后所有帧的单帧尝试额度先耗光，队列里已经没有可渲染的帧了。
+
+- **问题**：单测里选了 unlimited，结果仍只拿到 `done=[1,2,4]`（第 3 帧崩几次后再也不试了）。
+- **根因**：两个额度是**互相独立**的：`max_restarts` 管"还能重启几次"，`max_frame_attempts` 管"这一帧还能试几次"。
+  放开前者而后者仍是默认 3，第 3 帧第 3 次崩掉后就永久出局。
+- **解决**：`state.remaining()` / `exhausted()` 支持 `max_attempts <= 0` 表示**不限次数**；界面与命令行都允许填 0。
+- **预防**：实现「不限次数」这类选项时，要顺着链路数一遍**还有哪些上限会先咬住**
+  （重启次数、单帧额度、无进展护栏、超时），少一个这个选项就是假的。
+
+---
+
+### 问题：「一直重启」必须配一条死循环护栏
+
+**TL;DR**：次数不限 + 崩溃是随机的 → 需要"连续多轮一帧都没推进就停"作为终止条件。
+
+- **问题**：不限次数后，若崩溃与工程本身有关（一崩就崩在同一处、一帧都渲不出来），重试永远没有意义，但程序会一直重启下去。
+- **解决**：新增 `max_no_progress_rounds`（默认 3，`0` = 不启用）：连续这么多轮 `len(pending_after) == len(pending)`
+  就发 `no_progress` 事件并停止，文案明确说"重试解决不了的问题，检查工程或显存"。
+- **预防**：凡是要做"无限重试"，必须同时想清楚"什么情况下必须放弃"，否则就是把死循环写进产品。
+
+---
+
+### 问题：用外部 taskkill 断言"崩溃次数"必然时灵时不灵
+
+**TL;DR**：`taskkill` 的落点依赖渲染时序，实测崩溃次数在 5~7 之间浮动；得把"崩"变成确定事件才能断言次数。
+
+- **问题**：真机冒烟想验证"连崩 7 次仍不放弃"，写法是"监测到新帧完成就 kill 掉 Blender"。
+  同一份代码两次跑，一次崩 6 次、一次崩 4 次 —— 有一次 kill 打到了已经渲染完并退出的 PID。
+- **根因**：外部击杀与 Blender 自然退出之间有竞态；渲染快慢每次不同（实测 28.6s vs 36.6s），落点无法保证。
+- **解决**：改用 `.bat` 启动器 —— 前 N 次调用直接 `exit /b 1`（**确定地**"崩"），之后 `"%BLENDER%" %*` 原样转交真 Blender。
+  于是崩溃次数确定、真渲染仍由真 Blender 完成，并做成 A/B 对照（同样连崩 6 次：`--max-restarts 5` 必须放弃且 0 帧产出，
+  `unlimited` 必须撑过并渲完 12 帧）。
+- **预防**：跨进程的时序型断言不要"跑一次看着对就算对"。要么把随机性消除（合成确定事件），要么换成能证伪的对照实验。
+- **附**：`.bat` 可以直接作为 `subprocess` 的 `args[0]`（CreateProcess 会拉 cmd.exe），但**转交路径必须用反斜杠** ——
+  写成 `C:/...` 会找不到而返回 1，届时"永远崩"和"该崩几次"就分不清了；批处理里读计数器别用 `set /p`
+  （会把行尾 CR 一起吃进来，`set /a` 随即算错），要用 `for /f "usebackq delims="`。
+
+---
+
+### 问题：打包后 `--demo` 没有 `python.exe` 可以拉起来
+
+**TL;DR**：自检必须走真实多进程路径，但 onefile exe 里没有独立解释器 —— 让 exe 自己再当一次子进程。
+
+- **问题**：`--demo` 原本是 `[sys.executable, "tests/fake_blender.py", ...]`，
+  打包后 `sys.executable` 就是 exe 本身，而且 `tests/` 并不在包里，自检直接失效。
+- **解决**：把 `tests/fake_blender.py` 一起打进 `_brc/selftest/`，并加内部入口 `main.py --fake-blender`；
+  冻结态下 `_demo_cmd_factory()` 返回 `[exe, "--fake-blender", ...]`。
+- **预防**：任何"自己拉起自己"的测试脚手架，都要先问清楚**打包后它的 `argv[0]` 是什么**。
+
+---
+
+### 问题：exe 里读不到 `brconsole/driver.py`
+
+**TL;DR**：PyInstaller 把 `.py` 模块收进 PYZ 归档，`_MEIPASS/brconsole/` 下**没有这个文件**；
+而 driver 是「读源码字符串再注入给 Blender」的，必须有一份**真实文件**。
+
+- **问题**：打包后的 exe 跑渲染时立刻退出、只返回 1，`dist` 里只留下一个空 state 文件，一帧都没渲。
+- **根因**：`read_driver_source()` 直接 `io.open(DEFAULT_DRIVER)`，而
+  `DEFAULT_DRIVER = <包目录>/brconsole/driver.py` 在 onefile 下指向 `_MEIPASS/brconsole/driver.py` ——
+  PyInstaller 只把**数据文件**落到磁盘，模块在 PYZ 里，所以这个路径必然不存在。
+- **解决**：打包脚本把 `brconsole/driver.py` 当**数据文件**另存一份到 `_brc/py/driver.py`；
+  `read_driver_source()` 在源码路径不存在时去 `_MEIPASS/_brc/py/driver.py` 找，读不到就抛一条
+  指向打包配置的明确错误。
+- **预防**：任何「读自己的源码来注入/释放」的写法，在打包后都要重新确认一遍 ——
+  **`.py` 源码不作为数据文件出现在 `_MEIPASS` 里**。本项目里 `inspect.py` 因为把脚本写成了字符串字面量
+  （`SCRIPT = r'''...'''`）反而没这个问题，算是运气。
+
+---
+
+### 问题：失败时"一声不响"——同时踩中两个坑
+
+**TL;DR**：控制台用 `✗`/`⚠`（不在 cp936 字符集里）→ `UnicodeEncodeError`，
+而事件回调的异常被静默吞掉 → 该打的错误信息一个字都没打，进程只返回 1。
+
+- **问题**：exe 渲染失败时，终端里"检测到多个 Blender…"之后就什么都没有了，连 traceback 都没有。
+- **根因**（两个坑叠加）：
+  1. Windows 控制台 exe 的 stdout 编码是 cp936，而 `✗`(U+2717) / `⚠`(U+26A0) **编不出来**，
+     `sys.stdout.write()` 直接抛 `UnicodeEncodeError`；
+  2. `core.emit()` 为了"回调出错不该把渲染搞挂"写了 `except Exception: pass` ——
+     把那个编码异常也一并吞了，于是 `job_error` 事件永远显示不出来。
+- **解决**：三处一起改 ——
+  ① CLI 的符号换成 cp936 里有的（`×` / `※`，`✓` 没有用到）；
+  ② `cli.main()` 开头对 stdout/stderr 做 `reconfigure(errors="replace")` 兜底；
+  ③ `core.emit()` 把首次回调异常记进 `result["reporter_error"]`，`cli.main()` 在任务失败时
+  **兜底再打一次** `失败原因：…`。
+- **预防**：给程序加"符号美化"前先确认目标代码页能不能编码（`.encode('cp936')` 试一下就知道）；
+  更重要的是——**静默吞异常的地方必须留痕**，否则它会把真正的错误一起埋掉。
+
+---
+
+### 问题：PyInstaller `datas` 条目顺序写反 —— 构建"成功"但文件不落地
+
+**TL;DR**：`datas` 的元组是 **`(目标名, 源路径, 类型)`**。写反了不会报错，TOC 里也有记录，
+但运行时 `_MEIPASS` 下什么都没有。
+
+- **问题**：把 `tests/fake_blender.py` 加进包后，exe 里 `--fake-blender` 依然报"内置假 Blender 缺失"。
+  看 `build/brc/brc/PKG-00.toc` 里那条**明明白白存在**。
+- **根因**：写成了 `(源路径, 目标目录, 'DATA')`。于是"目标名"成了 `C:\...\fake_blender.py`、
+  "源路径"成了不存在的 `_brc/selftest`；构建不校验、TOC 照记，但解包时那个文件根本不存在。
+- **解决**：改成 `(目标名, 源路径, 'DATA')`，且**把"运行时能不能真的拿到"写进打包后自检**。
+- **预防**：**"打包成功"不等于"产物可用"**。凡是有"塞进包里的资源"，都要在打包后真跑一次
+  （本项目：`tools/build_exe.py` 默认执行 `verify()`，会核对 `--help`、内置假 Blender，
+  以及**完整 core 流水线跑一轮**）。
+
+---
+
 ## 四、下一步（待办）
 
 按优先级：
@@ -264,11 +404,18 @@
 4. ~~**崩溃续跑实测**~~ —— ✅ 2026-10-04 完成（`tools/smoke_real_blender.py`）：渲染中途 `taskkill` 掉 Blender，退出码 1 → 第 1 次重启 → 只渲染剩余帧 `[6]` → 最终 6/6。
 5. ~~**编写 GUI**~~ —— ✅ 2026-10-04 完成（`gui.py` / `guimodel.py` / `theme.py` / `inspect.py` / `tkboot.py`）。
    任务配置 + 进度条 + ETA + 日志面板 + 深色主题 + **选中工程自动读配置**，真窗口截图验证通过。
-6. **PyInstaller 打包**：`--onefile --windowed`。已经处理好的部分：
-   - driver 与 inspect 脚本都以**源码字符串内嵌**、运行时释放到临时目录（onefile 下包内文件不在磁盘上）
-   - `tkboot` 会在缺少 tkinter 时找 `sidecar/`；打包时要把 sidecar 一起塞进 exe
-     （建议用 `--add-data "sidecar;sidecar"`，并让 `tkboot` 在 `sys._MEIPASS` 下也找一遍 —— 这是下一步要改的点）
-   - 界面图标、版本信息（`--version-file`）还没做
+6. ~~**PyInstaller 打包**~~ —— ✅ 2026-10-04 完成（`tools/build_exe.py`），`dist/` 下产出两个单文件 exe：
+   `blender-render-console.exe`（`--windowed`，双击即界面）与 `brc.exe`（保留控制台输出，排错用）。要点：
+   - driver 与 inspect 脚本本就以**源码字符串内嵌**、运行时释放到临时目录（onefile 下包内文件不在磁盘上）
+   - sidecar **整棵 `tcl` 目录**进包 → `_MEIPASS/_brc/{DLLs,Lib/tkinter,tcl}`，运行时由 `tkboot.apply_frozen_env()` 挂回
+   - 打包用 **spec 文件 + `Tree()`**，不能用命令行 `--add-data`：sidecar 有几百个文件，
+     命令行会超过 Windows 长度上限（`WinError 206 文件名或扩展名太长`）
+   - `tests/fake_blender.py` 与 `brconsole/driver.py` 都要当**数据文件**带进包
+     （前者给 `--demo` 自检，后者给"注入 driver 源码"用，见第三节对应问题）
+   - 打包后**默认跑一遍自检**（`verify()`），含"完整 core 流水线跑一轮" —— 只看"打包成功"会漏掉
+     资源没落地这类问题
+7. **exe 的图标与版本信息**（`--icon` / `--version-file`）—— 还没做，属于可选打磨项。
+   当前 exe 用的是 PyInstaller 默认图标，文件属性里也没有版本号。
 
 ---
 
@@ -281,7 +428,8 @@
 | `tools/probe_render.py` | 生成上面两份日志的探针 |
 | `tools/probe_driver.py` | 验证驱动脚本 JSON 进度实时性（时间戳与真实耗时吻合） |
 | `tools/build_tkinter.py` | tkinter 提取与拼装（GUI 阶段用） |
-| `tools/smoke_real_blender.py` | **真机冒烟**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 |
-| `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 可采样像素颜色 |
-| `tests/fake_blender.py` | 与真机同构的假 Blender（原生行 + JSON 进度 + 可指定帧崩溃），给续跑逻辑做端到端测试 |
-| `tests/` | 89 条单测：ETA / 原生行解析 / 状态文件 / 续跑与取消 / 命令行拼装 / 界面逻辑 / 工程配置解析 |
+| `tools/build_exe.py` | PyInstaller 打包（spec + `Tree()`），产出两个单文件 exe，并**默认跑一遍打包后自检** |
+| `tools/smoke_real_blender.py` | **真机冒烟 5 场景**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 → 「一直重启」A/B 对照 |
+| `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 采样像素；`--list` 列窗口标题 |
+| `tests/fake_blender.py` | 与真机同构的假 Blender（原生行 + JSON 进度 + 可指定帧崩溃 / 前 N 次启动必崩），给续跑逻辑做端到端测试 |
+| `tests/` | 101 条单测：ETA / 原生行解析 / 状态文件 / 续跑与取消 / 重启策略 / 命令行拼装 / 界面逻辑 / 工程配置解析 |

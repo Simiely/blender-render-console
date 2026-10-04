@@ -2,6 +2,82 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-10-04
+
+**单文件 exe 可用**：`dist/blender-render-console.exe`（双击即界面）与 `dist/brc.exe`（命令行，保留输出）。
+同时新增**「一直重启，直到全部渲完」**的重启策略。
+
+### 新增
+
+- **「一直重启，直到全部渲完」**：命令行 `--max-restarts unlimited`（也认 `-1` / `无限` / `一直`），
+  界面下拉框对应「一直重启，直到全部渲完」。它由两个**互相独立**的旋钮共同构成：
+  - `--max-no-progress N`（默认 3）：连续 N 轮一帧都没推进就停 —— 「不限次数」模式下唯一的死循环护栏
+  - 单帧尝试额度允许 `0 = 不限`（`state.remaining` / `exhausted`）：否则单帧额度会先于重启次数耗尽，
+    「一直重启」会形同虚设（崩几次就再也没有可渲染的帧了）
+- `tools/build_exe.py` —— PyInstaller 打包（spec + `Tree()`），产出 GUI / 命令行两个单文件 exe
+- **打包后 `--demo` 自检仍可用**：把 `tests/fake_blender.py` 一起打进 exe，
+  新增内部入口 `main.py --fake-blender` 让 exe 自己再当一次子进程 ——
+  打包后没有独立的 `python.exe` 可以拉起来，而自检必须走**真实多进程**路径才测得出接线问题
+- 真机冒烟新增 **场景五：「一直重启」A/B 对照** —— 用 `.bat` 启动器把「崩」变成**确定性事件**
+  （外部 `taskkill` 的崩溃次数会浮动，见下），同一份「连崩 6 次」的启动器分别配两种上限对比结果
+- `tools/capture_screen.py`：新增 `--list` 列窗口标题；`--window` 从「精确匹配」改为
+  「精确优先，**退化为子串匹配**」（窗口标题常带动态后缀，精确匹配一改标题就抓不到）
+
+### 本次实测确认的结论
+
+- **exe 里的 tkinter 必须把整棵 `tcl` 目录一起打包**，只挑 `tcl8.6` / `tk8.6` 会缺
+  `dde1.4` / `reg1.3` / `tcl8` —— Tcl 的 `auto_path` 是 `[file dirname $tcl_library]`，
+  Windows 上 Tk 要 `package require dde` / `registry`，缺了会在 **Tk 初始化中途**报错，很难看出根因
+- **别沿用系统里已有的 `TCL_LIBRARY`**：本机实测它指向另一个软件的目录
+  （`D:\Tool\LoginStateSwitcher\_internal\_tcl_data`，Tcl **8.6.12**），而我们自带的是 **8.6.15**，
+  沿用即 `version conflict for package "Tcl": have 8.6.15, need exactly 8.6.12`。
+  修法是**赋值覆盖**（不是 `setdefault`），并且把 `DLLs` 也加进 `sys.path`（`_tkinter.pyd` 是顶层扩展模块）
+- **exe 里读不到 `brconsole/driver.py`**：PyInstaller 把 `.py` 模块收进 PYZ 归档，
+  `_MEIPASS/brconsole/` 下**没有这个文件**（只有数据文件才落到磁盘上）。
+  而 `core.read_driver_source()` 是直接 `open()` 磁盘路径的 → `FileNotFoundError`。
+  修法：把 `driver.py` 当**数据文件**另存一份到 `_brc/py/driver.py`，读取时优先找它
+- **「静默失败」的元凶是编码**：`✗`(U+2717) / `⚠`(U+26A0) **不在 cp936 里**，
+  而 Windows 控制台 exe 的 stdout 走的是 cp936 → `stream.write()` 抛 `UnicodeEncodeError`
+  → 被事件回调的 `try/except: pass` 吞掉 → **一个字的错误信息都打不出来，进程只返回 1**。
+  修法三处：符号换成 cp936 里有的（`×` / `※`）、`stdout.reconfigure(errors="replace")`、
+  以及让 `core.emit` 把回调异常记进 `result["reporter_error"]` 并由 CLI 兜底再打一次
+- **「一直重启」A/B 实测**（同一份「连崩 6 次」启动器，真 Blender 完成实际渲染）：
+  `--max-restarts 5` → 第 6 次重启后「已达上限」停止，**0 帧产出**；
+  `--max-restarts unlimited` → 撑过 6 次崩溃，**12 帧全部渲完**，无「已达上限」
+- **`datas` 条目的顺序是 `(目标名, 源路径, 类型)`** —— 写反了构建照样"成功"、TOC 里也有记录，
+  但运行时不会解包落地（实测 `_brc/` 下只有 `DLLs/Lib/tcl`，没有 `selftest`）。
+  所以打包后自检必须**真的跑一遍**，不能只看"打包成功"
+- **`.bat` 可以直接作为 `subprocess` 的 `args[0]`**（CreateProcess 会自己拉 cmd.exe 执行），
+  退出码与参数都原样传递；但**转交路径必须是反斜杠** —— 写成 `C:/...` 会找不到而返回 1
+- 用 `.bat` 读计数器时，`set /p` 会把行尾 CR 一起吃进来，导致 `set /a` 算错；
+  改用 `for /f "usebackq delims="` 读文件才稳
+
+### 修掉的问题
+
+- **exe 里 `read_driver_source()` 找不到 `brconsole/driver.py`**（在 PYZ 归档里，磁盘上没有）→
+  改为数据文件 `_brc/py/driver.py` + 冻结态优先查找；读不到时给出明确报错
+- **控制台 `✗`/`⚠` 在 cp936 下抛 `UnicodeEncodeError`，被回调静默吞掉 → 失败时一声不响** →
+  符号改 `×`/`※`、`stdout.reconfigure(errors="replace")`、回调异常记入 `result["reporter_error"]`
+  并由 CLI 兜底再打一次
+- sidecar 打包只带了 `tcl8.6` / `tk8.6`，缺 Tcl 的兄弟包目录（`dde1.4` / `reg1.3` / `tcl8`）→ 改为整棵 `tcl` 目录
+- `tkboot.apply_frozen_env()` 用 `os.environ.setdefault` 沿用系统的 `TCL_LIBRARY` → 改为赋值覆盖
+- `datas` 条目把「目标名 / 源路径」写反（写成了 `(源, 目标, 'DATA')`）→ 条目进了 TOC 却不落地
+- 打包后自检最初只单跑假 Blender，**绕过了 core** → 漏掉了 driver 注入这类问题；
+  现在改成用 `.bat` 跳板让 `brc.exe` 走**完整 core 流水线**跑一轮（rc 必须为 0、产物必须齐）
+- spec 里加内置数据文件时把路径写成了 `%s`（没引号）→ 打包报 `SyntaxError`，应为 `%r`
+- 自检脚本自己按 UTF-8 解码 `--help` 输出 → 在 cp936 上抛 `UnicodeDecodeError`；改成按**字节**匹配
+- 命令行在 `--max-no-progress 0` 时文案显示成「连续 0 轮无进展才停」→ 改为「不做无进展兜底」
+- 界面上「重启次数」下拉的说明写的是内部取值 `unlimited`，与下拉显示文案不一致 → 改为显示文案
+- 真机冒烟场景五最初用「外部 `taskkill` + 断言崩溃次数」→ 崩溃次数实测在 5~7 间浮动（击杀可能打到
+  已退出的 PID），断言必然时灵时不灵 → 改为 `.bat` 确定性启动器
+- `brconsole/__init__.py` 的 `__version__` 自 0.2.0 起就没跟着升（0.3.0 漏了）→ 本次对齐到 0.4.0
+
+### 待办
+
+见 `DEVELOPMENT.md` 第四节第 7 项：exe 的图标与版本信息（`--icon` / `--version-file`）。
+
+---
+
 ## [0.3.0] - 2026-10-04
 
 **图形界面可用**：深色主题、选中工程自动读取渲染配置、进度条 + ETA + 日志面板、停止后可从断点续跑。

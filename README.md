@@ -16,28 +16,56 @@
 
 ## 当前状态
 
-> **v0.3.0：图形界面可用**（深色主题 + 自动读取工程配置 + 崩溃续跑）。exe 打包是下一步，见 [DEVELOPMENT.md](./DEVELOPMENT.md) 第四节。
+> **v0.4.0：单文件 exe 已可用** —— `dist/blender-render-console.exe`（双击即界面）/ `dist/brc.exe`（命令行）。
+> 深色主题、选中工程自动读配置、崩溃续跑、**「一直重启，直到全部渲完」**均已真机实测。
 
 | 能力 | 状态 |
 |---|---|
+| **单文件 exe**（PyInstaller onefile，内含 tcl/tk） | ✅ 打包后自检 + 真窗口截图验证 |
 | 图形界面（tkinter，深色主题） | ✅ 真窗口实测 |
 | **选中工程自动读取渲染配置** | ✅ 真机实测：引擎 / 采样 / 设备 / 分辨率 / 帧范围 / 输出路径一次填好 |
 | 无头渲染 + 逐帧进度 | ✅ 真机实测（Cycles / EEVEE 各跑通） |
 | ETA 自算（剔除首帧预热 + EMA 平滑） | ✅ 真机实测 |
 | **崩溃 / 被杀后自动续跑** | ✅ 真机实测：中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
+| **一直重启，直到全部渲完**（带无进展护栏） | ✅ 真机 A/B 实测，见下 |
 | 取消（停止按钮 / Ctrl+C）并保留进度 | ✅ 单测覆盖 |
 | 命令行模式 | ✅ |
-| PyInstaller 单文件 exe | ⏳ 下一步 |
+| exe 图标与版本信息 | ⏳ 可选打磨项 |
+
+「一直重启」的实测口径 —— 用同一个「前 6 次启动必定失败」的启动器（`.bat`，之后原样转交真 Blender），
+只改重启上限这一个变量：
+
+| 重启上限 | 第 6 次崩溃后 | 产出 |
+|---|---|---|
+| `5`（默认） | 「重启次数已达上限」停止 | **0 帧** |
+| `unlimited` | 继续重试 | **12/12 帧全部渲完** |
 
 ---
 
 ## 快速开始
 
-### 图形界面
+### 直接跑 exe（推荐给只想用的人）
+
+```bash
+dist/blender-render-console.exe              # 双击也行：打开界面
+dist/blender-render-console.exe --gui 工程.blend
+dist/brc.exe 工程.blend -s 1 -e 240 -o out/frame_####   # 命令行版，保留终端输出
+```
+
+exe 已经把 tcl/tk 与驱动脚本一并打包（单文件、免安装、不依赖本机 Python）。
+自己重新构建：
+
+```bash
+python tools/build_tkinter.py        # 只在第一次需要：生成 sidecar/（本机 Python 没有 tkinter）
+python tools/build_exe.py --both     # 产出 dist/ 下两个 exe，并自动跑一遍打包后自检
+```
+
+### 图形界面（源码方式）
 
 ```bash
 python main.py                       # 打开界面
 python main.py --gui 工程.blend       # 打开界面并直接载入该工程（自动读配置）
+python main.py --demo                 # 自检：自动填配置 + 用内置假 Blender 跑一轮（不碰真 Blender）
 ```
 
 > 本机 Python **没有 tkinter**，界面靠 `sidecar/` 里的 tcl/tk 运行时。
@@ -47,6 +75,11 @@ python main.py --gui 工程.blend       # 打开界面并直接载入该工程�
 界面流程：选 `.blend` → **自动把工程里的引擎 / 采样 / 分辨率 / 帧范围 / 输出路径填好**
 （也可以点「读取工程配置」重读，或手改任意一项）→ 点「开始渲染」→ 看进度条 / ETA / 日志。
 停止或崩溃后再点一次「开始渲染」，只渲染没完成的帧。
+
+长任务可以把「崩溃后重启」选成**「一直重启，直到全部渲完」**（次数不限）。
+它旁边还有一个「连续这么多轮一帧都没推进就停」（默认 3 轮）：
+如果在同一处反复崩、一帧都渲不出来，说明问题不在"重启次数不够"，程序会停下并明确提示，
+而不是一直空转 —— 这是「不限次数」唯一的兜底，填 `0` 表示不启用。
 
 ### 命令行
 
@@ -75,7 +108,9 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 | `--device` | Cycles 设备：`CPU` / `CUDA` / `OPTIX` / `HIP` / `ONEAPI` |
 | `--res / --pct / --format` | 分辨率 / 分辨率百分比 / 输出格式 |
 | `--blender` | 手动指定 `blender.exe`（不给就自动扫描，扫不到会提示） |
-| `--max-restarts / --max-frame-attempts` | 最多重启几次 / 单帧最多尝试几次（默认 5 / 3） |
+| `--max-restarts` | 最多重启几次（默认 `5`）；填 **`unlimited`** / `-1` / `无限` / `一直` = 一直重启直到全部渲完 |
+| `--max-no-progress` | 连续这么多轮一帧都没推进就停（默认 `3`，`0` = 不启用）；「不限次数」模式的唯一兜底 |
+| `--max-frame-attempts` | 单帧最多尝试几次（默认 `3`，`0` = 不限）|
 | `--no-resume` | 忽略已有断点文件 |
 | `--verbose` | 连 Blender 原生输出一起打印 |
 | `--log` | 把 Blender 原始输出落盘 |
@@ -85,14 +120,14 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 ```
 Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 任务开始：D:\proj\scene.blend
-  帧数 6 | 输出 D:\proj\out\smoke_#### | 断点 D:\proj\out\.render_state.json
+  帧数 12 | 输出 D:\proj\out\smoke_#### | 断点 D:\proj\out\.render_state.json | 重启次数不限（连续 3 轮无进展才停）
   实际设置：引擎 CYCLES | 320x240 @100% | 采样 24 | 输出 D:\proj\out\smoke_####
-[1/6] 帧 1 完成 0.4s (预热帧，不计入基线) | 单帧 -- | 剩余 5 帧 | ETA --（尚无样本）
-[2/6] 帧 2 完成 0.3s | 单帧 0.3s | 剩余 4 帧 | ETA 1.3s（均值（样本 1））
-  ⚠ Blender 退出码 1（第 1 次重启），已完成 5/6，还剩 1 帧
-  第 1 次重启，剩余帧 [6]
-[6/6] 帧 6 完成 0.5s (预热帧，不计入基线) | 单帧 0.4s | 剩余 0 帧 | ETA 0.0s（EMA（样本 4））
-任务结束：完成 6/6 帧 | 失败 0 | 放弃 0 | 重启 1 次 | 用时 10.1s
+[1/12] 帧 1 完成 0.4s (预热帧，不计入基线) | 单帧 -- | 剩余 11 帧 | ETA --（尚无样本）
+[2/12] 帧 2 完成 0.3s | 单帧 0.3s | 剩余 10 帧 | ETA 3.0s（均值（样本 1））
+  ⚠ Blender 退出码 1（第 1 次重启），已完成 5/12，还剩 7 帧
+  第 1 次重启，剩余帧 [6, 7, 8, 9, 10, 11, 12]
+[12/12] 帧 12 完成 0.5s | 单帧 0.4s | 剩余 0 帧 | ETA 0.0s（EMA（样本 4））
+任务结束：完成 12/12 帧 | 失败 0 | 放弃 0 | 重启 6 次 | 用时 18.0s
 ```
 
 ---
@@ -115,11 +150,12 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   ├── eta.py               # ETA 估算（去预热 + EMA）
 │   ├── state.py             # 断点状态文件（原子落盘）
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
-├── tests/                   # 89 条单测 + fake_blender.py
+├── tests/                   # 101 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
+│   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），默认跑一遍打包后自检
 │   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（本机 Python 无 tkinter）
-│   ├── smoke_real_blender.py  # 真机冒烟：渲染 → 杀进程 → 续跑 → EEVEE → 读配置
-│   ├── capture_screen.py    # 抓窗口/全屏 PNG（验证界面用，纯 ctypes）
+│   ├── smoke_real_blender.py  # 真机冒烟 5 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 「一直重启」A/B
+│   ├── capture_screen.py    # 抓窗口/全屏 PNG（验证界面用，纯 ctypes）；--list 列窗口标题
 │   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
 │   └── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
 ├── probes/                  # Blender 5.2 实测输出样本（正则的依据）
@@ -131,23 +167,27 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（89 条，不依赖 Blender，约 26s）
+# 单测（101 条，不依赖 Blender，约 29s）
 python -m unittest discover -s tests -p "test_*.py"
 
-# 真机冒烟（需要 Blender 5.2，约 40s）
+# 真机冒烟（需要 Blender 5.2，约 90s）
 python tools/smoke_real_blender.py
-#   1/4 完整渲染 6 帧
-#   2/4 中途杀掉 Blender → 续跑
-#   3/4 EEVEE 引擎切换 + 首帧预热
-#   4/4 读取工程配置（无头 Blender 读 .blend）
+#   1/5 完整渲染 6 帧
+#   2/5 中途杀掉 Blender → 续跑
+#   3/5 EEVEE 引擎切换 + 首帧预热
+#   4/5 读取工程配置（无头 Blender 读 .blend）
+#   5/5 「一直重启」A/B 对照：同一份"连崩 6 次"的启动器，5 次上限 vs 不限次数
 
-# 界面自检：自动填一套配置并用假 Blender 跑一轮
+# 打包（产出后会自动校验 sidecar / 内置假 Blender / 完整 core 流水线）
+python tools/build_exe.py --both
+
+# 界面自检：自动填一套配置并用内置假 Blender 跑一轮
 python main.py --demo
 ```
 
 单测用的是 `tests/fake_blender.py`（输出与真机同构的假进程），验证**接线**；
-真机冒烟验证**真机行为**（bpy API、路径替换、引擎别名、真被杀之后能不能接上）；
-界面则用 `tools/capture_screen.py` 抓真实窗口来核对布局与配色。
+真机冒烟验证**真机行为**（bpy API、路径替换、引擎别名、真被杀之后能不能接上、重启策略）；
+界面与打包产物则用 `tools/capture_screen.py` 抓真实窗口来核对。
 
 ---
 
