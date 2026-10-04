@@ -510,7 +510,8 @@ def verify(exe_dir):
     #    用 text=True 按 UTF-8 解码会直接抛 UnicodeDecodeError（这是自检脚本自己的坑）。
     p = subprocess.run([exe, "--help"], capture_output=True, timeout=180)
     head = (p.stdout or b"") + (p.stderr or b"")
-    has = b"--max-restarts" in head and b"--max-no-progress" in head
+    has = (b"--max-restarts" in head and b"--max-no-progress" in head
+           and b"--scene" in head)
     log("  %s --help 正常且含新选项" % ("✓" if (p.returncode == 0 and has) else "✗"))
     ok &= (p.returncode == 0 and has)
 
