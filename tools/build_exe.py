@@ -238,7 +238,11 @@ def _exe_icon_rgba(path, size=32):
 
     用 `PrivateExtractIconsW` 而不是 `ExtractIconExW`：后者给的是"系统大图标"尺寸
     （随 DPI 变），没法跟 `assets/app.ico` 里那一层逐像素比。
+
+    ⚠️ 入口先 abspath：Win32 的资源 API 对相对路径的行为不一致
+    （`GetFileVersionInfoSizeW` 直接返回 0，看起来像"资源不存在"，实为路径没规范化）。
     """
+    path = os.path.abspath(path)
     _init_gdi()
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
@@ -293,7 +297,13 @@ def _exe_icon_rgba(path, size=32):
 
 
 def _exe_file_version(path):
-    """读 exe 的 FileVersion 字符串（纯 ctypes，不用 pywin32）。"""
+    """读 exe 的 FileVersion 字符串（纯 ctypes，不用 pywin32）。
+
+    ⚠️ 必须传**绝对路径**：`GetFileVersionInfoSizeW` 给相对路径会返回 0，
+    于是这里静默返回 None —— 现象是"版本资源没写进 exe"，
+    实际是路径问题（本函数曾因此误报过一次，见 CHANGELOG）。
+    """
+    path = os.path.abspath(path)
     ver = ctypes.windll.version
     ver.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR,
                                             ctypes.POINTER(wintypes.DWORD)]
@@ -488,6 +498,7 @@ def verify(exe_dir):
     （datas 条目顺序写反时，TOC 里照样有记录、构建也照样"成功"，但运行时找不到文件。）
     两个 exe 的数据一致，查保留控制台输出的那个就够。
     """
+    exe_dir = os.path.abspath(exe_dir)      # 见 _exe_file_version 的注释：Win32 资源 API 只认绝对路径
     exe = os.path.join(exe_dir, CLI_NAME + ".exe")
     if not os.path.exists(exe):
         log("  ✗ 自检跳过：没找到 %s" % exe)

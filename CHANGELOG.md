@@ -91,10 +91,14 @@
 - 真机冒烟场景五最初用「外部 `taskkill` + 断言崩溃次数」→ 崩溃次数实测在 5~7 间浮动（击杀可能打到
   已退出的 PID），断言必然时灵时不灵 → 改为 `.bat` 确定性启动器
 - `brconsole/__init__.py` 的 `__version__` 自 0.2.0 起就没跟着升（0.3.0 漏了）→ 本次对齐到 0.4.0
+- 打包后自检的版本项**对相对路径会假失败**：`GetFileVersionInfoSizeW` 传相对路径返回 0，
+  `_exe_file_version()` 于是静默返回 `None`，看着像"版本资源没写进去"。
+  打包时没暴露是因为 `build()` 内部传的是绝对路径 → 现在读 PE 资源的函数入口一律 `os.path.abspath()`
+- AGENTS.md 坑清单的编号 20/21 重复（新增条目时插错位置）→ 重排为 19~28 连续编号
 
 ### 待办
 
-见 `DEVELOPMENT.md` 第四节第 7 项：exe 的图标与版本信息（`--icon` / `--version-file`）。
+无。`DEVELOPMENT.md` 第四节 7 项全部完成，`dist/` 下两个 exe 可直接分发。
 
 ---
 

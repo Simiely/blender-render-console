@@ -39,11 +39,12 @@
 20. **小图标不能靠等比缩放**：把 256px 那张缩到 16px，圆角会被抗锯齿啃掉、整块糊成"一个圆"，三角只剩几个点 —— 而任务栏/资源管理器里显示的**正是** 16px。`tools/make_icon.py` 的 `profile()` 按尺寸分档（≤20 / ≤28 / ≤40 / ≥48），改完图标**必须 `--sheet` 看跨尺寸对照图**再打包。
 21. **ctypes 调 Win32 必须先设 `argtypes`**：默认签名是 `c_int`，64 位下 HBITMAP/HICON 这类句柄会被截断，报 `ArgumentError: OverflowError: int too long to convert`（看着像"参数传错"，实为没声明签名）。本项目 `tools/build_exe.py::_init_gdi` 与 `tools/capture_screen.py` 都是这个套路。
 22. **exe 图标 / 窗口图标是两回事**：`icon=` 写进 PE 资源只影响 exe 本身；**Tk 窗口不会继承**，不额外调 `iconbitmap` 就顶着 Tk 自带的羽毛。窗口图标要另带一份数据文件（`_brc/assets/app.ico`），由 `gui.icon_path()` 定位。
-20. **控制台符号要挑 cp936 编得出来的**：`✗`(U+2717) / `✓`(U+2713) / `⚠`(U+26A0) **不在 cp936 里**，Windows 控制台 exe 的 stdout 写它们会抛 `UnicodeEncodeError`；CLI 里统一用 `×` / `※`（`→` `·` 这些是安全的）。再兜一层 `reconfigure(errors="replace")`。
-21. **静默吞异常的地方必须留痕**：`core.emit()` 曾写 `except Exception: pass`，把上面那个编码异常一起吞了，导致渲染失败时**一个字的错误信息都没有、进程只返回 1**，非常难查。现在首次回调异常会记进 `result["reporter_error"]`，CLI 在失败时兜底再打一次。
-22. **`--windowed` 的 exe 没有可用的 stderr**：界面起不来时它表现得像"进程活着但没窗口"。排查一律**先切 `console=True` 的那个 exe**（本项目就是 `dist/brc.exe`）拿 traceback。
-23. **`.bat` 可以直接当 `subprocess` 的 `args[0]`**（CreateProcess 会自己拉 cmd.exe），退出码与参数原样传递 —— 用来做"确定性地崩"的启动器很方便。但**转交路径必须用反斜杠**（`C:/...` 会找不到而返回 1），且批处理里读计数器别用 `set /p`（会吃进行尾 CR），要用 `for /f "usebackq delims="`。
-24. **跨进程的时序断言要能证伪**：「监测到新帧就 kill 掉 Blender 数崩溃次数」实测在 5~7 之间浮动（有一次 kill 打到了已退出的 PID）。要么把随机性消除，要么改成 A/B 对照实验（本项目：同一份"连崩 6 次"启动器，`--max-restarts 5` 必须放弃且 0 帧产出、`unlimited` 必须渲完 12 帧）。
+23. **控制台符号要挑 cp936 编得出来的**：`✗`(U+2717) / `✓`(U+2713) / `⚠`(U+26A0) **不在 cp936 里**，Windows 控制台 exe 的 stdout 写它们会抛 `UnicodeEncodeError`；CLI 里统一用 `×` / `※`（`→` `·` 这些是安全的）。再兜一层 `reconfigure(errors="replace")`。
+24. **静默吞异常的地方必须留痕**：`core.emit()` 曾写 `except Exception: pass`，把上面那个编码异常一起吞了，导致渲染失败时**一个字的错误信息都没有、进程只返回 1**，非常难查。现在首次回调异常会记进 `result["reporter_error"]`，CLI 在失败时兜底再打一次。
+25. **`--windowed` 的 exe 没有可用的 stderr**：界面起不来时它表现得像"进程活着但没窗口"。排查一律**先切 `console=True` 的那个 exe**（本项目就是 `dist/brc.exe`）拿 traceback。
+26. **`.bat` 可以直接当 `subprocess` 的 `args[0]`**（CreateProcess 会自己拉 cmd.exe），退出码与参数原样传递 —— 用来做"确定性地崩"的启动器很方便。但**转交路径必须用反斜杠**（`C:/...` 会找不到而返回 1），且批处理里读计数器别用 `set /p`（会吃进行尾 CR），要用 `for /f "usebackq delims="`。
+27. **跨进程的时序断言要能证伪**：「监测到新帧就 kill 掉 Blender 数崩溃次数」实测在 5~7 之间浮动（有一次 kill 打到了已退出的 PID）。要么把随机性消除，要么改成 A/B 对照实验（本项目：同一份"连崩 6 次"启动器，`--max-restarts 5` 必须放弃且 0 帧产出、`unlimited` 必须渲完 12 帧）。
+28. **Win32 的资源 API 只认绝对路径**：`GetFileVersionInfoSizeW` 传相对路径**返回 0**（不报错），于是 `_exe_file_version()` 静默返回 `None`，现象是"版本资源没写进 exe"，实际是路径没规范化。凡是读 PE 资源（版本 / 图标）的函数，入口一律先 `os.path.abspath()`。
 
 ## 约定
 
