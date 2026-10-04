@@ -1,5 +1,7 @@
 # blender-render-console
 
+<img src="assets/app_preview.png" width="96" alt="应用图标">
+
 用代码（而不是 Blender GUI）启动渲染的 Windows 小工具：无头调用 Blender，实时显示**进度**与**预计结束时间**，崩溃后**自动续跑**。
 
 ---
@@ -17,7 +19,8 @@
 ## 当前状态
 
 > **v0.4.0：单文件 exe 已可用** —— `dist/blender-render-console.exe`（双击即界面）/ `dist/brc.exe`（命令行）。
-> 深色主题、选中工程自动读配置、崩溃续跑、**「一直重启，直到全部渲完」**均已真机实测。
+> 深色主题、选中工程自动读配置、崩溃续跑、**「一直重启，直到全部渲完」**均已真机实测；
+> exe 带应用图标（含窗口图标）与文件属性里的版本信息。
 
 | 能力 | 状态 |
 |---|---|
@@ -30,7 +33,7 @@
 | **一直重启，直到全部渲完**（带无进展护栏） | ✅ 真机 A/B 实测，见下 |
 | 取消（停止按钮 / Ctrl+C）并保留进度 | ✅ 单测覆盖 |
 | 命令行模式 | ✅ |
-| exe 图标与版本信息 | ⏳ 可选打磨项 |
+| **exe 图标与版本信息** | ✅ 图标逐像素比对；窗口图标截图核对；版本资源对齐 `__version__` |
 
 「一直重启」的实测口径 —— 用同一个「前 6 次启动必定失败」的启动器（`.bat`，之后原样转交真 Blender），
 只改重启上限这一个变量：
@@ -150,9 +153,12 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   ├── eta.py               # ETA 估算（去预热 + EMA）
 │   ├── state.py             # 断点状态文件（原子落盘）
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
+├── assets/
+│   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
 ├── tests/                   # 101 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
-│   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），默认跑一遍打包后自检
+│   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
+│   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
 │   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（本机 Python 无 tkinter）
 │   ├── smoke_real_blender.py  # 真机冒烟 5 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 「一直重启」A/B
 │   ├── capture_screen.py    # 抓窗口/全屏 PNG（验证界面用，纯 ctypes）；--list 列窗口标题
@@ -178,8 +184,11 @@ python tools/smoke_real_blender.py
 #   4/5 读取工程配置（无头 Blender 读 .blend）
 #   5/5 「一直重启」A/B 对照：同一份"连崩 6 次"的启动器，5 次上限 vs 不限次数
 
-# 打包（产出后会自动校验 sidecar / 内置假 Blender / 完整 core 流水线）
+# 打包（产出后自动跑 5 项自检：--help / exe 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
 python tools/build_exe.py --both
+
+# 改图标后先扫一眼跨尺寸对照图（16px 才是任务栏里真正看到的那个）
+python tools/make_icon.py --sheet sheet.png
 
 # 界面自检：自动填一套配置并用内置假 Blender 跑一轮
 python main.py --demo

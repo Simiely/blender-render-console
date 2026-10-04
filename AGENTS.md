@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-04（commit `3d86184`）v0.4.0 · 单文件 exe 已交付（GUI + 命令行）
+> 📌 **文档基线**：2026-10-04（commit `<待回填>`）v0.4.0 · 单文件 exe 已交付（GUI + 命令行，带图标与版本信息）
 > v0.4.0 详见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
@@ -11,6 +11,8 @@
 - **Blender 5.2.2 LTS**，内置 Python 3.13.13，引擎 Cycles / EEVEE，渲染设备 OptiX 或 CUDA
 - **宿主 Python 3.13.12**（托管版，**不含 tkinter**）——靠 `sidecar/` 提供（`tools/build_tkinter.py` 生成，`tkboot.py` 负责自举）
 - 交付产物：PyInstaller **单文件** exe（`dist/blender-render-console.exe` 界面版 / `dist/brc.exe` 命令行版）
+- **图标**：`assets/app.ico`（`tools/make_icon.py` 纯标准库生成，**不需要 Pillow**）
+- **版本号唯一来源**：`brconsole/__init__.py` 的 `__version__`（打包时现读，别在别处再写一份）
 - 平台：Windows（bash 走 Git Bash）
 
 ## 关键坑（越具体越好，改代码前必读）
@@ -34,6 +36,9 @@
 17. **打包后 `.py` 源码不在磁盘上**：PyInstaller 把模块收进 PYZ 归档，`_MEIPASS/brconsole/driver.py` **不存在**（只有数据文件才落地）。所以"读自己的源码来注入"必须把那份 `.py` 当**数据文件**另带一份（本项目放 `_brc/py/driver.py`，见 `core.read_driver_source`）。`inspect.py` 因为把脚本写成字符串字面量才幸免。
 18. **PyInstaller `datas` 的元组顺序是 `(目标名, 源路径, 类型)`**：写反了**构建照样成功、TOC 里也有记录**，但运行时文件不落地。所以"打包成功"不等于"产物可用"，`tools/build_exe.py` 默认会跑一遍自检（含完整 core 流水线）。
 19. **exe 里带 tkinter 要整棵 `tcl` 目录**：只带 `tcl8.6`/`tk8.6` 会缺 `dde1.4`/`reg1.3`/`tcl8`（Tcl 的 `auto_path` 是 `[file dirname $tcl_library]`），Tk 会在初始化中途报错。另外**必须赋值覆盖 `TCL_LIBRARY`**（本机系统里另有一个软件设的 Tcl 8.6.12，沿用就 `version conflict`），并用 `os.add_dll_directory` + `sys.path` 挂上 `_brc/DLLs`。
+20. **小图标不能靠等比缩放**：把 256px 那张缩到 16px，圆角会被抗锯齿啃掉、整块糊成"一个圆"，三角只剩几个点 —— 而任务栏/资源管理器里显示的**正是** 16px。`tools/make_icon.py` 的 `profile()` 按尺寸分档（≤20 / ≤28 / ≤40 / ≥48），改完图标**必须 `--sheet` 看跨尺寸对照图**再打包。
+21. **ctypes 调 Win32 必须先设 `argtypes`**：默认签名是 `c_int`，64 位下 HBITMAP/HICON 这类句柄会被截断，报 `ArgumentError: OverflowError: int too long to convert`（看着像"参数传错"，实为没声明签名）。本项目 `tools/build_exe.py::_init_gdi` 与 `tools/capture_screen.py` 都是这个套路。
+22. **exe 图标 / 窗口图标是两回事**：`icon=` 写进 PE 资源只影响 exe 本身；**Tk 窗口不会继承**，不额外调 `iconbitmap` 就顶着 Tk 自带的羽毛。窗口图标要另带一份数据文件（`_brc/assets/app.ico`），由 `gui.icon_path()` 定位。
 20. **控制台符号要挑 cp936 编得出来的**：`✗`(U+2717) / `✓`(U+2713) / `⚠`(U+26A0) **不在 cp936 里**，Windows 控制台 exe 的 stdout 写它们会抛 `UnicodeEncodeError`；CLI 里统一用 `×` / `※`（`→` `·` 这些是安全的）。再兜一层 `reconfigure(errors="replace")`。
 21. **静默吞异常的地方必须留痕**：`core.emit()` 曾写 `except Exception: pass`，把上面那个编码异常一起吞了，导致渲染失败时**一个字的错误信息都没有、进程只返回 1**，非常难查。现在首次回调异常会记进 `result["reporter_error"]`，CLI 在失败时兜底再打一次。
 22. **`--windowed` 的 exe 没有可用的 stderr**：界面起不来时它表现得像"进程活着但没窗口"。排查一律**先切 `console=True` 的那个 exe**（本项目就是 `dist/brc.exe`）拿 traceback。
@@ -61,8 +66,12 @@ python -m unittest discover -s tests -p "test_*.py"
 # 真机冒烟 5 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B（需要 Blender 5.2）
 python tools/smoke_real_blender.py
 
-# 打包成两个单文件 exe（产出后自动跑一遍打包后自检：--help / 内置假 Blender / 完整 core 流水线）
+# 打包成两个单文件 exe（产出后自动跑 5 项自检：--help / 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
 python tools/build_exe.py --both
+
+# 重新生成应用图标；**改完图标先扫一眼跨尺寸对照图再打包**（16px 才是任务栏里看到的那个）
+python tools/make_icon.py
+python tools/make_icon.py --sheet sheet.png
 
 # 界面：直接打开 / 载入工程 / 自检跑一轮模拟任务（用假 Blender）
 python main.py

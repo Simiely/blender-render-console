@@ -38,6 +38,30 @@ def _stamp():
     return time.strftime("%H:%M:%S")
 
 
+def icon_path():
+    """app.ico 的位置：源码运行在仓库 `assets/` 下，打包后在 `_brc/assets/` 下。"""
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+        return os.path.join(base, "_brc", "assets", "app.ico")
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "assets", "app.ico")
+
+
+def _apply_icon(root):
+    """设窗口/任务栏图标。
+
+    exe 自己的图标由打包时写进 PE 资源，但 **Tk 窗口不会自动继承** —— 不设的话
+    任务栏和标题栏会显示 Tk 自带的羽毛图标。用 `default=` 让后续弹出的子窗口也带上。
+    图标缺失或格式不对不该影响功能，所以整体吞异常。
+    """
+    try:
+        p = icon_path()
+        if os.path.exists(p):
+            root.iconbitmap(default=p)
+    except Exception:
+        pass
+
+
 class App(object):
     """主窗口。"""
 
@@ -57,6 +81,7 @@ class App(object):
         self._inspecting = False
 
         root.title("%s · 无头渲染控制台" % TITLE)
+        _apply_icon(root)
         root.geometry("1000x840")
         root.minsize(900, 700)
         self._build(root)

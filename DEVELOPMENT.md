@@ -12,8 +12,8 @@
 **要解决的痛点**：Blender GUI 渲染大工程时整个进程会崩（多为 Windows 显示驱动超时重置），且崩了之后要从头再来。
 
 **当前阶段**：**已交付**（v0.4.0）。GUI + 自动读工程配置 + 深色主题 + 崩溃续跑 + 「一直重启直到渲完」均已真机实测；
-`dist/` 下有两个可直接分发的单文件 exe（图形界面版 / 命令行版）。
-剩余可选项见第四节第 7 项（图标与版本信息）。
+`dist/` 下有两个可直接分发的单文件 exe（图形界面版 / 命令行版），带图标与版本信息。
+第四节待办清单已全部完成。
 
 ---
 
@@ -389,8 +389,41 @@
   "源路径"成了不存在的 `_brc/selftest`；构建不校验、TOC 照记，但解包时那个文件根本不存在。
 - **解决**：改成 `(目标名, 源路径, 'DATA')`，且**把"运行时能不能真的拿到"写进打包后自检**。
 - **预防**：**"打包成功"不等于"产物可用"**。凡是有"塞进包里的资源"，都要在打包后真跑一次
-  （本项目：`tools/build_exe.py` 默认执行 `verify()`，会核对 `--help`、内置假 Blender，
-  以及**完整 core 流水线跑一轮**）。
+  （本项目：`tools/build_exe.py` 默认执行 `verify()`，会核对 `--help`、**图标是否写进 PE**、
+  **版本资源是否与 `__version__` 一致**、内置假 Blender，以及**完整 core 流水线跑一轮**）。
+
+---
+
+### 问题：图标直接等比缩放，16px 会糊成"一个圆"
+
+**TL;DR**：小图标必须单独设计，不能把 256 那张缩下去。
+
+- **问题**：256px 那张很好看（橙底 + 播放三角），但缩到 16px 后圆角被抗锯齿啃掉、
+  整块变成近似圆形，三角只剩几个模糊的点 —— 而任务栏和资源管理器里看到的**正是**这个 16px。
+- **根因**：圆角半径、三角大小都是按比例定的。尺寸越小，同样的"比例"占用的绝对像素越少，
+  细节先于轮廓消失。
+- **解决**：`make_icon.profile(size)` 按尺寸分档 —— ≤20px「铺满 + 小圆角(0.105) + 三角放大 1.30×」，
+  ≤28px 中间档，≤40px 又缓一档，≥48 用设计稿原值。
+- **预防**：`make_icon.py --sheet` 出一张**跨尺寸、跨明暗底**的放大对照图，
+  改完图标先扫一眼再打包。只看 256 那张是会被骗的。
+
+---
+
+### 问题：ctypes 调 GDI 不设 argtypes，64 位下句柄溢出
+
+**TL;DR**：`ctypes.windll` 的默认签名是 `c_int`，句柄会被截断。
+
+- **问题**：从 exe 里读图标做自检时，`DeleteObject(info.hbmMask)` 抛
+  `ctypes.ArgumentError: OverflowError: int too long to convert`。
+- **根因**：`windll.gdi32` 的函数没声明 `argtypes`，`ctypes` 就按 `c_int`（32 位）传参，
+  而 HBITMAP/HICON 是 64 位指针 → 装不下。
+  报错指向的是"参数太长"，很容易误判成坐标/标志位传错了。
+- **解决**：`_init_gdi()` 里一次性把用到的 User32/GDI32 函数签名全部声明
+  （含 `PrivateExtractIconsW` / `GetIconInfo` / `GetObjectW` / `GetDIBits` / `DeleteObject`）。
+- **预防**：**凡是用 ctypes 调 Win32，先设 `argtypes`/`restype` 再动手**。
+  本项目 `tools/capture_screen.py` 也是同样的路子。
+  另外提取图标要用 `PrivateExtractIconsW`（能指定尺寸），
+  用 `ExtractIconExW` 拿到的是"系统大图标"尺寸（随 DPI 变），没法跟 ico 里的层逐像素比。
 
 ---
 
@@ -414,8 +447,19 @@
      （前者给 `--demo` 自检，后者给"注入 driver 源码"用，见第三节对应问题）
    - 打包后**默认跑一遍自检**（`verify()`），含"完整 core 流水线跑一轮" —— 只看"打包成功"会漏掉
      资源没落地这类问题
-7. **exe 的图标与版本信息**（`--icon` / `--version-file`）—— 还没做，属于可选打磨项。
-   当前 exe 用的是 PyInstaller 默认图标，文件属性里也没有版本号。
+7. ~~**exe 的图标与版本信息**~~ —— ✅ 2026-10-04 完成。`assets/app.ico` 由 `tools/make_icon.py` 生成
+   （纯标准库自己画 + 手写 ICO 容器，**不需要 Pillow**），打包时经 `icon=` / `version=` 写进 PE 资源；
+   窗口图标另走一份数据文件，运行时由 `gui.icon_path()` 定位。要点：
+   - **小尺寸单独调过**：16px 只有 256 个像素，把 256 那张等比缩下去会糊成"一个圆"
+     （圆角被抗锯齿啃没、三角只剩几个点）→ ≤40px 改用「铺满 + 小圆角 + 放大的三角」
+     （`make_icon.profile()`）。改完图标务必 `--sheet` 扫一眼再打包
+   - 版本号**唯一来源是 `brconsole/__init__.py` 的 `__version__`**，打包时现读、不另存一份
+     （已经漂过一次：文档写到 0.3.0 而代码里还是 0.2.0）
+   - 打包后自检新增两项：`check_icon()` 逐像素比对 exe 图标与 `assets/app.ico` 的 32px 那层；
+     `check_version()` 读 PE 版本资源与 `__version__` 对齐
+   - 读 PE 资源用纯 ctypes（`PrivateExtractIconsW` / `GetFileVersionInfoW`）。
+     注意 **GDI 调用必须先设 `argtypes`**，否则 64 位下句柄按 `c_int` 传，
+     报的是 `OverflowError: int too long to convert`（看着像参数类型写错，实为没声明签名）
 
 ---
 
@@ -428,7 +472,9 @@
 | `tools/probe_render.py` | 生成上面两份日志的探针 |
 | `tools/probe_driver.py` | 验证驱动脚本 JSON 进度实时性（时间戳与真实耗时吻合） |
 | `tools/build_tkinter.py` | tkinter 提取与拼装（GUI 阶段用） |
-| `tools/build_exe.py` | PyInstaller 打包（spec + `Tree()`），产出两个单文件 exe，并**默认跑一遍打包后自检** |
+| `tools/make_icon.py` | **生成应用图标**（纯标准库 + 4× 超采样，手写 ICO 容器，不需要 Pillow）；`--sheet` 出跨尺寸/跨明暗底对照图 |
+| `assets/app.ico` | 图标本体：16/24/32/48/64/128/256 七层，≤128 用 BMP、256 用 PNG 编码 |
+| `tools/build_exe.py` | PyInstaller 打包（spec + `Tree()`），写图标与版本资源，产出两个单文件 exe，并**默认跑一遍打包后自检** |
 | `tools/smoke_real_blender.py` | **真机冒烟 5 场景**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 → 「一直重启」A/B 对照 |
 | `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 采样像素；`--list` 列窗口标题 |
 | `tests/fake_blender.py` | 与真机同构的假 Blender（原生行 + JSON 进度 + 可指定帧崩溃 / 前 N 次启动必崩），给续跑逻辑做端到端测试 |

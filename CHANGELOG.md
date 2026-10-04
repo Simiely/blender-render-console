@@ -4,7 +4,8 @@
 
 ## [0.4.0] - 2026-10-04
 
-**单文件 exe 可用**：`dist/blender-render-console.exe`（双击即界面）与 `dist/brc.exe`（命令行，保留输出）。
+**单文件 exe 可用**：`dist/blender-render-console.exe`（双击即界面）与 `dist/brc.exe`（命令行，保留输出），
+两者都带**应用图标**（exe 资源 + 窗口图标）与**文件属性里的版本信息**。
 同时新增**「一直重启，直到全部渲完」**的重启策略。
 
 ### 新增
@@ -15,6 +16,15 @@
   - 单帧尝试额度允许 `0 = 不限`（`state.remaining` / `exhausted`）：否则单帧额度会先于重启次数耗尽，
     「一直重启」会形同虚设（崩几次就再也没有可渲染的帧了）
 - `tools/build_exe.py` —— PyInstaller 打包（spec + `Tree()`），产出 GUI / 命令行两个单文件 exe
+- **exe 图标与版本信息**：
+  - `tools/make_icon.py` —— 纯标准库生成 `assets/app.ico`（16/24/32/48/64/128/256 七层，
+    ≤128 用 BMP、256 用 PNG 编码），自己画 + 手写 ICO 容器，**不需要 Pillow**；
+    `--sheet` 出跨尺寸 / 跨明暗底的放大对照图供自查
+  - 打包时经 `icon=` / `version=` 写进 PE 资源；**窗口**图标另带一份数据文件，
+    运行时由 `gui.icon_path()` 定位（不设的话任务栏和标题栏会顶着 Tk 自带的羽毛图标）
+  - 版本号**唯一来源是 `brconsole/__init__.py` 的 `__version__`**，打包时现读、不另存一份
+- **打包后自检扩到 5 项**：新增「exe 图标逐像素比对 `assets/app.ico` 的 32px 层」
+  与「PE 版本资源 == `__version__`」，均用纯 ctypes 读（`PrivateExtractIconsW` / `GetFileVersionInfoW`）
 - **打包后 `--demo` 自检仍可用**：把 `tests/fake_blender.py` 一起打进 exe，
   新增内部入口 `main.py --fake-blender` 让 exe 自己再当一次子进程 ——
   打包后没有独立的 `python.exe` 可以拉起来，而自检必须走**真实多进程**路径才测得出接线问题
@@ -51,6 +61,16 @@
   退出码与参数都原样传递；但**转交路径必须是反斜杠** —— 写成 `C:/...` 会找不到而返回 1
 - 用 `.bat` 读计数器时，`set /p` 会把行尾 CR 一起吃进来，导致 `set /a` 算错；
   改用 `for /f "usebackq delims="` 读文件才稳
+- **小图标不能靠等比缩放**：256px 那张很好看，缩到 16px 后圆角被抗锯齿啃掉、
+  整块糊成"一个圆"，三角只剩几个点 —— 而任务栏/资源管理器里看到的**正是** 16px。
+  修法是按尺寸分档（`make_icon.profile()`）：≤20px 用「铺满 + 小圆角 0.105 + 三角放大 1.30×」，
+  ≤28 / ≤40 各缓一档，≥48 才用设计稿原值
+- **ctypes 调 GDI 必须先设 `argtypes`**：默认签名是 `c_int`，64 位下 HBITMAP/HICON 会被截断，
+  报 `ctypes.ArgumentError: OverflowError: int too long to convert`（看着像"参数传错"，
+  实为没声明签名）。另外从 exe 提图标要用 `PrivateExtractIconsW`（可指定尺寸），
+  `ExtractIconExW` 给的是"系统大图标"尺寸（随 DPI 变），没法跟 ico 里的层逐像素比
+- 读 PE 版本资源时，`StringTable` 的 key 必须与 `VarFileInfo` 的 `Translation` 对上
+  （本项目 `080404b0` ↔ `[2052, 1200]`，即简体中文 + Unicode），否则 `VerQueryValue` 查 `FileVersion` 返回空
 
 ### 修掉的问题
 
