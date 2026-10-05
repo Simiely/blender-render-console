@@ -1,8 +1,7 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-05（commit `4dc5977`）v0.6.0 · 开机自启 + 任务存档 + 开机自动续跑
-> （含收尾自查修掉的 4 处：勾选死控件 / 失败语义 / 输出模板绝对化 / Run 项 260 字符护栏）
-> v0.6.0 详见 CHANGELOG
+> 📌 **文档基线**：2026-10-05（commit `__________`）v0.6.1 · 「一直重启」时两个限次自动填 0（不限）
+> v0.6.0（开机自启 + 任务存档 + 开机自动续跑，含收尾自查修掉的 4 处）见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ---
@@ -56,6 +55,7 @@
 36. **会被"另一个进程、另一个时刻"使用的路径，一律在配置诞生时绝对化**：`blend` 早就 `abspath` 了，输出模板却原样留着 —— 而开机自启拉起的进程**工作目录 ≠ 用户点开始时的工作目录**（Windows 的 Run 项只规定"数据值是一条命令行"，没有任何指定工作目录的机制，见 Microsoft KB 179365）。后果不报错、只是**静默重渲**：产物和 `.render_state.json` 都漂到别处，续跑找不到断点就从头再来。`//` 前缀要先按工程目录展开再绝对化（`abspath("//out/f_####")` 会变成 `\\out\f_####` 这种 UNC 路径）。
 37. **Run 项的数据值上限 260 个字符**：Microsoft KB 179365 原文 "The data value for a key is a command line no longer than 260 characters." 超了**写入本身会成功**、开机却不执行 —— "开关开着、功能没生效"是最坏的状态（用户只会以为自己没设对）。`autostart.enable()` 超限直接拒绝并提示把程序挪到更短的目录。
 38. **失败与崩溃不能共用同一套自动重试策略**：判据是「进程有没有**活着**把结果报出来」，而不是「成功还是失败」。被强杀/掉电 → 压根没代码执行 → `autoresume` 保持 True → 开机续跑；而被取消 / 重试额度耗尽 / 抛异常都是**活着的进程**写出来的结果 → 撤掉自动续跑（断点保留）并把 **原因**记进存档（`auto_reason`），否则一个注定失败的任务（如场景里没有相机）会每次登录都白跑一遍。这段判据放在 `guimodel.settle_task_action()`（不碰 tkinter）就是为了能被单测钉住。
+39. **"一直重启"要顺手把限次参数默认成"不限"，但**绝不能把兜底一起删掉**：只把"重启次数"放开时，`max_frame_attempts` / `max_no_progress_rounds` 里随便留一个正数，任务就会在"其实还能接着重试"的时候结束（帧被判 `exhausted` 踢出队列、或撞上 `no_progress` 刹车）——与用户选的选项正好相反。所以界面在选中"一直重启"时把两框**默认填 `0`**。但这只是**默认值、不锁控件**：`no_progress` 是内核里唯一防死循环的闸门（`test_core.py::test_no_progress_guard_stops_unlimited_mode` 专门钉着它），锁死等于把闸门删了，卡在同一帧反复崩时会一直转到有人来停。配套单测 `test_gui_model.py::TestUnlimitedRestartDefaults`，其中 `test_user_can_put_the_guard_back` 就是防"默认值被实现成强制值"的护栏。**这条规则只放在界面层**：内核若也强制，`--max-no-progress` 会被静默忽略（"参数悄悄变了"），且 CLI 与 GUI 的语义会分叉。
 
 ## 约定
 
@@ -72,7 +72,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（212 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（221 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 6 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景（需要 Blender 5.2）

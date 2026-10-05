@@ -12,7 +12,7 @@
 import os
 from collections import deque
 
-from .core import parse_restart_limit
+from .core import UNLIMITED, parse_restart_limit
 from .eta import fmt_duration
 from .state import JobState
 
@@ -31,6 +31,42 @@ SCENE_PLACEHOLDERS = (SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL)
 # 现在文案本身就是要解析的输入，翻译交给 `core.parse_restart_limit`（它认中文）。
 RESTART_OPTIONS = ["1 次", "3 次", "5 次（默认）", "10 次", "一直重启，直到全部渲完"]
 DEFAULT_RESTART_OPTION = RESTART_OPTIONS[2]
+UNLIMITED_RESTART_LABEL = RESTART_OPTIONS[-1]
+
+# 「限次类」两个字段的默认值。`FormModel` 与界面共用这一份，
+# 避免"3"散落在好几处、改一处忘一处。
+DEFAULT_ATTEMPTS = "3"
+DEFAULT_NO_PROGRESS = "3"
+
+# 「不限」的写法。0 是 core/state 里**既有**的约定：`JobState.remaining/exhausted` 用
+# `max_attempts <= 0` 表示不限，`RenderJob` 用 `max_no_progress_rounds > 0` 才启用兜底。
+# 所以"不限"根本不需要给内核加新语义，填 0 即可。
+UNLIMITED_LIMITS = ("0", "0")
+
+
+def is_unlimited_restart(value):
+    """这个重启选项是不是「一直重启」。
+
+    **必须走 `parse_restart_limit` 而不是比对文案字符串**：下拉里存的是显示文案，
+    重复一份字面量就等于把"文案"和"解析规则"绑死两处（历史上正是这么漂过一次 ——
+    界面显示英文 `unlimited`，而中文文案表从来没有任何控件用过）。
+    解析不了的值走 `default=None`，与「一直重启」区分开。
+    """
+    return parse_restart_limit(value, default=None) == UNLIMITED
+
+
+def unlimited_limit_fill(restart_value):
+    """选中某个重启选项时，「单帧最多尝试 / 连续无进展轮数」该**默认填**什么。
+
+    选「一直重启，直到全部渲完」→ 返回 `("0", "0")`（0 = 不限，内核既有约定）：
+    这才是用户选它的本意 —— 否则留下任意一个正数，任务都会在"其实还能接着重试"的时候
+    提前结束（帧被判 exhausted 踢出队列，或触发 no_progress 直接刹车）。
+
+    **只改默认值、不锁控件**：留一条退路 —— 万一卡在同一帧反复崩，
+    把无进展轮数填回去就是兜底（那也是内核里唯一防死循环的闸门）。
+    不是这个选项就返回 None = 别动用户填的值。
+    """
+    return UNLIMITED_LIMITS if is_unlimited_restart(restart_value) else None
 
 ENGINES = [("保持工程设置（用 .blend 里的）", KEEP), ("Cycles", "CYCLES"),
            ("EEVEE", "BLENDER_EEVEE"), ("Workbench", "BLENDER_WORKBENCH")]
@@ -183,8 +219,8 @@ class FormModel(object):
         self.scene = kw.get("scene", SCENE_DEFAULT_LABEL)   # 场景名，或占位文案
         self.resume = kw.get("resume", True)
         self.max_restarts = kw.get("max_restarts", DEFAULT_RESTART_OPTION)
-        self.max_no_progress = kw.get("max_no_progress", "3")
-        self.max_frame_attempts = kw.get("max_frame_attempts", "3")
+        self.max_no_progress = kw.get("max_no_progress", DEFAULT_NO_PROGRESS)
+        self.max_frame_attempts = kw.get("max_frame_attempts", DEFAULT_ATTEMPTS)
         self.show_native = kw.get("show_native", False)
         # 界面上没有这两个控件（CLI 专有参数），但**必须原样透传**：
         # 从任务存档回填时如果丢掉它们，重建出来的任务会静默按默认值跑 ——
@@ -241,8 +277,8 @@ class FormModel(object):
             scene=d.get("scene") or SCENE_DEFAULT_LABEL,
             resume=bool(d.get("resume", True)),
             max_restarts=restart_label_for(d.get("max_restarts", 5)),
-            max_no_progress=str(d.get("max_no_progress_rounds", 3)),
-            max_frame_attempts=str(d.get("max_frame_attempts", 3)),
+            max_no_progress=str(d.get("max_no_progress_rounds", int(DEFAULT_NO_PROGRESS))),
+            max_frame_attempts=str(d.get("max_frame_attempts", int(DEFAULT_ATTEMPTS))),
             extra_args=d.get("extra_args") or (),
             restart_delay=d.get("restart_delay", 2.0),
         )
@@ -317,11 +353,12 @@ class FormModel(object):
             scene=scene_to_config(self.scene),
             state_path=None, log_path=None,
             max_restarts=parse_restart_limit(self.max_restarts, default=5),
-            max_frame_attempts=3 if attempts is None else attempts,
+            max_frame_attempts=int(DEFAULT_ATTEMPTS) if attempts is None else attempts,
             resume=bool(self.resume),
             extra_args=self.extra_args,
             restart_delay=self.restart_delay,
-            max_no_progress_rounds=int(self.max_no_progress or 3))
+            max_no_progress_rounds=(int(DEFAULT_NO_PROGRESS) if no_progress is None
+                                    else no_progress))
         return cfg, errors, warns
 
     def as_dict(self):

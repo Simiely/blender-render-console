@@ -24,17 +24,25 @@ from tkinter import filedialog, messagebox, ttk
 from . import autostart, locate, taskstore, theme
 from .cli import parse_frames
 from .core import RenderJob
-from .guimodel import (DEFAULT_RESTART_OPTION, DEVICES, ENGINES, FORMATS,
-                       RESTART_OPTIONS, SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
+from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
+                       DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
+                       SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
-                       event_line, fields_from_detail, guess_state_path, scene_to_config,
-                       settle_task_action, state_summary)
+                       event_line, fields_from_detail, guess_state_path,
+                       scene_to_config, settle_task_action, state_summary,
+                       unlimited_limit_fill)
 from .inspect import (read_blend_info, scene_detail, scene_names,
                       summarize as summarize_blend)
 
 POLL_MS = 80
 LOG_MAX_LINES = 4000
 TITLE = "blender-render-console"
+
+# 「重启次数」旁边那句说明。两种态各一句，由 _apply_restart_defaults 二选一 ——
+# 写死在控件上会和实际行为对不上（选中「一直重启」后两框已被填成 0=不限，
+# 提示却还在说"受上面无进展轮数兜底"）。
+NOTE_RESTART_LIMITED = "选「一直重启，直到全部渲完」= 重启次数不限；上面两个限次会自动填 0（不限）"
+NOTE_RESTART_UNLIMITED = "「一直重启」：上面两个限次已填 0（不限）；想留兜底可把数字改回去"
 AUTOSTART_FLAG = autostart.AUTOSTART_FLAG
 
 
@@ -139,8 +147,11 @@ class App(object):
         self.v_resume = tk.BooleanVar(value=True)
         self.v_native = tk.BooleanVar(value=False)
         self.v_restarts = tk.StringVar(value=DEFAULT_RESTART_OPTION)
-        self.v_no_progress = tk.StringVar(value="3")
-        self.v_attempts = tk.StringVar(value="3")
+        self.v_no_progress = tk.StringVar(value=DEFAULT_NO_PROGRESS)
+        self.v_attempts = tk.StringVar(value=DEFAULT_ATTEMPTS)
+        # 选中「一直重启」时，把用户原来填的两个限次数值暂存在这里，切回去还原。
+        # None 表示"当前没有处于一直重启态"（回填存档时也会清成 None）。
+        self._limits_backup = None
         # 开机自启勾选态**不从记忆读**，而是下面按注册表实际登记情况回填 ——
         # 界面必须反映"真的会自启吗"，不能显示一个自己记的、可能已经失效的状态
         self.v_autostart = tk.BooleanVar(value=False)
@@ -228,15 +239,19 @@ class App(object):
         self.cb_restarts = ttk.Combobox(opts, textvariable=self.v_restarts, width=22,
                                         state="readonly", values=RESTART_OPTIONS)
         self.cb_restarts.pack(side="left")
+        self.cb_restarts.bind("<<ComboboxSelected>>", self.on_restart_change)
         ttk.Label(opts, text="单帧最多尝试").pack(side="left", padx=(12, 2))
-        ttk.Entry(opts, textvariable=self.v_attempts, width=4).pack(side="left")
+        # 留句柄便于真机探测脚本读值/状态（界面逻辑本身不依赖它）
+        self.ent_attempts = ttk.Entry(opts, textvariable=self.v_attempts, width=4)
+        self.ent_attempts.pack(side="left")
 
         r += 1
         opts_b = ttk.Frame(box)
         opts_b.grid(row=r, column=1, columnspan=3, sticky="w")
         ttk.Label(opts_b, text="连续这么多轮一帧都没推进就停").pack(side="left")
-        ttk.Entry(opts_b, textvariable=self.v_no_progress, width=4).pack(side="left", padx=3)
-        ttk.Label(opts_b, text="轮（“一直重启”的兜底，0=不限制）",
+        self.ent_no_progress = ttk.Entry(opts_b, textvariable=self.v_no_progress, width=4)
+        self.ent_no_progress.pack(side="left", padx=3)
+        ttk.Label(opts_b, text="轮（0 = 不限制）",
                   style="Muted.TLabel").pack(side="left", padx=(2, 0))
 
         r += 1
@@ -246,9 +261,8 @@ class App(object):
                         variable=self.v_native).pack(side="left")
         # 下拉里放的就是中文文案本身（不另设"显示值/实际值"两张表），
         # 由 core.parse_restart_limit 认中文，这里补一句人话解释即可
-        self.lbl_restart_note = ttk.Label(
-            opts2, text="选「一直重启，直到全部渲完」= 次数不限（仍受上面无进展轮数兜底）",
-            style="Muted.TLabel")
+        self.lbl_restart_note = ttk.Label(opts2, text=NOTE_RESTART_LIMITED,
+                                          style="Muted.TLabel")
         self.lbl_restart_note.pack(side="left", padx=(16, 0))
 
         # ---- 开机自启 / 自动续跑 ----
@@ -578,6 +592,38 @@ class App(object):
         if rec is not None:
             self.v_auto_resume.set(bool(rec.get("autoresume", True)))
 
+    # ---- 重启次数 ↔ 限次参数的默认值 ----
+    def on_restart_change(self, _event=None):
+        """下拉换选项（用户操作）。"""
+        self._apply_restart_defaults(remember=True)
+
+    def _apply_restart_defaults(self, remember):
+        """选「一直重启，直到全部渲完」→ 两个限次框**默认填 0（不限）**。
+
+        这才是选它的本意：留下任意一个正数，任务都会在"其实还能接着重试"的时候提前结束
+        （帧被判 exhausted 踢出队列 / 触发 no_progress 直接刹车），跟"崩溃后一直重试"相反。
+
+        **只改默认值、不锁控件** —— 想留兜底就把数字填回去（那是内核里唯一防死循环的闸门）。
+        切回带次数的选项时还原用户原来填的值，避免把 0（=不限）带进"5 次"这种有限次数的模式。
+
+        `remember=False` 用于从存档回填之后：那时两框的值以**存档**为准、
+        不该被默认值覆盖，只更新旁边那句提示文案。
+        """
+        fill = unlimited_limit_fill(self.v_restarts.get())
+        if fill is not None:
+            if remember and self._limits_backup is None:
+                self._limits_backup = (self.v_attempts.get(), self.v_no_progress.get())
+            if remember:
+                self.v_attempts.set(fill[0])
+                self.v_no_progress.set(fill[1])
+        elif self._limits_backup is not None:
+            attempts, no_progress = self._limits_backup
+            self._limits_backup = None
+            self.v_attempts.set(attempts)
+            self.v_no_progress.set(no_progress)
+        self.lbl_restart_note.configure(
+            text=NOTE_RESTART_UNLIMITED if fill is not None else NOTE_RESTART_LIMITED)
+
     def _apply_form_model(self, fm):
         """把 `FormModel` 铺到控件上（开机续跑回填用）。"""
         self.form = fm
@@ -605,6 +651,10 @@ class App(object):
         self.v_restarts.set(fm.max_restarts)
         self.v_no_progress.set(fm.max_no_progress)
         self.v_attempts.set(fm.max_frame_attempts)
+        # 值填完再更新旁边那句提示：remember=False 表示**别动刚填进去的值**，
+        # 只把文案对齐到这次的重启选项（存档里若是一直播重启，提示就该说"已填 0"）
+        self._limits_backup = None
+        self._apply_restart_defaults(remember=False)
 
     def _save_task(self, cfg, blender):
         """点击开始后**先存档再跑**：只有这样，进程被强杀时才有东西可供开机续跑。"""
