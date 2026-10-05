@@ -16,6 +16,19 @@ import sys
 import time
 
 
+# 与 brconsole/driver.py 的 FORMAT_EXT **必须逐项一致** —— 这个是假 Blender，真机走 driver。
+# ⚠️ 不能直接 import driver：打包后这个文件是被当**独立脚本**拉起来的（`_brc/selftest/`），
+#    那时磁盘上没有 brconsole 可导。所以只能留一份拷贝，但由
+#    `tests/test_driver_contract.py` 断言两张表逐项相等 —— 分叉会当场变红，
+#    而不是等用户用 TIFF 渲完才发现文件名不对（假 Blender 原来只有 PNG/JPEG/EXR 三项，
+#    真 driver 有 13 项，这就是已经发生的分叉）。
+FORMAT_EXT = {
+    "PNG": "png", "JPEG": "jpg", "JPEG2000": "jp2", "OPEN_EXR": "exr",
+    "OPEN_EXR_MULTILAYER": "exr", "TIFF": "tif", "BMP": "bmp", "TARGA": "tga",
+    "HDR": "hdr", "DPX": "dpx", "CINEON": "cin", "IRIS": "rgb", "WEBP": "webp",
+}
+
+
 def emit(kind, **kw):
     kw["kind"] = kind
     kw["t"] = round(time.time(), 3)
@@ -47,7 +60,7 @@ def main():
         job = json.load(f)
     frames = [int(x) for x in job["frames"]]
     tpl = job["output_template"]
-    ext = {"PNG": ".png", "JPEG": ".jpg", "OPEN_EXR": ".exr"}.get(job.get("file_format"), ".png")
+    ext = "." + FORMAT_EXT.get(job.get("file_format"), "png")
 
     if not args.no_native:
         native("Read blend: \"%s\"" % job.get("blend", "x.blend"))

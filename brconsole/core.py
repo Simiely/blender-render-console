@@ -359,7 +359,6 @@ class RenderJob(object):
         Blender 的采样进度是靠 `\\r` 原地刷新的，只按 `\\n` 切会让整轮进度挤成一行。
         这里用 raw 分块读（bufsize=0），既不丢实时性也不逐字节慢跑。
         """
-        buf = b""
         pending = b""
         try:
             while True:

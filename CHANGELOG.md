@@ -2,6 +2,57 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.4] - 2026-10-05
+
+**全量代码审核**。先上工具（`pyflakes` + `ruff` 的高信号规则集）做机械扫描，再逐条回代码取证，
+外加四项项目特有的专项扫描（编码 / 挂钟依赖 / shell 注入 / 资源泄漏）。
+
+### 修掉的真问题
+
+- **假 Blender 与真 driver 的扩展名表已经分叉**：`tests/fake_blender.py` 只认
+  PNG/JPEG/EXR **三项**，`brconsole/driver.py` 有 **13 项**。也就是说"输出文件名对不对"
+  这件事，用假 Blender 跑的**所有**测试都验不到 TIFF/BMP/WEBP 这些格式 ——
+  而打包自检用的正是假 Blender。已把两张表对齐，并用
+  `tests/test_driver_contract.py` 把它们**逐项锁死**（谁改一边没改另一边立刻变红）。
+- **模板自带扩展名时的判定不全 → 会写出双扩展名**：`output_path_for` 判定"是否已带扩展名"
+  时只查规范后缀集合，用户手打 `-o out/f_####.jpeg`（或工程里存的是 `.tiff`）时判定落空，
+  再补一次 → 得到 `f_0001.jpeg.jpg`。已补上常见别名 `jpeg` / `tiff`。
+- **`eta.py` 用真值判断数字**：`if not per:` 在单帧耗时恰为 0 时会被当成"没有基线"，
+  于是 0 秒的 ETA 被显示成 `--`。改成 `is None`。
+  这和 `locate.scan_root` 里 `if deadline:` 遇 0 为假是**同一个家族**（今天第二次踩），
+  两处都补了用例。
+
+### 顺带清掉的死代码（静态扫描确认）
+
+`core.py` 的 `buf`（真正在用的是 `pending`）、`gui.py` 未使用的 `SCENE_DEFAULT_LABEL` 导入、
+`build_exe.py` spec 模板里没用到的 `fake_dst`、度量/边界脚本里重构后残留的两个导入、
+两个探针脚本的 `sys`。清完 `pyflakes` 全仓只剩一条**有意为之**的（`tkboot.has_tkinter()` 里
+探测 `import tkinter`）。
+
+### 更正一条我自己写错的规则理由
+
+`check_boundaries.py` 的 `driver-isolated` 原来写"它顶层 `import bpy`，app 侧 import 必然当场炸"。
+**实测发现 `bpy` 是惰性导入的**（5 处全在函数体内），`import brconsole.driver` 在 app 侧真能成功。
+规则本身保留（把 337 行 Blender 专用脚本拖进 app 依赖图没有意义），但理由是错的，已更正。
+
+### 审核结论：以下几项**查过、没问题**
+
+- **编码**：全仓 `open()` / `fdopen()` **0 处**缺 `encoding=`（中文项目在 Windows 上最容易踩的坑）。
+- **`subprocess`**：0 处 `shell=True`。
+- **资源泄漏**：把 `ResourceWarning` 当错误跑全量单测（294 条）**全绿**。
+- **`driver.py` 的静默吞异常**：7 处逐一读过，都是"试多种方案、全失败才 `warn()`"，
+  没有"悄悄做错事"型。
+- **遗留标记**：无 TODO/FIXME/XXX/HACK。
+- **`state.py` 原子落盘**：tmp + `os.replace`，正确。
+- **`_pump` 跨线程访问 `self._proc`**：CPython 下属性读写原子，且 `_terminate` 有 `poll()` 保护。
+
+### 一项**没改**的发现（需要你拍板）
+
+**没有"只允许一个实例"的护栏**。场景：开机自启的实例正在续跑，用户又双击 exe 打开界面
+（这在自启模式下不会自动续跑，所以只是打开界面），然后在**新窗口**里点了「开始渲染」——
+两个 Blender 会同时往同一个输出目录写，断点文件也会互相覆盖。这不是崩溃，是**静默把任务跑坏**。
+加护栏涉及交互决策（拦不拦、怎么提示），没有擅自动手。
+
 ## [0.6.3] - 2026-10-05
 
 按量化架构评审的结论做的一轮结构优化（数字可用 `python tools/arch_metrics.py` 复现）。

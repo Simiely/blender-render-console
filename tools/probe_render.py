@@ -6,7 +6,6 @@
 import os
 import re
 import subprocess
-import sys
 import time
 
 BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"

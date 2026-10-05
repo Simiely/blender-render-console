@@ -447,7 +447,6 @@ exe = EXE(
         "tcl_root": os.path.join(SIDECAR, "tcl"),
         "tcl_root_dst": FROZEN_SUBDIR + "/tcl",
         "fake": os.path.join(ROOT, "tests", "fake_blender.py"),
-        "fake_dst": FROZEN_SUBDIR + "/selftest",
         "fake_dst_file": FROZEN_SUBDIR + "/selftest/fake_blender.py",
         "driver": os.path.join(ROOT, "brconsole", "driver.py"),
         "driver_dst_file": FROZEN_SUBDIR + "/py/driver.py",

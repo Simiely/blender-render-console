@@ -78,7 +78,10 @@ class EtaEstimator(object):
         if remaining_frames <= 0:
             return 0.0
         per = self.per_frame
-        if not per:
+        # ⚠️ 必须 `is None` 判，**不能写 `if not per`** —— 单帧耗时恰为 0 时
+        # 会被当成"没有基线"，把 0 秒的 ETA 显示成"--"。
+        # 这是"用真值判断数字"的老坑，和 locate.py 里 `if deadline:` 遇 0 为假同族。
+        if per is None:
             return None
         return per * remaining_frames
 

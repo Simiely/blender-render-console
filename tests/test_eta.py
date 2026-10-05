@@ -56,6 +56,18 @@ class TestEta(unittest.TestCase):
         self.assertAlmostEqual(e.estimate(10), e.per_frame * 10, places=6)
         self.assertEqual(e.estimate(0), 0.0)
 
+    def test_zero_second_frames_are_not_mistaken_for_no_baseline(self):
+        """单帧耗时恰为 0 时 ETA 该是 0，而不是"无法估算"。
+
+        这是"用真值判断数字"的经典坑（`if not per`）—— 和 `locate.scan_root` 里
+        `if deadline:` 遇 0 为假是同一个家族，那处已经咬过一次。
+        """
+        e = EtaEstimator()
+        e.add(0.0)                     # 第 1 帧是预热，不计入
+        self.assertTrue(e.add(0.0))
+        self.assertEqual(e.per_frame, 0.0)
+        self.assertEqual(e.estimate(5), 0.0)
+
     def test_explicit_warmup_flag(self):
         """续跑时每轮重启都要重新预热（Blender 重启会重新编译 kernel）。"""
         e = EtaEstimator()

@@ -26,7 +26,7 @@ from .layout import FROZEN_SUBDIR
 from .core import RenderJob, parse_frames
 from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                        DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
-                       SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
+                       SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
                        event_line, fields_from_detail, guess_state_path,
                        scene_to_config, settle_task_action, state_summary,

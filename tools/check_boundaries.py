@@ -11,7 +11,7 @@
 | `no-cycles` | 运行时依赖图不许有环（ADP）。实测 0 环 |
 | `adapters-for-root` | **只有组合根可以依赖适配器**（`cli.py` 是终端适配器）。2026-10-05 实测抓到的真事：界面层 `from .cli import parse_frames` —— 只为了借一个帧范围解析函数，就把"界面依赖命令行"这条方向错误的边建了起来（`gui.py:25`）。共用工具该待在下层，修法见 `core.parse_frames` |
 | `init-stays-leaf` | **包的 `__init__.py` 不许 import 子模块**。2026-10-05 实测踩到：把共用常量放进 `__init__` 后，包根成了"谁都要来取一句"的汇聚点；这时谁按 PEP8 在 `__init__` 顶部补一句 `from .core import X`，就会撞上"还没执行到常量定义"的包，报 `ImportError: cannot import name ... from partially initialized module`。共用常量请放**叶子模块**（如 `brconsole/layout.py`）。只拦"import 自己的子模块"，import 标准库不拦 |
-| `driver-isolated` | `driver.py` 跑在 **Blender 进程内**（它 `import bpy`），app 侧 import 它必然当场炸。它靠**源码字符串注入**，不是模块依赖 |
+| `driver-isolated` | `driver.py` 跑在 **Blender 进程内**，靠 `core.read_driver_source()` 注入源码字符串执行 —— 它不是 app 的模块，app 侧也不该 import 它（会把 337 行 Blender 专用脚本拖进 app 依赖图，还会让人误以为这条路径能在 app 里跑）。⚠️ 理由**不是**「它顶层 `import bpy` 会炸」—— `bpy` 其实是**惰性导入**的（5 处全在函数体内），`import brconsole.driver` 在 app 侧真能成功（2026-10-05 实测更正；同理 `tests/fake_blender.py` 才敢用它的 `FORMAT_EXT` 做契约比对）|
 | `no-stray-print` | 库代码不许裸 `print` 抢 stdout：进度要走事件回调/日志。例外：**终端适配器** `cli.py`（打印就是它的职责）与 `if __name__ == "__main__":` 里的手动排错入口 |
 
 ⚠️ 写规则时**别把正确的东西也判违规**：第一版 `layer-direction` 把组合根、`no-stray-print`
@@ -24,10 +24,8 @@
 """
 
 import ast
-import io
 import os
 import sys
-from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import arch_metrics as am                                            # noqa: E402
@@ -79,7 +77,7 @@ def check_boundaries(root=None):
     for path in files:
         rel = _rel(path, root)
         node = am.node_of(path, root)
-        for bucket, cands, root_name, lineno in am.parse_file(path, root):
+        for _bucket, cands, root_name, lineno in am.parse_file(path, root):
             tgt = next((c for c in cands if c in known), None)
 
             # 1) tkinter 只该出现在界面层

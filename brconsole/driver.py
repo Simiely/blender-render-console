@@ -240,6 +240,12 @@ def apply_overrides(sc):
 
 
 # 输出格式 → 扩展名（只列常用的，未知格式就让 Blender 自己决定）
+# 模板"已经带了扩展名"的判定集合 = 上面这些规范后缀 + **常见的另一种写法**。
+# 只看规范后缀是不够的：用户手打 `-o out/f_####.jpeg` 或工程里存的是 `.tiff` 时，
+# 判定落空 → 后面再补一次 → 写出 `f_0001.jpeg.jpg` 这种双扩展名。
+# （2026-10-05 写 driver 契约测试时抓到的）
+KNOWN_EXT_ALIASES = {"jpeg", "tiff"}
+
 FORMAT_EXT = {
     "PNG": "png", "JPEG": "jpg", "JPEG2000": "jp2", "OPEN_EXR": "exr",
     "OPEN_EXR_MULTILAYER": "exr", "TIFF": "tif", "BMP": "bmp", "TARGA": "tga",
@@ -273,7 +279,7 @@ def output_path_for(frame):
     """
     base = JOB["output_template"].replace("####", "%04d" % frame)
     ext = os.path.splitext(base)[1].lstrip(".").lower()
-    if ext in set(FORMAT_EXT.values()):
+    if ext in set(FORMAT_EXT.values()) | KNOWN_EXT_ALIASES:
         return base                      # 用户模板自带扩展名，不要再加一次
     fmt = JOB.get("file_format") or None
     if fmt:

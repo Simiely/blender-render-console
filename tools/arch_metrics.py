@@ -149,7 +149,6 @@ def collect_imports(node, here_pkg, default_bucket):
 
 
 def parse_file(path, root=ROOT):
-    here = node_of(path, root)
     here_pkg = package_of(path, root)
     tree = ast.parse(read_text(path), filename=path)
     records = []
