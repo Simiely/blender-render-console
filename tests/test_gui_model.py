@@ -15,7 +15,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from brconsole import tkboot  # noqa: E402
-from brconsole.cli import parse_frames  # noqa: E402
+from brconsole.core import parse_frames  # noqa: E402
 from brconsole.core import parse_restart_limit  # noqa: E402
 from brconsole.guimodel import (DEFAULT_RESTART_OPTION, RESTART_OPTIONS,  # noqa: E402
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,

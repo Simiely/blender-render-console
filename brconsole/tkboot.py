@@ -16,6 +16,8 @@ import os
 import subprocess
 import sys
 
+from . import FROZEN_SUBDIR
+
 BOOT_FLAG = "BRC_TK_BOOTSTRAP"
 
 
@@ -48,7 +50,7 @@ def has_tkinter():
 # ---------- 打包后（PyInstaller）----------
 # exe 里 Python 同样不带 tkinter，sidecar 由打包脚本塞进 `<_MEIPASS>/_brc`，
 # 这里是把它挂回运行环境的那条路。必须在 `import tkinter` 之前调用。
-FROZEN_SUBDIR = "_brc"
+# 名字来自 brconsole/__init__.py（单一来源，别再在这里写死 "_brc"）
 
 
 def frozen_root():

@@ -16,12 +16,12 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from brconsole import tkboot  # noqa: E402
+from brconsole import FROZEN_SUBDIR, tkboot  # noqa: E402
 from brconsole.cli import main as cli_main  # noqa: E402
 
 GUI_FLAGS = {"--gui", "--demo", "--autostart"}
 FAKE_FLAG = "--fake-blender"      # 打包后 --demo 用它把本 exe 当「假 Blender」再拉起来
-SELFTEST_SUBDIR = ("_brc", "selftest")
+SELFTEST_SUBDIR = (FROZEN_SUBDIR, "selftest")
 
 # 打包后：先把 exe 自带的 tcl/tk 挂上，再谈别的（必须在任何 import tkinter 之前）
 tkboot.apply_frozen_env()

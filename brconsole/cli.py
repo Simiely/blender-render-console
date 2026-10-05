@@ -12,43 +12,8 @@ import sys
 import time
 
 from . import locate
-from .core import JobConfig, RenderJob, parse_restart_limit
+from .core import JobConfig, RenderJob, parse_frames, parse_restart_limit
 from .eta import fmt_duration
-
-
-def parse_frames(spec, start=None, end=None, step=1):
-    """`1-10,15,20-25` / `1:240` → 帧号列表。
-
-    语义：**显式帧列表优先**，给了它就忽略 start/end（更符合直觉，
-    也避免"填了列表又带着默认范围"导致范围被悄悄并进来）。
-    """
-    frames = []
-    spec = (spec or "").strip()
-    if spec:
-        for part in spec.replace(":", "-").split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if "-" in part.lstrip("-"):
-                a, b = part.split("-", 1)
-                a, b = int(a), int(b)
-                if b < a:
-                    a, b = b, a
-                frames.extend(range(a, b + 1, step))
-            else:
-                frames.append(int(part))
-    elif start is not None or end is not None:
-        s = int(start) if start is not None else 1
-        e = int(end) if end is not None else s
-        if e < s:
-            s, e = e, s
-        frames = frames + list(range(s, e + 1, step))
-    seen, out = set(), []
-    for f in frames:
-        if f not in seen:
-            seen.add(f)
-            out.append(f)
-    return sorted(out)
 
 
 def build_parser():

@@ -235,20 +235,45 @@ class TestFailureModes(_Base):
         self.assertIsNotNone(r)
 
     def test_cancel_mid_run(self):
-        # 子进程启动要 ~0.4s，cancel 得晚一点，否则会在第一帧开始前就被取消
+        """跑到一半点停止：进度要留在断点里，下次能接着渲。
+
+        ⚠️ 触发取消**不能挂钟**。原版是 `threading.Timer(1.3, job.cancel)`，注释写着
+        "子进程启动要 ~0.4s，cancel 得晚一点" —— 那是在赌这台机器 1.3 秒内能渲完第一帧
+        （时间线：t≈0 起进程 → t≈0.9 第一帧完成 → t=1.3 取消，余量只有 0.4s）。
+        整机负载一高就赌输：同一台机器全量跑从 48s 涨到 80s 时，取消落在第一帧完成之前，
+        `len(st.done) >= 1` 随机变红（实测 5 次红 1 次）。
+        现在改成**看到第一帧完成就取消**，与机器快慢无关。
+
+        取消仍然从**另一个线程**发出 —— 与真实用法一致（界面上的「停止」按钮在工作线程之外调）。
+        """
         job, cfg, events = self.make_job(frames=(1, 2, 3, 4, 5, 6),
                                          extra=["--sleep", "0.5"])
-        t = threading.Timer(1.3, job.cancel)
+        first_done = threading.Event()
+
+        def on_event(kind, ev):
+            events.append((kind, ev))
+            if kind == "frame_done":
+                first_done.set()
+
+        def canceller():
+            # 等不到就超时兜底（那时任务会自己跑完，断言会带着清楚的数字失败，不会挂死）
+            if first_done.wait(timeout=30):
+                job.cancel()
+
+        t = threading.Thread(target=canceller, daemon=True)
         t.start()
         try:
-            r = self.run_job(job, events)
+            r = job.run(on_event=on_event)
         finally:
-            t.cancel()
+            t.join(timeout=5)
+
+        self.assertIn("frame_done", [k for k, _ in events])   # 确实至少渲完了一帧
         self.assertTrue(r["cancelled"] or not r["ok"])
         self.assertLess(len(r["done"]), 6)          # 没跑完
         st = JobState.load(self.state)
         self.assertIsNotNone(st)                    # 进度仍在，下次可续
         self.assertGreaterEqual(len(st.done), 1)
+        self.assertLessEqual(len(st.done), 5)       # 也不该跑到底
 
 
 class TestRestartPolicy(_Base):

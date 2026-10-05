@@ -287,7 +287,7 @@ class FormModel(object):
     def to_config(self, frames_parser):
         """返回 (JobConfig|None, errors:list[str], warnings:list[str])。
 
-        `frames_parser` 传入 cli.parse_frames（界面不自己实现一遍帧解析）。
+        `frames_parser` 传入 core.parse_frames（界面不自己实现一遍帧解析）。
         """
         from .core import JobConfig
 

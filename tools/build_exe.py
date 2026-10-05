@@ -43,6 +43,9 @@ from ctypes import wintypes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+
+sys.path.insert(0, ROOT)
+from brconsole import FROZEN_SUBDIR      # noqa: E402  单一来源，别再各写一份 "_brc"
 SIDECAR = os.path.join(ROOT, "sidecar")
 ENTRY = os.path.join(ROOT, "main.py")
 ICON = os.path.join(ROOT, "assets", "app.ico")
@@ -55,7 +58,6 @@ VENV_CANDIDATES = [
 
 GUI_NAME = "blender-render-console"
 CLI_NAME = "brc"
-FROZEN_SUBDIR = "_brc"          # 与 tkboot.FROZEN_SUBDIR 保持一致
 
 
 def log(msg):

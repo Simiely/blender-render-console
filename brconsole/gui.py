@@ -21,9 +21,8 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import autostart, diskspace, locate, taskstore, theme
-from .cli import parse_frames
-from .core import RenderJob
+from . import FROZEN_SUBDIR, autostart, diskspace, locate, taskstore, theme
+from .core import RenderJob, parse_frames
 from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                        DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
                        SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
@@ -54,7 +53,7 @@ def icon_path():
     """app.ico 的位置：源码运行在仓库 `assets/` 下，打包后在 `_brc/assets/` 下。"""
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
-        return os.path.join(base, "_brc", "assets", "app.ico")
+        return os.path.join(base, FROZEN_SUBDIR, "assets", "app.ico")
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "assets", "app.ico")
 

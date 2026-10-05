@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 
+from . import FROZEN_SUBDIR
 from .eta import EtaEstimator
 from .parser import NativeParser
 from .state import JobState
@@ -31,7 +32,7 @@ _SENTINEL = object()
 CREATE_NO_WINDOW = 0x08000000          # Windows：起子进程不弹黑窗
 DEFAULT_DRIVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "driver.py")
 # 打包后 .py 模块在 PYZ 归档里、磁盘上没有，driver 源码由打包脚本另存到这里（见 read_driver_source）
-FROZEN_PY_SUBDIR = ("_brc", "py")
+FROZEN_PY_SUBDIR = (FROZEN_SUBDIR, "py")
 
 # 静默多久之后提示一次「还在干活」——大场景同步阶段可能长达数分钟
 DEFAULT_STALL_AFTER = 60.0
@@ -68,6 +69,41 @@ def parse_restart_limit(value, default=5):
     if m:
         return int(m.group(1))
     return default
+
+
+def parse_frames(spec, start=None, end=None, step=1):
+    """`1-10,15,20-25` / `1:240` → 帧号列表。
+
+    语义：**显式帧列表优先**，给了它就忽略 start/end（更符合直觉，
+    也避免"填了列表又带着默认范围"导致范围被悄悄并进来）。
+    """
+    frames = []
+    spec = (spec or "").strip()
+    if spec:
+        for part in spec.replace(":", "-").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part.lstrip("-"):
+                a, b = part.split("-", 1)
+                a, b = int(a), int(b)
+                if b < a:
+                    a, b = b, a
+                frames.extend(range(a, b + 1, step))
+            else:
+                frames.append(int(part))
+    elif start is not None or end is not None:
+        s = int(start) if start is not None else 1
+        e = int(end) if end is not None else s
+        if e < s:
+            s, e = e, s
+        frames = frames + list(range(s, e + 1, step))
+    seen, out = set(), []
+    for f in frames:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return sorted(out)
 
 
 def normalise_output_template(template, blend=""):

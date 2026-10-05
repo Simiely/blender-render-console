@@ -47,11 +47,16 @@ def _version_from_path(path):
 
 
 def scan_root(root, max_depth=3, deadline=None, limit=20):
-    """在 root 下找 blender.exe，深度不超过 max_depth。带截止时间，免得扫半天。"""
+    """在 root 下找 blender.exe，深度不超过 max_depth。带截止时间，免得扫半天。
+
+    ⚠️ 截止时间用 `is not None` 判，**不能写成 `if deadline:`** —— `0` 是假值，
+    那样 `deadline=0`（= 时间早已过去，应当立刻收手）会被当成"没有截止时间"，
+    于是照样把整棵树扫完。（2026-10-05 写单测时抓到的）
+    """
     found = []
 
     def walk(d, depth):
-        if deadline and time.time() > deadline:
+        if deadline is not None and time.time() > deadline:
             return
         if len(found) >= limit:
             return
@@ -60,7 +65,7 @@ def scan_root(root, max_depth=3, deadline=None, limit=20):
         except OSError:
             return
         for e in entries:
-            if len(found) >= limit or (deadline and time.time() > deadline):
+            if len(found) >= limit or (deadline is not None and time.time() > deadline):
                 return
             try:
                 if e.is_dir(follow_symlinks=False):
@@ -80,26 +85,31 @@ def scan_root(root, max_depth=3, deadline=None, limit=20):
 
 
 def find_blender(roots=None, deep=False, max_depth=3, timeout=8.0):
-    """返回候选列表（新版在前）。
+    """返回候选列表（新版在前；**用户显式指定的永远排在最前**）。
 
     deep=False 只扫常见安装目录（快，几乎瞬时）；
     deep=True  额外扫各盘符根下的便携版目录（慢，带超时）。
     """
     seen = set()
+    pinned = []          # 用户显式指定的，最后要钉在最前面
     out = []
 
-    def add(p):
+    def add(p, pin=False):
         if not p:
             return
         p = os.path.abspath(p)
         if p.lower() in seen or not os.path.exists(p):
             return
         seen.add(p.lower())
-        out.append(p)
+        (pinned if pin else out).append(p)
 
-    # 1) 环境变量最优先：用户显式指定就是权威
+    # 1) 环境变量最优先：用户显式指定就是权威。
+    #    ⚠️ 必须 `pin=True`：光"先 add"不够 —— 末尾那句按 (版本, mtime) 排序会把
+    #    Program Files 里更新的一版排到前面，而 `resolve_blender` 取的是 `cands[0]`,
+    #    于是**显式指定被静默无视**（设了 BRC_BLENDER 却跑了别的版本）。
+    #    2026-10-05 写 locate 单测时抓到的。
     for var in ("BRC_BLENDER", "BLENDER_EXE"):
-        add(os.environ.get(var))
+        add(os.environ.get(var), pin=True)
 
     # 2) PATH
     try:
@@ -130,7 +140,7 @@ def find_blender(roots=None, deep=False, max_depth=3, timeout=8.0):
                     add(p)
 
     out.sort(key=lambda p: (_version_from_path(p), os.path.getmtime(p)), reverse=True)
-    return out
+    return pinned + out
 
 
 def _drives():

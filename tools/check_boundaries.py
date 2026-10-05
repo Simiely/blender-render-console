@@ -9,6 +9,7 @@
 | `gui-boundary` | 只有界面层可以 import tkinter。实测全仓只有 `gui.py` / `theme.py` 碰它，这是"界面逻辑可单测"的前提 |
 | `layer-direction` | **包内**底层的文件不许 import 界面层。界面层 `I=1.00`（最不稳定），底层 `I=0.00`，依赖必须指向更稳定的方向（SDP）。**组合根 `main.py` 例外** —— 它天然"什么都知道"，这正是它的职责 |
 | `no-cycles` | 运行时依赖图不许有环（ADP）。实测 0 环 |
+| `adapters-for-root` | **只有组合根可以依赖适配器**（`cli.py` 是终端适配器）。2026-10-05 实测抓到的真事：界面层 `from .cli import parse_frames` —— 只为了借一个帧范围解析函数，就把"界面依赖命令行"这条方向错误的边建了起来（`gui.py:25`）。共用工具该待在下层，修法见 `core.parse_frames` |
 | `driver-isolated` | `driver.py` 跑在 **Blender 进程内**（它 `import bpy`），app 侧 import 它必然当场炸。它靠**源码字符串注入**，不是模块依赖 |
 | `no-stray-print` | 库代码不许裸 `print` 抢 stdout：进度要走事件回调/日志。例外：**终端适配器** `cli.py`（打印就是它的职责）与 `if __name__ == "__main__":` 里的手动排错入口 |
 
@@ -38,6 +39,8 @@ DRIVER = "brconsole/driver.py"
 COMPOSITION_ROOT = "main.py"
 # 打印到 stdout 就是它的职责的适配器（终端）
 PRINT_OK = {"brconsole/cli.py"}
+# 适配器层：只该被组合根依赖。别处要用共用工具，请把工具放到下层模块
+ADAPTER_MODULES = {"brconsole/cli"}
 
 
 def _rel(path, root):
@@ -90,6 +93,12 @@ def check_boundaries(root=None):
                 problems.append(("layer-direction", rel, lineno,
                                  "底层文件依赖了界面层 %s（依赖必须指向更稳定的方向）" % tgt))
 
+            # 2b) 适配器只能被组合根依赖
+            if tgt in ADAPTER_MODULES and rel != COMPOSITION_ROOT:
+                problems.append(("adapters-for-root", rel, lineno,
+                                 "不该依赖终端适配器 %s —— 共用工具请放到下层模块"
+                                 "（参照 core.parse_frames 的做法）" % tgt))
+
             # 3) app 侧不许 import driver
             if tgt == driver_node and node != driver_node:
                 problems.append(("driver-isolated", rel, lineno,
@@ -108,7 +117,8 @@ def check_boundaries(root=None):
     return problems
 
 
-RULES = ("gui-boundary", "layer-direction", "no-cycles", "driver-isolated", "no-stray-print")
+RULES = ("gui-boundary", "layer-direction", "adapters-for-root", "no-cycles",
+         "driver-isolated", "no-stray-print")
 
 
 def main():

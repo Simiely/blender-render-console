@@ -67,6 +67,27 @@ class TestViolationsAreDetected(Base):
         self.assertEqual(len(hits), 1, hits)
         self.assertEqual(hits[0][1], "brconsole/core.py")
 
+    def test_adapters_for_root(self):
+        """界面/下层借用一个适配器里的函数 —— 就是 2026-10-05 修掉的那条真事。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", "")
+        write(self.root, "brconsole/cli.py", "def parse_frames(spec):\n    return []\n")
+        write(self.root, "brconsole/gui.py",
+              "import tkinter\nfrom .cli import parse_frames\n")
+        hits = self.rules_hit("adapters-for-root")
+        self.assertEqual(len(hits), 1, hits)
+        self.assertEqual(hits[0][1], "brconsole/gui.py")
+
+    def test_adapters_for_root_from_a_lower_layer_too(self):
+        """不是只盯界面层：任何非组合根都不许依赖适配器。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", "")
+        write(self.root, "brconsole/cli.py", "X = 1\n")
+        write(self.root, "brconsole/core.py", "from . import cli\n")
+        hits = self.rules_hit("adapters-for-root")
+        self.assertEqual(len(hits), 1, hits)
+        self.assertEqual(hits[0][1], "brconsole/core.py")
+
     def test_cycle(self):
         write(self.root, "main.py", "import os\n")
         write(self.root, "brconsole/__init__.py", "")
@@ -111,6 +132,22 @@ class TestNoFalsePositives(Base):
         write(self.root, "brconsole/__init__.py", "")
         write(self.root, "brconsole/gui.py", "import tkinter\n")
         self.assertEqual(self.rules_hit("layer-direction"), [])
+
+    def test_composition_root_may_import_adapters(self):
+        """组合根拉起命令行入口是它的本职 —— 真仓库里 `main.py` 就是这么干的。"""
+        write(self.root, "main.py", "from brconsole.cli import main\n")
+        write(self.root, "brconsole/__init__.py", "")
+        write(self.root, "brconsole/cli.py", "def main():\n    return 0\n")
+        write(self.root, "brconsole/gui.py", "import tkinter\n")
+        self.assertEqual(self.rules_hit("adapters-for-root"), [])
+
+    def test_ui_may_import_lower_layers(self):
+        """界面依赖 core / guimodel 是正常方向，不能误报。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", "")
+        write(self.root, "brconsole/core.py", "X = 1\n")
+        write(self.root, "brconsole/gui.py", "import tkinter\nfrom . import core\n")
+        self.assertEqual(self.rules_hit("adapters-for-root"), [])
 
     def test_terminal_adapter_may_print(self):
         """终端适配器打印就是它的工作。"""
