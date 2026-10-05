@@ -240,8 +240,14 @@ class TestProgress(Base):
 
 
 class TestCheckRunnable(Base):
+    # 磁盘余量一律注入：拿机器的真实剩余空间当断言条件，换台机器就会红。
+    ROOMY = staticmethod(lambda folder: 500 * 1024 ** 3)
+    TIGHT = staticmethod(lambda folder: 100 * 1024 ** 2)
+
     def test_ok(self):
-        self.assertEqual(taskstore.check_runnable(self.cfg(), self.blender), (True, ""))
+        self.assertEqual(
+            taskstore.check_runnable(self.cfg(), self.blender, free_fn=self.ROOMY),
+            (True, ""))
 
     def test_no_hash_placeholder(self):
         ok, why = taskstore.check_runnable(
@@ -253,6 +259,20 @@ class TestCheckRunnable(Base):
         ok, why = taskstore.check_runnable(self.cfg(), "")
         self.assertFalse(ok)
         self.assertIn("blender.exe", why)
+
+    def test_not_enough_space_blocks_resume(self):
+        """开机时盘已经满了 → 不跑。这条同时也是"绝不把系统盘写满"的第一道闸。"""
+        ok, why = taskstore.check_runnable(self.cfg(), self.blender, free_fn=self.TIGHT)
+        self.assertFalse(ok)
+        self.assertIn("可用空间", why)
+
+    def test_space_warning_does_not_block_resume(self):
+        """warn 档（"可能写不下"，但没过水位线）不该让刚开机的机器什么都不做。"""
+        cfg = self.cfg(frames=list(range(1, 2001)))
+        need = taskstore.diskspace.estimate_bytes(cfg.frames, cfg.resolution, None, "PNG")
+        warn_free = staticmethod(lambda folder: max(need // 2, 11 * 1024 ** 3))
+        ok, why = taskstore.check_runnable(cfg, self.blender, free_fn=warn_free)
+        self.assertTrue(ok, why)
 
 
 class TestDescribe(Base):

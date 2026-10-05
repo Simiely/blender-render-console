@@ -21,7 +21,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import autostart, locate, taskstore, theme
+from . import autostart, diskspace, locate, taskstore, theme
 from .cli import parse_frames
 from .core import RenderJob
 from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
@@ -742,6 +742,16 @@ class App(object):
         if bad:
             messagebox.showerror("配置有问题", bad)
             return
+
+        # 空间预检要放在**存档之前**：拦下来的任务不该留下待办存档，
+        # 否则下次开机它会以 drop 态被认领一次，白跑一趟提示。
+        level, why = diskspace.check(cfg)
+        if level == "block":
+            messagebox.showerror("磁盘空间不足，先别开始", why)
+            return
+        if level == "warn":
+            for line in why.splitlines():
+                self._log("! %s" % line)
 
         # 存档要**赶在起线程之前**：晚一步就意味着"已经开始跑但还没存档"这段窗口里
         # 被强杀会让这次任务无从续起

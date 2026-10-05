@@ -25,6 +25,7 @@ import os
 import tempfile
 import time
 
+from . import diskspace
 from .core import JobConfig
 from .state import JobState
 
@@ -176,7 +177,7 @@ def progress_of(cfg):
     }
 
 
-def check_runnable(cfg, blender_exe):
+def check_runnable(cfg, blender_exe, free_fn=None):
     """开机续跑前的体检。返回 (ok, reason) —— 不 ok 时 reason 直接给用户看。"""
     if not os.path.exists(cfg.blend):
         return False, "工程文件不在了：%s" % cfg.blend
@@ -184,6 +185,12 @@ def check_runnable(cfg, blender_exe):
         return False, "blender.exe 不在了：%s" % (blender_exe or "(未记录)")
     if "####" not in cfg.output_template:
         return False, "输出模板缺少 #### 占位符：%s" % cfg.output_template
+    # 空间不够就别开跑：这条不只是"跑不完"，落在系统盘上还会把 Windows 拖到
+    # 进不去桌面（见 diskspace 模块说明）。这里只认 block，warn 不拦开机续跑 ——
+    # 那只是"可能写到多少"的估算，不该让一台刚开机的机器什么都不做。
+    level, why = diskspace.check(cfg, free_fn=free_fn)
+    if level == "block":
+        return False, why
     return True, ""
 
 
