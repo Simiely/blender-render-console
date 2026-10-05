@@ -155,10 +155,15 @@ def _drives():
 
 
 def resolve_blender(explicit=None, deep=False):
-    """给 CLI 用：显式路径优先，否则自动探测。返回 (path, candidates)。"""
+    """给 CLI 用：显式路径优先，否则自动探测。
+
+    返回 `(path, cands, reason)`：失败时 `path` 为 None，`reason` 是给人看的说明。
+    **不再用 SystemExit 当控制流** —— 库函数抛"进程退出"异常，逼着每个调用方
+    都要 try/except 兜（原先 CLI 就是这么兜的，典型的补丁打补丁）。
+    """
     if explicit:
         if not os.path.exists(explicit):
-            raise SystemExit("指定的 blender.exe 不存在：%s" % explicit)
-        return os.path.abspath(explicit), [os.path.abspath(explicit)]
+            return None, [], "指定的 blender.exe 不存在：%s" % explicit
+        return os.path.abspath(explicit), [os.path.abspath(explicit)], ""
     cands = find_blender(deep=deep)
-    return (cands[0] if cands else None), cands
+    return (cands[0] if cands else None), cands, ""

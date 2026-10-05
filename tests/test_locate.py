@@ -147,21 +147,26 @@ class TestResolveBlender(Base):
     def test_explicit_path_is_returned_as_is(self):
         want = self.exe("blender.exe")
         self.assertEqual(locate.resolve_blender(explicit=want),
-                         (os.path.abspath(want), [os.path.abspath(want)]))
+                         (os.path.abspath(want), [os.path.abspath(want)], ""))
 
-    def test_explicit_missing_path_is_fatal(self):
-        """显式指定的路径不存在 → 直接退出并说清楚，别退回去猜。"""
+    def test_explicit_missing_path_reports_reason(self):
+        """显式指定的路径不存在 → 返回失败与原因，**不抛 SystemExit**。
+
+        库函数拿"进程退出"异常当控制流，逼得每个调用方都包 try/except ——
+        原先 CLI 就是这么兜的，典型的补丁打补丁（2026-10-06 改为返回值）。
+        """
         missing = os.path.join(self.dir, "nope", "blender.exe")
-        with self.assertRaises(SystemExit) as cm:
-            locate.resolve_blender(explicit=missing)
-        self.assertIn(missing, str(cm.exception))
+        path, cands, reason = locate.resolve_blender(explicit=missing)
+        self.assertIsNone(path)
+        self.assertEqual(cands, [])
+        self.assertIn(missing, reason)
 
     def test_auto_detect_shape(self):
         """自动探测这条**不写死结果**（它要扫真实的 Program Files）。
 
-        只断言"形状"：要么 (None, [])，要么首元素就是返回的那个路径且真的存在。
+        只断言"形状"：要么 (None, [], "")，要么首元素就是返回的那个路径且真的存在。
         """
-        path, cands = locate.resolve_blender()
+        path, cands, _reason = locate.resolve_blender()
         if path is None:
             self.assertEqual(cands, [])
         else:

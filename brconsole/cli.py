@@ -17,6 +17,22 @@ from .core import (JobConfig, RenderJob, complete_output_template, parse_frames,
 from .eta import fmt_duration
 
 
+def _non_negative_int(text):
+    """argparse 校验器：负数直接报错，不让它静默变成"不限"。
+
+    内核里 `max_attempts <= 0` 恰好是"不限"的既有约定 —— 脚本用户手滑写个 -3，
+    会把"限 3 次"悄悄变成"不限"，正是最危险的那类静默翻转（GUI 侧有钳 0 + 警告，
+    CLI 这边是无人值守的脚本，宁可当场报错）。
+    """
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("需要整数，当前：%r" % text)
+    if value < 0:
+        raise argparse.ArgumentTypeError("不能是负数（0 = 不限），当前：%d" % value)
+    return value
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="blender-render-console",
@@ -41,9 +57,9 @@ def build_parser():
     p.add_argument("--log", help="Blender 原始输出落盘路径")
     p.add_argument("--max-restarts", default="5",
                    help="最多重启几次；填 unlimited / -1 / 无限 = 一直重启直到全部渲染完（默认 5）")
-    p.add_argument("--max-no-progress", type=int, default=3,
+    p.add_argument("--max-no-progress", type=_non_negative_int, default=3,
                    help="连续这么多轮一帧都没推进就停（「一直重启」模式唯一的兜底，默认 3；0=不限制）")
-    p.add_argument("--max-frame-attempts", type=int, default=3,
+    p.add_argument("--max-frame-attempts", type=_non_negative_int, default=3,
                    help="单帧最多尝试几次（默认 3）")
     p.add_argument("--no-resume", action="store_true", help="忽略已有断点，从头渲染")
     p.add_argument("--verbose", action="store_true", help="打印 Blender 原生输出")
@@ -205,14 +221,13 @@ def main(argv=None):
     out = os.path.abspath(complete_output_template(args.output or "", blend))
 
     # ---- Blender ----
-    try:
-        blender, cands = locate.resolve_blender(args.blender, deep=args.deep_scan)
-    except SystemExit as e:
-        print(e)
-        return 2
+    blender, cands, why = locate.resolve_blender(args.blender, deep=args.deep_scan)
     if not blender:
-        print("没找到 blender.exe —— 用 --blender 指定路径。已扫描：%s"
-              % ", ".join(locate.COMMON_ROOTS))
+        if why:
+            print(why)
+        else:
+            print("没找到 blender.exe —— 用 --blender 指定路径。已扫描：%s"
+                  % ", ".join(locate.COMMON_ROOTS))
         return 2
     if len(cands) > 1:
         print("检测到多个 Blender，使用：%s（其余：%s）"

@@ -57,7 +57,8 @@ AFTERMATH_BY_LABEL = {label: value for label, value in AFTERMATH_LABELS}
 
 
 def _stamp():
-    return time.strftime("%H:%M:%S")
+    # 带日期：过夜渲染跨天后，"01:23:45"分不清是今天还是昨天
+    return time.strftime("%m-%d %H:%M:%S")
 
 
 def icon_path():
@@ -344,7 +345,11 @@ class App(object):
                                    state="disabled")
         self.btn_stop.pack(side="left", padx=6)
         ttk.Button(bar, text="打开输出目录", command=self.open_output_dir).pack(side="left")
-        ttk.Button(bar, text="清空断点", command=self.clear_state).pack(side="left", padx=6)
+        # 渲染中**禁用**：中途删断点，内存态要到下一帧完成才补写，这个窗口期里
+        # 崩溃会把已完成帧的进度全部丢掉
+        self.btn_clear_state = ttk.Button(bar, text="清空断点",
+                                          command=self.clear_state)
+        self.btn_clear_state.pack(side="left", padx=6)
         ttk.Button(bar, text="清空日志", command=self.clear_log).pack(side="left")
         self.lbl_state = ttk.Label(bar, text="", style="Muted.TLabel")
         self.lbl_state.pack(side="right")
@@ -590,7 +595,11 @@ class App(object):
             self.v_output.set(os.path.join(d, "frame_####"))
 
     def open_output_dir(self):
-        d = os.path.dirname(os.path.abspath(self.v_output.get() or "."))
+        if not self.v_output.get().strip():
+            messagebox.showinfo("还没填输出模板", "先填输出模板（或选个 .blend 自动补全）。",
+                                parent=self.root)
+            return
+        d = os.path.dirname(os.path.abspath(self.v_output.get()))
         if os.path.isdir(d):
             try:
                 os.startfile(d)                 # Windows
@@ -600,6 +609,11 @@ class App(object):
             messagebox.showinfo("目录还不存在", "输出目录还没创建：%s" % d)
 
     def clear_state(self):
+        if self.prog.running:
+            messagebox.showinfo("渲染进行中",
+                                "正在渲染，断点由任务自己维护。\n要清空请先停止任务。",
+                                parent=self.root)
+            return
         p = guess_state_path(self.v_output.get())
         if os.path.exists(p):
             try:
@@ -656,7 +670,9 @@ class App(object):
         """
         want = bool(self.v_auto_resume.get())
         if taskstore.load() is None:
-            return                          # 还没有待办任务，等开始渲染时按勾选态写入
+            # 别悄悄吞掉 —— 勾了没反应，用户会以为坏了
+            self._log("当前没有待办任务：这个开关会在下次点「开始渲染」时写入存档")
+            return
         if taskstore.set_autoresume(
                 want, "" if want else "你在界面上取消了「启动时自动续跑未完成任务」"):
             self._log("已%s开机自动续跑未完成任务（断点不受影响）"
@@ -856,6 +872,7 @@ class App(object):
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.pb["value"] = 0
+        self.btn_clear_state.configure(state="disabled")
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
         self._log("开始渲染：%s%s（%d 帧）"
@@ -939,6 +956,7 @@ class App(object):
         if kind in ("job_done", "job_error"):
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
+            self.btn_clear_state.configure(state="normal")
             self.worker = None
             self._refresh_state_label()
             self._settle_task(kind, ev)
