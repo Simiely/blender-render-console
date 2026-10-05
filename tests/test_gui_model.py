@@ -17,13 +17,16 @@ sys.path.insert(0, ROOT)
 from brconsole import tkboot  # noqa: E402
 from brconsole.core import parse_frames  # noqa: E402
 from brconsole.core import parse_restart_limit  # noqa: E402
-from brconsole.guimodel import (DEFAULT_RESTART_OPTION, RESTART_OPTIONS,  # noqa: E402
+from brconsole.guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS,  # noqa: E402
+                                DEFAULT_RESTART_OPTION, RESTART_OPTIONS,
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                                 UNLIMITED_LIMITS, UNLIMITED_RESTART_LABEL, FormModel,
                                 LogModel, ProgressModel, event_line,
                                 fields_from_detail, frames_to_text, guess_state_path,
-                                is_unlimited_restart, restart_label_for, scene_to_config,
-                                settle_task_action, state_summary, unlimited_limit_fill)
+                                is_unlimited_restart, restart_label_for,
+                                restart_limits_plan, restore_limits_backup,
+                                scene_to_config, settle_task_action, state_summary,
+                                unlimited_limit_fill)
 from brconsole.state import JobState  # noqa: E402
 
 
@@ -593,6 +596,80 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
             "b.exe")
         self.assertEqual((fm.max_frame_attempts, fm.max_no_progress), ("0", "0"))
         self.assertTrue(is_unlimited_restart(fm.max_restarts))
+
+    # ---- 离开「一直重启」时必须回到**有界**（实测抓到的漏网之鱼）----
+
+    def test_switching_between_finite_options_never_touches_typed_values(self):
+        """反向护栏：有限 → 有限 时**一个字都不能改**。
+
+        这是"离开一直重启就填 3/3"那种粗暴修法会砸掉的东西：用户手填 9/7 之后
+        只是想换个重启次数，值却被重置回默认。所以修复必须走 backup 这条路，
+        不能无条件复位。
+        """
+        for start in RESTART_OPTIONS[:-1]:
+            for target in RESTART_OPTIONS[:-1]:
+                self.assertEqual(
+                    restart_limits_plan(target, "9", "7", None), ("9", "7", None),
+                    "%s → %s" % (start, target))
+
+    def test_selecting_unlimited_twice_keeps_the_original_backup(self):
+        """在「一直重启」态里再点一次，不能把 0/0 存成备份（否则回头"还原"出一对不限值）。"""
+        a, n, backup = restart_limits_plan(UNLIMITED_RESTART_LABEL, "9", "7", None)
+        self.assertEqual((a, n), ("0", "0"))
+        self.assertEqual(backup, ("9", "7"))
+        a, n, backup = restart_limits_plan(UNLIMITED_RESTART_LABEL, a, n, backup)
+        self.assertEqual(backup, ("9", "7"))        # 没被 0/0 覆盖
+        self.assertEqual(restart_limits_plan("5 次（默认）", a, n, backup)[:2],
+                         ("9", "7"))
+
+    def test_leaving_unlimited_after_archive_restore_returns_to_bounded_defaults(self):
+        """★ 存档回填 → 切回有限次数：必须是 3/3，**不能停在 0/0**。
+
+        实测抓到的：回填路径不留 backup，切回时无处可还原，两个框就停在 0（=不限），
+        于是用户选的"5 次（明确有限）"底下配着"单帧不限次数 + 无进展不兜底" ——
+        卡在同一帧会一直重试，`no_progress` 这个唯一的死循环闸门被静默关掉。
+        这条用例同时钉住"有界"这个结果本身（不只是钉两个控件变量的值）。
+        """
+        backup = restore_limits_backup(UNLIMITED_RESTART_LABEL, "0", "0")
+        self.assertEqual(backup, (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
+        a, n, left = restart_limits_plan("5 次（默认）", "0", "0", backup)
+        self.assertEqual((a, n), (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
+        self.assertIsNone(left)                     # 用完即弃
+
+        cfg, errors, _ = self._form("5 次（默认）", a, n).to_config(parse_frames)
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.max_restarts, 5)
+        self.assertEqual(cfg.max_frame_attempts, int(DEFAULT_ATTEMPTS))
+        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
+        self.assertFalse(cfg.unlimited_restarts)
+
+    def test_restore_backup_keeps_deliberate_values_and_skips_finite(self):
+        """回填的备份：非 0（用户特意填的）保留，0 换成默认；有限次数时不预置。"""
+        self.assertEqual(restore_limits_backup(UNLIMITED_RESTART_LABEL, "9", "0"),
+                         ("9", DEFAULT_NO_PROGRESS))
+        self.assertEqual(restore_limits_backup(UNLIMITED_RESTART_LABEL, "0", "7"),
+                         (DEFAULT_ATTEMPTS, "7"))
+        for label in RESTART_OPTIONS[:-1]:
+            self.assertIsNone(restore_limits_backup(label, "0", "0"), label)
+        self.assertIsNone(restore_limits_backup("瞎写", "0", "0"))
+
+    def test_full_roundtrip_restore_then_leave_unlimited(self):
+        """把两条路串起来（回填 → 切选项 → 建档），断言最终配置是有界的。"""
+        d = {"max_restarts": -1, "max_frame_attempts": 0, "max_no_progress_rounds": 0}
+        fm = FormModel.from_config(d, "b.exe")
+        # from_config 是"按存档重填参数"，不含工程/输出（那两项在存档里另有字段）
+        fm.blend, fm.output = self.blend, os.path.join(self.d, "out", "f_####")
+        backup = restore_limits_backup(fm.max_restarts, fm.max_frame_attempts,
+                                       fm.max_no_progress)
+        a, n, _ = restart_limits_plan("10 次", fm.max_frame_attempts, fm.max_no_progress,
+                                      backup)
+        fm.max_frame_attempts, fm.max_no_progress = a, n
+        fm.max_restarts = "10 次"
+        cfg, errors, _ = fm.to_config(parse_frames)
+        self.assertEqual(errors, [])
+        self.assertEqual((cfg.max_restarts, cfg.max_frame_attempts,
+                          cfg.max_no_progress_rounds),
+                         (10, int(DEFAULT_ATTEMPTS), int(DEFAULT_NO_PROGRESS)))
 
 
 class TestSettleTaskAction(unittest.TestCase):

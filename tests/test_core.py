@@ -512,6 +512,18 @@ class TestStateFilePath(unittest.TestCase):
                         state_path="C:/s/p.json")
         self.assertEqual(cfg.state_file(), "C:/s/p.json")
 
+    def test_gui_and_runtime_agree_on_the_default_path(self):
+        """★ 界面显示的断点位置，必须和运行时真正读写的是**同一个文件**。
+
+        这条规则以前写在两处（core 一处、guimodel 一处）。谁改一边忘了另一边，
+        界面就会说"断点：已完成 120 帧"、甚至"清空断点"清到一个没人用的文件上，
+        而实际渲染从零开始 —— 不报错，只是骗人。现在两边都走 core.state_file_for()。
+        """
+        from brconsole.guimodel import guess_state_path
+        for tpl in ("C:/a/out/f_####", os.path.join("rel", "f_####"), "x_####"):
+            cfg = JobConfig(blend="C:/a/b.blend", frames=[1], output_template=tpl)
+            self.assertEqual(guess_state_path(tpl), cfg.state_file(), tpl)
+
     def test_matches_what_renderjob_writes(self):
         """和真正写盘的那份必须一致，否则 taskstore 会去错地方找进度。"""
         cfg = JobConfig(blend="C:/a/b.blend", frames=[1],

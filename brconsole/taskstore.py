@@ -162,11 +162,9 @@ def progress_of(cfg):
     st = JobState.load(cfg.state_file())
     if st is None:
         return None
-    # 断点属于别的任务（换了工程/场景/帧范围）→ 对我们来说等于"还没开始"
-    if (os.path.abspath(st.blend) != os.path.abspath(cfg.blend)
-            or st.output_template != cfg.output_template
-            or tuple(st.frames) != tuple(cfg.frames)
-            or (st.scene or "") != (cfg.scene or "")):
+    # 断点属于别的任务（换了工程/场景/帧范围）→ 对我们来说等于"还没开始"。
+    # 判据与运行时续跑共用一份（state.task_signature），别在这里重写一遍那四个字段。
+    if st.signature() != cfg.signature():
         return None
     complete = st.is_complete()
     return {

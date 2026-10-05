@@ -29,8 +29,9 @@ from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OP
                        SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
                        event_line, fields_from_detail, guess_state_path,
-                       scene_to_config, settle_task_action, state_summary,
-                       unlimited_limit_fill)
+                       is_unlimited_restart, restart_limits_plan,
+                       restore_limits_backup, scene_to_config, settle_task_action,
+                       state_summary)
 from .inspect import (read_blend_info, scene_detail, scene_names,
                       summarize as summarize_blend)
 
@@ -604,25 +605,23 @@ class App(object):
         （帧被判 exhausted 踢出队列 / 触发 no_progress 直接刹车），跟"崩溃后一直重试"相反。
 
         **只改默认值、不锁控件** —— 想留兜底就把数字填回去（那是内核里唯一防死循环的闸门）。
-        切回带次数的选项时还原用户原来填的值，避免把 0（=不限）带进"5 次"这种有限次数的模式。
+        切回带次数的选项时还原原来的值，避免把 0（=不限）带进"5 次"这种有限次数的模式。
+
+        状态机本身在 `guimodel.restart_limits_plan`（不碰控件，可单测）——
+        这里只负责把结果贴到控件上。
 
         `remember=False` 用于从存档回填之后：那时两框的值以**存档**为准、
-        不该被默认值覆盖，只更新旁边那句提示文案。
+        不该被动，只更新旁边那句提示文案。
         """
-        fill = unlimited_limit_fill(self.v_restarts.get())
-        if fill is not None:
-            if remember and self._limits_backup is None:
-                self._limits_backup = (self.v_attempts.get(), self.v_no_progress.get())
-            if remember:
-                self.v_attempts.set(fill[0])
-                self.v_no_progress.set(fill[1])
-        elif self._limits_backup is not None:
-            attempts, no_progress = self._limits_backup
-            self._limits_backup = None
+        if remember:
+            attempts, no_progress, self._limits_backup = restart_limits_plan(
+                self.v_restarts.get(), self.v_attempts.get(),
+                self.v_no_progress.get(), self._limits_backup)
             self.v_attempts.set(attempts)
             self.v_no_progress.set(no_progress)
         self.lbl_restart_note.configure(
-            text=NOTE_RESTART_UNLIMITED if fill is not None else NOTE_RESTART_LIMITED)
+            text=(NOTE_RESTART_UNLIMITED if is_unlimited_restart(self.v_restarts.get())
+                  else NOTE_RESTART_LIMITED))
 
     def _apply_form_model(self, fm):
         """把 `FormModel` 铺到控件上（开机续跑回填用）。"""
@@ -652,8 +651,13 @@ class App(object):
         self.v_no_progress.set(fm.max_no_progress)
         self.v_attempts.set(fm.max_frame_attempts)
         # 值填完再更新旁边那句提示：remember=False 表示**别动刚填进去的值**，
-        # 只把文案对齐到这次的重启选项（存档里若是一直播重启，提示就该说"已填 0"）
-        self._limits_backup = None
+        # 只把文案对齐到这次的重启选项（存档里若是一直重启，提示就该说"已填 0"）
+        #
+        # 回填**必须预置一份还原值**（见 restore_limits_backup 的说明）：回填不是"切换选项"，
+        # 走过这条路就没有 backup，用户随后切回"5 次"时两个框会停在 0（=不限）——
+        # 于是"有限次数"底下配着"单帧不限 + 无进展不兜底"，卡在同一帧就再也停不下来。
+        self._limits_backup = restore_limits_backup(
+            fm.max_restarts, fm.max_frame_attempts, fm.max_no_progress)
         self._apply_restart_defaults(remember=False)
 
     def _save_task(self, cfg, blender):
@@ -671,7 +675,20 @@ class App(object):
                       % (type(e).__name__, e))
 
     def try_autostart_resume(self):
-        """开机自启拉起时的入口：认领未完成任务。"""
+        """开机自启拉起时的入口：认领未完成任务。
+
+        ⚠️ 整段包一层 try —— 这是**无人值守**路径（由 `root.after` 拉起），
+        而打包成窗口版后 stderr 无处可去：一旦这里抛异常，用户看到的就是
+        "设了开机自启、开完机什么都没发生"，一个字的线索都没有。
+        出错时至少要留下日志，并把存档**原样留着**（下次还能认领）。
+        """
+        try:
+            self._adopt_pending()
+        except Exception as e:
+            self._log("! 认领未完成任务时出错：%s: %s" % (type(e).__name__, e))
+            self._log("  待办存档保留在 %s，修好后重开即可继续" % taskstore.pending_path())
+
+    def _adopt_pending(self):
         rec = taskstore.load()
         if rec is None:
             self._log("开机自启：没有未完成任务，正常启动")

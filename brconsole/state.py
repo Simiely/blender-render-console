@@ -15,6 +15,27 @@ import time
 
 STATE_VERSION = 1
 
+#: 断点文件的默认文件名（`JobConfig.state_file()` 与界面的 `guess_state_path()` 共用一份规则）
+DEFAULT_STATE_FILENAME = ".render_state.json"
+
+
+def task_signature(blend, output_template, frames, scene):
+    """「这是不是同一个任务」的判据：工程 + 输出模板 + 帧范围 + 场景。
+
+    **四个字段缺一不可**：同一个工程换场景，帧号往往一模一样，但产物完全是另一张图 ——
+    少了场景这一项就会把上一个场景的进度算进来（产物全错还看不出来）。
+
+    为什么放在这个叶子模块：`core`（运行时续跑）与 `taskstore`（开机续跑）都要做这个判断，
+    原先各自手写了一遍这四个字段。两处一旦漂开，**"开机能不能续跑"会和"运行时能不能续跑"
+    给出不同答案，而且两边都不报错** —— 所以收成一份（同一个规则的唯一来源）。
+    `None` / 空值一律归一化：坏存档应被判成"不是同一任务"（从头渲染），而不是在
+    `os.path.abspath(None)` 上抛异常 —— 后者在开机那条无人值守的路径上会静默什么都不做。
+    """
+    return (os.path.abspath(blend) if blend else "",
+            output_template or "",
+            tuple(int(f) for f in (frames or ())),
+            scene or "")
+
 
 class JobState(object):
     """一次渲染任务的断点状态。"""
@@ -48,20 +69,24 @@ class JobState(object):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 d = json.load(f)
-        except (OSError, ValueError):
-            # 状态文件坏了宁可从头来，也不要让程序起不来
+            st = cls(path)
+            for k in ("version", "blend", "output_template", "engine", "samples",
+                      "device", "file_format", "scene", "created", "updated"):
+                if k in d:
+                    setattr(st, k, d[k])
+            st.frames = [int(x) for x in d.get("frames", [])]
+            res = d.get("resolution")
+            st.resolution = list(res) if res else None
+            st.done = {int(k): v for k, v in (d.get("done") or {}).items()}
+            st.failed = {int(k): v for k, v in (d.get("failed") or {}).items()}
+            st.attempts = {int(k): int(v) for k, v in (d.get("attempts") or {}).items()}
+        except (OSError, ValueError, TypeError, AttributeError):
+            # ⚠️ 类型转换**必须在 try 里面**：JSON 语法没错、但字段值不对（帧号写成字符串、
+            #    done 的键不是数字、attempts 值不是数字）同样算"文件坏了"。
+            #    这些转换原先写在 try 外面，于是"坏了就当没有"这个承诺只兑现了一半 ——
+            #    实测会直接抛 ValueError 出去，把渲染和开机认领都带崩（2026-10-05 修复）。
+            #    文档承诺：状态文件坏了宁可从头来，也不要让程序起不来。
             return None
-        st = cls(path)
-        for k in ("version", "blend", "output_template", "engine", "samples",
-                  "device", "file_format", "scene", "created", "updated"):
-            if k in d:
-                setattr(st, k, d[k])
-        st.frames = [int(x) for x in d.get("frames", [])]
-        res = d.get("resolution")
-        st.resolution = list(res) if res else None
-        st.done = {int(k): v for k, v in (d.get("done") or {}).items()}
-        st.failed = {int(k): v for k, v in (d.get("failed") or {}).items()}
-        st.attempts = {int(k): int(v) for k, v in (d.get("attempts") or {}).items()}
         return st
 
     def to_dict(self):
@@ -114,6 +139,10 @@ class JobState(object):
         self.failed[int(frame)] = {"err": str(err)[:500], "t": round(time.time(), 3)}
 
     # ---------- 查询 ----------
+    def signature(self):
+        """这个断点属于哪个任务（与 `JobConfig.signature()` 可比）。"""
+        return task_signature(self.blend, self.output_template, self.frames, self.scene)
+
     def remaining(self, max_attempts=3, frames=None):
         """还剩哪些帧要渲染：未完成 且 未失败 且 还有重试额度。
 

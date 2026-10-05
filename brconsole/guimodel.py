@@ -12,7 +12,7 @@
 import os
 from collections import deque
 
-from .core import UNLIMITED, parse_restart_limit
+from .core import UNLIMITED, parse_restart_limit, state_file_for
 from .eta import fmt_duration
 from .state import JobState
 
@@ -67,6 +67,53 @@ def unlimited_limit_fill(restart_value):
     不是这个选项就返回 None = 别动用户填的值。
     """
     return UNLIMITED_LIMITS if is_unlimited_restart(restart_value) else None
+
+
+def restart_limits_plan(restart_value, attempts, no_progress, backup):
+    """换重启选项时，两个限次框该显示什么 → `(attempts, no_progress, backup)`。
+
+    界面上那三个值是紧耦合的：两个限次框的 0（=不限）**只该在「一直重启」底下出现**
+    （否则就得到"重启次数有限的 5 次 + 单帧不限次数 + 无进展不兜底"这种组合 ——
+    卡在同一帧时再也停不下来，`no_progress` 是内核里唯一防死循环的闸门）。
+
+    所以这里是一条明确的状态机：
+
+    - 切到「一直重启」→ 填 `0/0`，并把**离开时的还原值**放进 `backup`。
+      已经在「一直重启」态里再点一次时**不覆盖**已有的 backup（否则备份会变成 0/0，
+      回头"还原"出一对不限值 —— 等于没备份）。
+    - 切回有限次数 → 有 backup 就还原它；没有 backup 就**原样不动**。
+      "没有 backup" = 用户本来就在有限次数的选项之间切换（`1 次` → `5 次`），
+      这时绝不能拿默认值去覆盖他填的 9/7。
+
+    ⚠️ 从存档回填那条路不会留下 backup（回填是"还原存档"，不是"切换选项"），
+    所以它必须**预先塞一份**进来 —— 见 `restore_limits_backup()`。
+    少了这一步，切回有限次数时两个框会停在 0（=不限），实测踩过。
+    """
+    fill = unlimited_limit_fill(restart_value)
+    if fill is not None:
+        return fill[0], fill[1], (backup if backup is not None
+                                  else (attempts, no_progress))
+    if backup is None:
+        return attempts, no_progress, None
+    return backup[0], backup[1], None
+
+
+def restore_limits_backup(restart_value, attempts, no_progress):
+    """从存档回填表单后，给两个限次框**预置**一份还原值。
+
+    只在存档处于「一直重启」时预置 —— 那种情况下两个框里的 `0` 是**这个选项的产物**
+    （`unlimited_limit_fill` 的默认填充），不该跟着用户离开这个选项：
+    他切到"5 次"要的是**有界**的重试。非 0 的值（用户在有限次数模式下特意填过的，
+    比如 9）原样保留 —— 那是有意为之的偏好，不该丢。
+
+    为什么不"把存档原值直接当备份"：那样 `0/0` 会被当成本事原样还原，
+    绕一圈又回到"有限次数 + 两个不限"。（`0` 是"不限"还是"用户特意填的不限"，
+    从存档里分辨不出来 —— 分不出来时按**有界**那一侧兜，这是更安全的方向。）
+    """
+    if not is_unlimited_restart(restart_value):
+        return None
+    pick = lambda v, d: d if str(v).strip() in ("", "0") else str(v)   # noqa: E731
+    return (pick(attempts, DEFAULT_ATTEMPTS), pick(no_progress, DEFAULT_NO_PROGRESS))
 
 ENGINES = [("保持工程设置（用 .blend 里的）", KEEP), ("Cycles", "CYCLES"),
            ("EEVEE", "BLENDER_EEVEE"), ("Workbench", "BLENDER_WORKBENCH")]
@@ -593,9 +640,13 @@ def event_line(kind, ev):
 
 
 def guess_state_path(output_template):
-    """断点文件的默认位置（与 core.JobConfig 的默认规则保持一致）。"""
-    d = os.path.dirname(os.path.abspath(output_template or "")) or "."
-    return os.path.join(d, ".render_state.json")
+    """断点文件的默认位置。
+
+    直接走 core 的 `state_file_for` —— **不要在这里再写一遍目录拼接规则**：
+    界面拿它显示"断点：已完成 120 帧 / 清空断点"，运行时用它读写断点，
+    两处规则一旦漂开，界面会说"已完成 120 帧"而实际从一开始渲（不报错，只是骗人）。
+    """
+    return state_file_for(output_template or "")
 
 
 def state_summary(state_path):

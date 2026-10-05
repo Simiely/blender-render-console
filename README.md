@@ -219,7 +219,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 302 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 312 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
@@ -240,7 +240,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（302 条，不依赖 Blender，约 50s）
+# 单测（312 条，不依赖 Blender，约 55s）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 架构度量：耦合（Ca/Ce/I）、依赖环、SDP 违规、扇入榜。**改依赖后重跑它**

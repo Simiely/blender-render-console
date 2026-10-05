@@ -238,6 +238,25 @@ class TestProgress(Base):
         self.assertEqual((p["done"], p["total"], p["failed"], p["complete"]),
                          (1, 3, 1, False))
 
+    def test_broken_state_file_is_ignored_not_fatal(self):
+        """★ 断点文件结构合法、字段值坏 → 当"还没开始"，**不许抛异常**。
+
+        这条跑在开机认领那条无人值守的路径上：一旦在这里抛异常，窗口版连 stderr
+        都没有，用户看到的就是"设了自启、开完机什么都没发生"。
+        （实测：`"blend": null` 会让 os.path.abspath 抛 TypeError —— 2026-10-05 修复。）
+        """
+        cfg = self.cfg()
+        broken = {
+            '"blend": null': '{"frames": [1], "blend": null, "done": {}}',
+            '"frames": ["abc"]': '{"frames": ["abc"], "done": {}}',
+            '"done 的键不是数字"': '{"frames": [1], "done": {"x": {}}}',
+        }
+        for name, text in broken.items():
+            os.makedirs(os.path.dirname(cfg.state_file()), exist_ok=True)
+            with open(cfg.state_file(), "w", encoding="utf-8") as f:
+                f.write(text)
+            self.assertIsNone(taskstore.progress_of(cfg), name)
+
 
 class TestCheckRunnable(Base):
     # 磁盘余量一律注入：拿机器的真实剩余空间当断言条件，换台机器就会红。

@@ -25,7 +25,7 @@ import time
 from .layout import FROZEN_SUBDIR
 from .eta import EtaEstimator
 from .parser import NativeParser
-from .state import JobState
+from .state import DEFAULT_STATE_FILENAME, JobState, task_signature
 
 MARK = "##PROG##"
 _SENTINEL = object()
@@ -130,6 +130,20 @@ def normalise_output_template(template, blend=""):
     return os.path.abspath(tpl)
 
 
+def state_file_for(output_template, state_path=None):
+    """断点文件的最终路径：`state_path` 优先，否则输出目录下的固定文件名。
+
+    **唯一来源** —— `JobConfig.state_file()`、界面的 `guimodel.guess_state_path()`
+    都走这里。同一规则以前写在两处（core 一处、guimodel 一处），改一处忘一处就会让
+    "界面显示的断点"与"运行时真正读写的断点"指向两个文件 —— 界面上写着"已完成 120 帧"，
+    实际却是从零开始。这类漂移不会报错，只会静默给出错的信息。
+    """
+    if state_path:
+        return state_path
+    return os.path.join(os.path.dirname(os.path.abspath(output_template)) or ".",
+                        DEFAULT_STATE_FILENAME)
+
+
 # 存档时要落盘的全部任务参数。**加新参数时记得往这里补**，
 # 漏了的话开机续跑重建出来的任务会缺这一项、静默按默认值跑（最难查的那种 bug）。
 JOB_CONFIG_FIELDS = (
@@ -176,20 +190,20 @@ class JobConfig(object):
         return self.max_restarts is None or self.max_restarts < 0
 
     def signature(self):
-        """判断新旧 state 是否属于同一任务（blend / 输出 / 帧范围 / 场景变了就别续）。"""
-        return (os.path.abspath(self.blend), self.output_template,
-                tuple(self.frames), self.scene or "")
+        """判断新旧 state 是否属于同一任务（blend / 输出 / 帧范围 / 场景变了就别续）。
+
+        规则本体在 `state.task_signature()` —— 运行时续跑与开机续跑必须用**同一份**判据。
+        """
+        return task_signature(self.blend, self.output_template, self.frames, self.scene)
 
     def state_file(self):
         """断点文件的最终路径。
 
-        这条规则（`state_path` 优先，否则输出目录下的 `.render_state.json`）原先只写在
-        `RenderJob._init_state` 里，taskstore 也要用它判断「任务跑完没有」——
-        所以在 JobConfig 上收一处，别在两处各写一遍。
+        `state_path` 优先，否则输出目录下的默认文件名 —— 这条规则原先只写在
+        `RenderJob._init_state` 里，而 taskstore 与界面也要用它（判断"任务跑完没有"、
+        显示"断点已完成多少帧"），所以在 `state_file_for` 上收一处，别在多处各写一遍。
         """
-        return self.state_path or os.path.join(
-            os.path.dirname(os.path.abspath(self.output_template)) or ".",
-            ".render_state.json")
+        return state_file_for(self.output_template, self.state_path)
 
     # ---------- 存档 ----------
     # ⚠️ `blender_exe` **不在这里** —— 它是 RenderJob 的构造参数，不属于 JobConfig。
@@ -323,12 +337,9 @@ class RenderJob(object):
         old = JobState.load(state_path) if (cfg.resume and os.path.exists(state_path)) else None
         if old is not None:
             # 场景也要比：同一个工程换个场景，帧号往往一样但内容完全是另一张图，
-            # 续跑会把上一个场景的进度算进来（产物全错还看不出来）
-            same = (os.path.abspath(old.blend) == os.path.abspath(cfg.blend)
-                    and old.output_template == cfg.output_template
-                    and tuple(old.frames) == tuple(cfg.frames)
-                    and (old.scene or "") == (cfg.scene or ""))
-            if same:
+            # 续跑会把上一个场景的进度算进来（产物全错还看不出来）。
+            # 判据本体在 state.task_signature()，与开机续跑（taskstore）共用一份。
+            if old.signature() == cfg.signature():
                 self.state = old
                 if old.done:
                     emit("resume", state_path=state_path, done=sorted(old.done),
