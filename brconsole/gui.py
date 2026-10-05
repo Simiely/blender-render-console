@@ -126,6 +126,9 @@ class App(object):
             self.v_output.set(FormModel.complete_output("", preset_blend))
             self.root.after(200, self.on_inspect)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # 手填/粘贴 Blender 路径时清掉版本下拉的旧选择 —— 界面不能说谎
+        # （下拉还写着"Blender 5.2"，实际跑的是用户刚粘的另一个路径）
+        self.v_blender.trace_add("write", self._on_blender_var_changed)
         self.root.after(POLL_MS, self._poll)
 
     # ---------------- 界面搭建 ----------------
@@ -173,6 +176,9 @@ class App(object):
         self._blender_by_label = {}
         self._blender_candidates = []
         self.v_blender_ver = tk.StringVar()
+        # 挂起的善后倒计时（关机/睡眠）：{(dialog, cancel)} —— 新任务开始时必须撤掉，
+        # 否则"渲完弹 60 秒倒计时 → 用户这期间点开始渲染 → 机器把新渲染关掉"
+        self._pending_countdown = None
 
         r = 0
         ttk.Label(box, text="工程 .blend").grid(row=r, column=0, sticky="w", **pad)
@@ -408,6 +414,17 @@ class App(object):
         if path and path != self.v_blender.get():
             self.v_blender.set(path)
             self._log("Blender 改为：%s" % path)
+
+    def _on_blender_var_changed(self, *args):
+        """v_blender 变化时校准版本下拉（双向）：路径等于某候选 → 选中它；
+        对不上（手填别的路径）→ 清空。下拉与输入框必须说的是同一件事，
+        否则界面在说谎（下拉写着"Blender 5.2"，实际跑的是刚粘的另一个路径）。
+        """
+        target = os.path.normcase(self.v_blender.get())
+        match = next((l for l, p in self._blender_by_label.items()
+                      if os.path.normcase(p) == target), None)
+        if self.v_blender_ver.get() != (match or ""):
+            self.v_blender_ver.set(match or "")
 
     def autofill_blender(self):
         old = self.v_blender.get()
@@ -805,6 +822,7 @@ class App(object):
         if errors:
             messagebox.showerror("配置有问题", "\n".join("· " + e for e in errors))
             return
+        self._cancel_pending_countdown()
         blender = (self.form.blender or "").strip()
         if not blender:
             messagebox.showerror("配置有问题", "还没指定 blender.exe（点「自动探测」或手填）")
@@ -943,7 +961,10 @@ class App(object):
 
         过夜渲染人不在屏幕前，结果必须能穿过注意力盲区 —— 竞品 BRQ 的卖点
         "排队→挂机→走人→收通知"。失败也通知：早上应该知道"没渲完"而不是白等。
+        demo 自检旁路：假任务不值得打扰（与 aftermath 的旁路对称）。
         """
+        if self.demo:
+            return
         if kind == "job_done":
             title = "渲染已取消" if ev.get("cancelled") else (
                 "渲染完成" if ev.get("ok") else "渲染未完成")
@@ -979,6 +1000,9 @@ class App(object):
         刻意**不在弹窗前就排系统级关机**（`shutdown /t`）：万一本程序在这 60 秒里
         崩了，OS 倒计时照样执行 —— "崩了反而把机器关了"是错误方向；
         由本程序在 0 秒时才发动作，崩了就停在原地（安全侧）。
+
+        弹窗句柄记在 `_pending_countdown`：用户在这 60 秒里点「开始渲染」开新任务时，
+        `on_start` 会撤掉它 —— 否则机器会把刚开的新渲染关掉。
         """
         dlg = tk.Toplevel(self.root)
         dlg.title("任务完成 · 即将%s" % action_name)
@@ -992,11 +1016,13 @@ class App(object):
         lbl.pack(pady=(0, 8))
 
         def fire_now():
+            self._pending_countdown = None
             dlg.destroy()
             ok, msg = fire()
             self._log("自动%s：%s" % (action_name, msg))
 
         def cancel(_e=None):
+            self._pending_countdown = None
             dlg.destroy()
             self._log("已取消自动%s" % action_name)
 
@@ -1005,6 +1031,7 @@ class App(object):
         ttk.Button(btns, text="取消%s" % action_name, command=cancel).pack(
             side="left", padx=6)
         dlg.protocol("WM_DELETE_WINDOW", cancel)
+        self._pending_countdown = (dlg, cancel)
         self._log("任务完成：%d 秒后自动%s（点「取消%s」可撤）"
                   % (seconds, action_name, action_name))
 
@@ -1019,6 +1046,21 @@ class App(object):
             dlg.after(1000, tick)
 
         dlg.after(1000, tick)
+
+    def _cancel_pending_countdown(self):
+        """新渲染开始前撤掉挂起的关机/睡眠倒计时。
+
+        不撤的话："渲完弹 60 秒倒计时 → 用户这期间配好新任务点开始 → 0 秒一到
+        机器把新渲染关掉"。这是本功能最拧巴的隐藏路径（2026-10-05 复查发现）。
+        """
+        pending = self._pending_countdown
+        if pending is None:
+            return
+        dlg, _cancel = pending
+        self._pending_countdown = None
+        if dlg.winfo_exists():
+            dlg.destroy()
+        self._log("已撤销上一次的自动关机/睡眠（开始了新任务）")
 
     def _flush_log(self):
         lines = self.log.drain()

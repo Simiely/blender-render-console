@@ -645,7 +645,6 @@ class TestKeepAwakeWiring(unittest.TestCase):
     """
 
     def test_paired_on_error_path(self):
-        from brconsole import core
         calls = []
 
         def keep():
