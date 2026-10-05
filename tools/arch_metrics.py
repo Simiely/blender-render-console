@@ -22,7 +22,7 @@
 - `lazy`：写在函数/方法体里的 —— 只在真的调用到那一步才生效
 **报结论时两套数字都给**：只有 runtime 才是"改动真的会牵连到谁"。
 
-跑法：`python tools/arch_metrics.py`
+跑法：`python tools/arch_metrics.py [仓库根目录]`（默认当前目录）
 """
 
 import ast
@@ -31,7 +31,9 @@ import os
 import sys
 from collections import defaultdict
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 默认分析"当前工作目录"（在仓库根目录跑），也可以在命令行给一个根目录。
+# 写成 cwd 而不是 __file__ 的上级，是为了让这份脚本能直接搬到别的仓库用。
+ROOT = os.getcwd()
 PKG = "brconsole"
 SOURCES = [PKG, "main.py"]
 # 这些目录不是交付代码：单测/工具/构建产物/探针样本。算耦合时不带它们玩，
@@ -225,9 +227,10 @@ def cycles(nodes, edge_map):
 
 
 def main():
-    files, known, edges, externals = build()
+    root = sys.argv[1] if len(sys.argv) > 1 else ROOT
+    files, known, edges, externals = build(root)
     universe = sorted(known)
-    lines = {node_of(p): len(read_text(p).splitlines()) for p in files}
+    lines = {node_of(p, root): len(read_text(p).splitlines()) for p in files}
     print("=" * 80)
     print("1. 规模")
     print("=" * 80)
