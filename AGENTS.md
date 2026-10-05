@@ -48,6 +48,9 @@
 29. **指定场景必须回读校验**：`blender -b x.blend -S 不存在的场景` 只往 stdout 打一行英文 `Can't find scene: 'xx'`，**退出码仍是 0**，然后照常用默认场景渲染（实测 5.2.2）—— 选错场景会静默渲出一整套错图。所以 `driver.activate_scene()` 自己切（`bpy.context.window.scene = target`，实测 `-b` 下 window **不是** None，切完渲染出的就是目标场景）+ 回读校验 + 中文告警；界面还在按下「开始渲染」前拦一道（读到的场景列表里没有这个名字就报错）。
 30. **`//` 是"相对 .blend 目录"，不是绝对路径**：Blender 的**默认**输出路径就长这样，它和 `/tmp` 一样以 `/` 开头，会被 `output_template_from()` 里"Windows 上以 `/` 开头 = 不存在"那条规则一起丢掉 → 输出模板永远退化成 `工程名_####`，多场景之间也看不出区别。判断之前先把 `//xxx` 展开成 `<工程目录>/xxx`。
 31. **界面下拉别维护"显示值 / 实际值"两张表**：本项目曾同时有 `RESTART_CHOICES`（中文文案 → 值）和 `RESTART_VALUES`（裸值），界面写的是后者 → 下拉框里直接显示 `1/3/5/10/unlimited`，英文 `unlimited` 露在界面上，而中文那套**从没被任何控件引用**（死代码）。现在下拉只放中文文案，交给 `core.parse_restart_limit` 解析（`"5 次（默认）"`→5、`"一直重启，直到全部渲完"`→不限）。能用同一个字符串既显示又解析，就别搞映射层。
+32. **"崩溃后接着渲"不能靠"崩溃时打标记"**：进程被 `taskkill /F` 强杀或系统掉电时**根本来不及写文件**，任何"退出钩子里记一笔"的设计都是空谈。必须**反向设计**：点开始时默认置 `autoresume=True`（"要自动续跑"），只有**用户主动停止**或**正常渲完**才撤销/删档。于是崩溃 = 存档原封不动 = 下次开机自动续跑（实测：强杀后 `pending.json` 里 `autoresume` 仍是 True、断点 `created` 时间戳停留在首次启动、重启后从第 662 帧接着跑到 1550/4000）。
+33. **存档要存"能重建任务的全部东西"，而不是 JobConfig**：`blender_exe` **不在 `JobConfig` 里**（它是 `RenderJob` 的构造参数），`resolution_percentage` / `max_frame_attempts` / `max_no_progress_rounds` 也不在断点文件里 —— 漏了任何一个，开机后重建出来的任务都会"缺胳膊少腿地按默认值跑"。所以 `taskstore` 存的是 `JobConfig.to_dict()` **加** `blender_exe`；`JOB_CONFIG_FIELDS` 加参数时必须同步，`test_core.py` 里有一条**对着实例属性核对**的测试专门防漏。
+34. **开机自启只写 HKCU，且必须能识别"登记项指向别处"**：写 `HKEY_CURRENT_USER` 免提权、也只影响自己（HKLM 要管理员且影响所有用户）。但注册表存的是**绝对路径**，exe 一挪窝，开机拉起来的就变成另一个程序 —— `autostart.is_current()` 必须能比对出不一致，界面要提示"⚠ 登记的是别的位置，重新勾一次即刷新"。另外 Run 项无法指定"不弹控制台"，源码模式要用 `pythonw.exe`（否则登录后闪一个黑窗）。
 
 ## 约定
 
@@ -64,7 +67,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（126 条，不依赖 Blender）
+# 单测（194 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 6 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景（需要 Blender 5.2）
@@ -81,6 +84,11 @@ python tools/make_icon.py --sheet sheet.png
 python main.py
 python main.py --gui 工程.blend
 python main.py --demo
+
+# 开机自启模式（自启项用的就是这条）：认领未完成任务，有就自动续跑
+python main.py --autostart
+# 手动查看/清掉待办任务存档（排错用；存档在 %LOCALAPPDATA%\blender-render-console\pending.json）
+type "%LOCALAPPDATA%\blender-render-console\pending.json"
 
 # 抓界面截图（验证布局与配色；--probe 采样像素颜色，--list 列窗口标题）
 python tools/capture_screen.py --list

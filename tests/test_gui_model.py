@@ -20,8 +20,8 @@ from brconsole.core import parse_restart_limit  # noqa: E402
 from brconsole.guimodel import (DEFAULT_RESTART_OPTION, RESTART_OPTIONS,  # noqa: E402
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                                 FormModel, LogModel, ProgressModel, event_line,
-                                fields_from_detail, guess_state_path, scene_to_config,
-                                state_summary)
+                                fields_from_detail, frames_to_text, guess_state_path,
+                                restart_label_for, scene_to_config, state_summary)
 from brconsole.state import JobState  # noqa: E402
 
 
@@ -379,6 +379,124 @@ class TestTkBoot(unittest.TestCase):
             self.assertEqual(env[tkboot.BOOT_FLAG], "1")
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+class TestFramesToText(unittest.TestCase):
+    """帧号列表 → 表单文本（开机续跑回填用）。"""
+
+    def test_contiguous_run_collapses(self):
+        self.assertEqual(frames_to_text([1, 2, 3, 4]), "1-4")
+
+    def test_short_run_stays_explicit(self):
+        # 只有 2 帧的连续段不折成区间（"5-6" 没比 "5,6" 短，折了反而难读）
+        self.assertEqual(frames_to_text([5, 6]), "5,6")
+
+    def test_mixed(self):
+        self.assertEqual(frames_to_text([1, 2, 3, 4, 9, 20, 21, 22]), "1-4,9,20-22")
+
+    def test_unsorted_and_duplicated_input(self):
+        self.assertEqual(frames_to_text([4, 2, 3, 2, 1]), "1-4")
+
+    def test_empty(self):
+        self.assertEqual(frames_to_text([]), "")
+        self.assertEqual(frames_to_text(None), "")
+
+
+class TestRestartLabelFor(unittest.TestCase):
+    """存档里的整数 → 下拉文案。ROI 在于「填回去必须是能解析出同一个数」的文案。"""
+
+    def test_known_values_map_to_canonical_labels(self):
+        self.assertEqual(restart_label_for(1), RESTART_OPTIONS[0])
+        self.assertEqual(restart_label_for(3), RESTART_OPTIONS[1])
+        self.assertEqual(restart_label_for(5), RESTART_OPTIONS[2])
+        self.assertEqual(restart_label_for(10), RESTART_OPTIONS[3])
+
+    def test_unlimited(self):
+        self.assertEqual(restart_label_for(-1), RESTART_OPTIONS[-1])
+        self.assertEqual(restart_label_for(None), RESTART_OPTIONS[-1])
+
+    def test_unknown_number_is_still_parseable(self):
+        """不在候选里的次数（例如老存档写 7）不能静默退回 5 —— 必须原样带上。"""
+        self.assertEqual(restart_label_for(7), "7 次")
+        self.assertEqual(parse_restart_limit("7 次"), 7)
+
+    def test_every_label_round_trips(self):
+        for label in RESTART_OPTIONS:
+            n = parse_restart_limit(label)
+            self.assertEqual(restart_label_for(n), label)
+
+    def test_default_option_is_used_when_missing(self):
+        self.assertEqual(restart_label_for(5), DEFAULT_RESTART_OPTION)
+
+
+class TestFormFromConfig(unittest.TestCase):
+    """存档 → 表单 → 配置 的往返。这条链断了的表现是"开机续跑跑了另一个任务"。"""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix=".brc-fromcfg-")
+        self.blend = os.path.join(self.d, "house.blend")
+        with open(self.blend, "wb") as f:
+            f.write(b"BLENDER-v5")
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def _dict(self, **kw):
+        from brconsole.core import JobConfig
+        args = dict(blend=self.blend, frames=[1, 2, 3, 7, 8],
+                    output_template=os.path.join(self.d, "out", "f_####"),
+                    engine="CYCLES", samples=64, device="CPU", resolution=(1920, 1080),
+                    resolution_percentage=50, file_format="PNG", scene="SceneB",
+                    max_restarts=-1, max_frame_attempts=0, max_no_progress_rounds=7,
+                    resume=False, restart_delay=1.5, extra_args=["-x"])
+        args.update(kw)
+        return JobConfig(**args).to_dict()
+
+    def test_full_roundtrip(self):
+        d = self._dict()
+        cfg, errors, warns = FormModel.from_config(d, "C:/bl/blender.exe").to_config(
+            parse_frames)
+        self.assertEqual(errors, [])
+        self.assertEqual(warns, [])
+        self.assertIsNotNone(cfg)
+        self.assertEqual(cfg.to_dict(), d)
+
+    def test_frames_become_explicit_list_with_step_one(self):
+        """区间展开要乘 step：回填时必须把 step 置回 1，否则 [1..8] 会变成 [1,3,5,7]。"""
+        fm = FormModel.from_config(self._dict(frames=list(range(1, 9))))
+        self.assertEqual(fm.step, "1")
+        self.assertEqual(fm.frames, "1-8")
+
+    def test_carries_fields_that_have_no_widget(self):
+        """extra_args / restart_delay 界面上没有控件，但**必须原样带过去**：
+        丢了它们，重建的任务会静默按默认值跑。"""
+        d = self._dict(extra_args=["--cycles-device", "OPTIX"], restart_delay=0.25)
+        fm = FormModel.from_config(d, "b.exe")
+        self.assertEqual(fm.extra_args, ["--cycles-device", "OPTIX"])
+        self.assertEqual(fm.restart_delay, 0.25)
+        cfg, _, _ = fm.to_config(parse_frames)
+        self.assertEqual(cfg.extra_args, ["--cycles-device", "OPTIX"])
+        self.assertEqual(cfg.restart_delay, 0.25)
+
+    def test_blank_optionals_become_keep(self):
+        d = self._dict(engine=None, samples=None, device=None, file_format=None,
+                       resolution=None, resolution_percentage=None, scene=None)
+        fm = FormModel.from_config(d, "b.exe")
+        self.assertEqual(fm.engine, "")
+        self.assertEqual(fm.device, "")
+        self.assertEqual(fm.file_format, "")
+        self.assertEqual(fm.samples, "")
+        self.assertEqual((fm.width, fm.height), ("", ""))
+        self.assertEqual(fm.scene, SCENE_DEFAULT_LABEL)
+
+    def test_blender_path_is_carried(self):
+        fm = FormModel.from_config(self._dict(), r"D:\bl\blender.exe")
+        self.assertEqual(fm.blender, r"D:\bl\blender.exe")
+
+    def test_tolerates_empty_dict(self):
+        fm = FormModel.from_config({}, "")
+        self.assertEqual(fm.blend, "")
+        self.assertEqual(fm.max_restarts, DEFAULT_RESTART_OPTION)
 
 
 if __name__ == "__main__":

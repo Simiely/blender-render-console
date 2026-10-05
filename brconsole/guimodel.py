@@ -96,6 +96,47 @@ def fields_from_detail(detail, blend=""):
     return out
 
 
+def frames_to_text(frames):
+    """帧号列表 → `1-240,300` 这样的紧凑文本（写回表单用）。
+
+    只把**连续 3 帧以上**的折成区间：`1-240` 比列 240 个数字清楚得多。
+    ⚠️ 折成区间后会受表单 `step` 影响（`parse_frames` 对区间是 `range(a, b+1, step)`），
+    所以还原时必须把 step 一起置回 1 —— 见 `FormModel.from_config`。
+    """
+    fs = sorted({int(f) for f in (frames or [])})
+    if not fs:
+        return ""
+    out, i = [], 0
+    while i < len(fs):
+        j = i
+        while j + 1 < len(fs) and fs[j + 1] == fs[j] + 1:
+            j += 1
+        if j - i >= 2:
+            out.append("%d-%d" % (fs[i], fs[j]))
+        else:
+            out.extend(str(f) for f in fs[i:j + 1])
+        i = j + 1
+    return ",".join(out)
+
+
+def restart_label_for(value):
+    """重启次数（存档里的整数）→ 下拉文案。
+
+    `-1` / None（= 一直重启）映射到最后一个选项；不在已知选项里的整数
+    直接写成 `"7 次"` —— `parse_restart_limit` 认得出开头数字，
+    界面那边也会把这个文案补进下拉的候选里（否则 readonly 的下拉放不下它）。
+    """
+    if value is None:
+        return RESTART_OPTIONS[-1]
+    n = int(value)
+    if n < 0:
+        return RESTART_OPTIONS[-1]
+    for label in RESTART_OPTIONS[:-1]:
+        if parse_restart_limit(label, default=None) == n:
+            return label
+    return "%d 次" % n
+
+
 class FormModel(object):
     """界面表单的字段容器。`to_config()` 负责校验与补全。"""
 
@@ -120,6 +161,11 @@ class FormModel(object):
         self.max_no_progress = kw.get("max_no_progress", "3")
         self.max_frame_attempts = kw.get("max_frame_attempts", "3")
         self.show_native = kw.get("show_native", False)
+        # 界面上没有这两个控件（CLI 专有参数），但**必须原样透传**：
+        # 从任务存档回填时如果丢掉它们，重建出来的任务会静默按默认值跑 ——
+        # 「参数悄悄变了」比「报错」难查得多。
+        self.extra_args = list(kw.get("extra_args") or ())
+        self.restart_delay = kw.get("restart_delay", 2.0)
 
     # ---------- 补全 ----------
     @staticmethod
@@ -141,6 +187,40 @@ class FormModel(object):
     @staticmethod
     def default_blend_dir(blend):
         return os.path.dirname(os.path.abspath(blend)) if blend else ""
+
+    # ---------- 存档 → 表单（开机续跑时把上次的任务填回界面）----------
+    @classmethod
+    def from_config(cls, cfg_dict, blender_exe=""):
+        """`JobConfig.to_dict()` 的结果 → 表单字段。
+
+        帧范围**走显式列表**并把 step 置回 1：`to_config` 里显式列表优先于
+        起始/结束帧，而区间展开又要乘 step —— 两处都摆平才能做到"填回去和上次
+        跑的是同一批帧"。这个往返有单测盯着。
+        """
+        d = dict(cfg_dict or {})
+        res = d.get("resolution") or []
+        return cls(
+            blend=d.get("blend") or "",
+            blender=blender_exe or "",
+            output=d.get("output_template") or "",
+            frames=frames_to_text(d.get("frames")),
+            start="1", end="250", step="1",
+            engine=d.get("engine") or KEEP,
+            samples="" if d.get("samples") is None else str(d["samples"]),
+            device=d.get("device") or KEEP,
+            width=str(res[0]) if len(res) == 2 else "",
+            height=str(res[1]) if len(res) == 2 else "",
+            pct=("" if d.get("resolution_percentage") is None
+                 else str(d["resolution_percentage"])),
+            file_format=d.get("file_format") or KEEP,
+            scene=d.get("scene") or SCENE_DEFAULT_LABEL,
+            resume=bool(d.get("resume", True)),
+            max_restarts=restart_label_for(d.get("max_restarts", 5)),
+            max_no_progress=str(d.get("max_no_progress_rounds", 3)),
+            max_frame_attempts=str(d.get("max_frame_attempts", 3)),
+            extra_args=d.get("extra_args") or (),
+            restart_delay=d.get("restart_delay", 2.0),
+        )
 
     # ---------- 校验 → JobConfig ----------
     def to_config(self, frames_parser):
@@ -214,6 +294,8 @@ class FormModel(object):
             max_restarts=parse_restart_limit(self.max_restarts, default=5),
             max_frame_attempts=3 if attempts is None else attempts,
             resume=bool(self.resume),
+            extra_args=self.extra_args,
+            restart_delay=self.restart_delay,
             max_no_progress_rounds=int(self.max_no_progress or 3))
         return cfg, errors, warns
 

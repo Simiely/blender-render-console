@@ -70,6 +70,16 @@ def parse_restart_limit(value, default=5):
     return default
 
 
+# 存档时要落盘的全部任务参数。**加新参数时记得往这里补**，
+# 漏了的话开机续跑重建出来的任务会缺这一项、静默按默认值跑（最难查的那种 bug）。
+JOB_CONFIG_FIELDS = (
+    "blend", "frames", "output_template", "engine", "samples", "device", "scene",
+    "resolution", "resolution_percentage", "file_format", "state_path", "log_path",
+    "max_restarts", "max_frame_attempts", "extra_args", "resume", "restart_delay",
+    "max_no_progress_rounds",
+)
+
+
 class JobConfig(object):
     """一次渲染任务的全部参数。对应 CLI / GUI 上的表单。"""
 
@@ -107,6 +117,57 @@ class JobConfig(object):
         """判断新旧 state 是否属于同一任务（blend / 输出 / 帧范围 / 场景变了就别续）。"""
         return (os.path.abspath(self.blend), self.output_template,
                 tuple(self.frames), self.scene or "")
+
+    def state_file(self):
+        """断点文件的最终路径。
+
+        这条规则（`state_path` 优先，否则输出目录下的 `.render_state.json`）原先只写在
+        `RenderJob._init_state` 里，taskstore 也要用它判断「任务跑完没有」——
+        所以在 JobConfig 上收一处，别在两处各写一遍。
+        """
+        return self.state_path or os.path.join(
+            os.path.dirname(os.path.abspath(self.output_template)) or ".",
+            ".render_state.json")
+
+    # ---------- 存档 ----------
+    # ⚠️ `blender_exe` **不在这里** —— 它是 RenderJob 的构造参数，不属于 JobConfig。
+    #    开机续跑要重建整个 RenderJob，所以 taskstore 会把它单独存一份。
+    def to_dict(self):
+        """把任务参数整份序列化（供 taskstore 存档 / 开机续跑重建）。"""
+        d = {}
+        for k in JOB_CONFIG_FIELDS:
+            v = getattr(self, k, None)
+            d[k] = list(v) if isinstance(v, tuple) else v
+        return d
+
+    @classmethod
+    def from_dict(cls, d):
+        """从存档重建。**容忍缺字段**（老版本写的存档要能读），脏数据交给调用方兜。
+
+        `frames` 为空时 `__init__` 里那句 `int(f)` 不会报错，但空任务没意义，
+        所以这里不额外校验 —— 校验是 taskstore 的事（它才知道"能不能跑"）。
+        """
+        d = d or {}
+        res = d.get("resolution")
+        return cls(
+            blend=d.get("blend") or "",
+            frames=d.get("frames") or [],
+            output_template=d.get("output_template") or "",
+            engine=d.get("engine"),
+            samples=d.get("samples"),
+            device=d.get("device"),
+            resolution=tuple(res) if res else None,
+            resolution_percentage=d.get("resolution_percentage"),
+            file_format=d.get("file_format"),
+            state_path=d.get("state_path"),
+            log_path=d.get("log_path"),
+            max_restarts=d.get("max_restarts", 5),
+            max_frame_attempts=d.get("max_frame_attempts", 3),
+            extra_args=d.get("extra_args") or (),
+            resume=d.get("resume", True),
+            restart_delay=d.get("restart_delay", 2.0),
+            max_no_progress_rounds=d.get("max_no_progress_rounds", 3),
+            scene=d.get("scene"))
 
 
 def default_cmd_factory(blender_exe, blend, driver_path, job_json, extra_args=()):
@@ -194,8 +255,7 @@ class RenderJob(object):
     # ---------------- state ----------------
     def _init_state(self, emit):
         cfg = self.cfg
-        state_path = cfg.state_path or os.path.join(
-            os.path.dirname(os.path.abspath(cfg.output_template)) or ".", ".render_state.json")
+        state_path = cfg.state_file()
         os.makedirs(os.path.dirname(os.path.abspath(state_path)) or ".", exist_ok=True)
 
         old = JobState.load(state_path) if (cfg.resume and os.path.exists(state_path)) else None

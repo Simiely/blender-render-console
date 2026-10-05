@@ -3,6 +3,7 @@
 
     python main.py                           # 无参数 → 图形界面
     python main.py --gui 工程.blend           # 图形界面，并直接载入该工程（自动读配置）
+    python main.py --autostart               # 开机自启用：认领未完成任务并自动续跑
     python main.py --demo                    # 图形界面 + 自动跑一轮模拟任务（自检用；
                                              #   打包后的 exe 同样支持，用的是 exe 内置的假 Blender）
     python main.py 工程.blend -s 1 -e 240      # 命令行渲染
@@ -18,7 +19,7 @@ sys.path.insert(0, ROOT)
 from brconsole import tkboot  # noqa: E402
 from brconsole.cli import main as cli_main  # noqa: E402
 
-GUI_FLAGS = {"--gui", "--demo"}
+GUI_FLAGS = {"--gui", "--demo", "--autostart"}
 FAKE_FLAG = "--fake-blender"      # 打包后 --demo 用它把本 exe 当「假 Blender」再拉起来
 SELFTEST_SUBDIR = ("_brc", "selftest")
 
@@ -96,13 +97,15 @@ def run_gui(argv):
     from brconsole.gui import run_gui as _run
 
     demo = "--demo" in argv
+    autostart_mode = "--autostart" in argv
     rest = [a for a in argv if a not in GUI_FLAGS]     # --gui <工程.blend>
     preset = rest[0] if rest else None
     factory = _demo_cmd_factory() if demo else None
     if demo and factory is None:
         sys.stderr.write("--demo 需要 tests/fake_blender.py（打包版应随 exe 一起带上）\n")
         return 2
-    return _run(demo=demo, cmd_factory=factory, preset_blend=preset)
+    return _run(demo=demo, cmd_factory=factory, preset_blend=preset,
+                autostart_mode=autostart_mode)
 
 
 def main(argv=None):

@@ -415,5 +415,96 @@ class TestCmdFactory(unittest.TestCase):
         self.assertLess(cmd2.index("OPTIX"), cmd2.index("--"))
 
 
+class TestJobConfigArchive(unittest.TestCase):
+    """JobConfig 的存档能力 —— 开机续跑要照它把整个任务重建出来。"""
+
+    def _cfg(self, **kw):
+        args = dict(blend="C:/a/house.blend", frames=[1, 2, 3],
+                    output_template="C:/a/out/f_####", engine="CYCLES", samples=128,
+                    device="OPTIX", resolution=(1920, 1080), resolution_percentage=50,
+                    file_format="PNG", scene="SceneB", max_restarts=UNLIMITED,
+                    max_frame_attempts=0, max_no_progress_rounds=7, resume=False,
+                    restart_delay=1.5, extra_args=["--cycles-device", "OPTIX"])
+        args.update(kw)
+        return JobConfig(**args)
+
+    def test_roundtrip_is_lossless(self):
+        d = self._cfg().to_dict()
+        self.assertEqual(JobConfig.from_dict(d).to_dict(), d)
+
+    def test_roundtrip_with_defaults(self):
+        d = JobConfig(blend="C:/a/b.blend", frames=[1],
+                      output_template="C:/a/o/f_####").to_dict()
+        self.assertEqual(JobConfig.from_dict(d).to_dict(), d)
+
+    def test_tuple_becomes_list_for_json(self):
+        """resolution 是 tuple，json 会存成 list —— 两边都得能读。"""
+        d = self._cfg().to_dict()
+        self.assertEqual(d["resolution"], [1920, 1080])
+        self.assertEqual(JobConfig.from_dict(d).resolution, (1920, 1080))
+
+    def test_unlimited_survives(self):
+        self.assertTrue(JobConfig.from_dict(self._cfg().to_dict()).unlimited_restarts)
+
+    def test_tolerates_missing_keys(self):
+        """老版本写的存档要能读：缺字段走默认，不能抛。"""
+        c = JobConfig.from_dict({"blend": "C:/a/b.blend", "frames": [1],
+                                 "output_template": "C:/a/o/f_####"})
+        self.assertEqual(c.max_restarts, 5)
+        self.assertEqual(c.max_frame_attempts, 3)
+        self.assertTrue(c.resume)
+
+    def test_tolerates_none_and_empty(self):
+        for raw in (None, {}):
+            c = JobConfig.from_dict(raw)
+            self.assertEqual(c.frames, [])
+
+    def test_every_field_is_covered(self):
+        """`JOB_CONFIG_FIELDS` 漏字段 = 存档悄悄丢参数。
+
+        对着**实例属性**核，而不是对着 `to_dict()` 的输出核（那是同义反复）——
+        将来给 JobConfig 加了新参数却忘了补进清单，这条测试要能红。
+        """
+        from brconsole.core import JOB_CONFIG_FIELDS
+        cfg = self._cfg()
+        self.assertEqual(set(JOB_CONFIG_FIELDS), set(vars(cfg).keys()))
+        for k in JOB_CONFIG_FIELDS:
+            self.assertTrue(hasattr(cfg, k), "字段名写错了：%s" % k)
+
+
+class TestStateFilePath(unittest.TestCase):
+    """断点文件路径的规则收在 JobConfig.state_file() 上（taskstore 也用它）。"""
+
+    def test_default_is_beside_output(self):
+        cfg = JobConfig(blend="C:/a/b.blend", frames=[1],
+                        output_template="C:/a/out/f_####")
+        self.assertEqual(cfg.state_file(),
+                         os.path.join(os.path.abspath("C:/a/out"), ".render_state.json"))
+
+    def test_explicit_wins(self):
+        cfg = JobConfig(blend="C:/a/b.blend", frames=[1],
+                        output_template="C:/a/out/f_####",
+                        state_path="C:/s/p.json")
+        self.assertEqual(cfg.state_file(), "C:/s/p.json")
+
+    def test_matches_what_renderjob_writes(self):
+        """和真正写盘的那份必须一致，否则 taskstore 会去错地方找进度。"""
+        cfg = JobConfig(blend="C:/a/b.blend", frames=[1],
+                        output_template="C:/a/out/f_####")
+        tmp = tempfile.mkdtemp(prefix="brc-statefile-")
+        try:
+            cfg.blend = os.path.join(tmp, "b.blend")
+            with open(cfg.blend, "wb") as f:
+                f.write(b"BLENDER-v5")
+            cfg.output_template = os.path.join(tmp, "out", "f_####")
+            job = RenderJob(cfg, "blender.exe", cmd_factory=lambda *a, **k: ["x"])
+            events = []
+            job._init_state(lambda k, **kw: events.append((k, kw)))
+            self.assertTrue(os.path.exists(cfg.state_file()))
+            self.assertEqual(os.path.basename(cfg.state_file()), ".render_state.json")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

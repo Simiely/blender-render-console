@@ -9,7 +9,9 @@
     parser.py  Blender 原生输出行解析
     eta.py     ETA 估算（剔除首帧预热 + EMA 平滑）
     state.py   断点状态文件（原子落盘）
+    taskstore.py 待办任务存档（开机续跑的依据：任务"是什么"）
+    autostart.py 开机自启（HKCU 的 Run 项）
     locate.py  blender.exe 探测（文件系统扫描，不用注册表）
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

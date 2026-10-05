@@ -18,8 +18,9 @@
 
 ## 当前状态
 
-> **v0.5.0：支持多场景工程** —— 一个 .blend 里有多个场景时，界面上直接选要渲哪个场景
-> （切换后引擎 / 采样 / 分辨率 / 帧范围 / 输出路径按该场景重填）；命令行对应 `-S 场景名`。
+> **v0.6.0：开机自启 + 任务存档** —— 点「开始渲染」会**先把任务存下来**，
+> 之后无论崩溃、掉电还是手动关机，重新开机后程序自动读回这次任务并接着渲。
+> 界面勾一下「开机自动启动」即可（写 `HKCU` 的 Run 项，免管理员权限）。
 > 单文件 exe 仍可用：`dist/blender-render-console.exe`（双击即界面）/ `dist/brc.exe`（命令行）。
 
 | 能力 | 状态 |
@@ -28,6 +29,7 @@
 | 图形界面（tkinter，深色主题） | ✅ 真窗口实测 |
 | **选中工程自动读取渲染配置** | ✅ 真机实测：引擎 / 采样 / 设备 / 分辨率 / 帧范围 / 输出路径一次填好 |
 | **多场景工程选场景渲染** | ✅ 真机实测：双场景（64x48 / 128x96）分别渲出，**以产物尺寸为证**；场景名写错有明确告警 |
+| **开机自启 + 任务存档，开机自动接着渲** | ✅ 真机实测：强杀进程树 → 存档原封不动 → 重启从第 662 帧接着跑到 1550/4000 |
 | 无头渲染 + 逐帧进度 | ✅ 真机实测（Cycles / EEVEE 各跑通） |
 | ETA 自算（剔除首帧预热 + EMA 平滑） | ✅ 真机实测 |
 | **崩溃 / 被杀后自动续跑** | ✅ 真机实测：中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
@@ -35,6 +37,21 @@
 | 取消（停止按钮 / Ctrl+C）并保留进度 | ✅ 单测覆盖 |
 | 命令行模式 | ✅ |
 | **exe 图标与版本信息** | ✅ 图标逐像素比对；窗口图标截图核对；版本资源对齐 `__version__` |
+
+### 崩溃/关机后自动接着渲，是怎么做到的
+
+「点开始 → 先存档 → 再渲染」，存档在 `%LOCALAPPDATA%\blender-render-console\pending.json`，
+记的是**完整任务定义**（`.blend`、场景、帧范围、引擎/采样/分辨率、输出模板、blender.exe 路径）。
+
+关键是**没法在崩溃时写标记**（被强杀或掉电时进程根本来不及动），所以用反向设计：
+开始时默认 `autoresume=True`，**只有你主动点停止（或关窗退出）才撤销**，正常渲完则删档。
+
+| 发生了什么 | 存档 | 下次开机 |
+|---|---|---|
+| 崩了 / 掉电 / 被强杀 | 原封不动 | **自动接着渲** |
+| 你主动点了「停止」 | `autoresume` 置 False，断点保留 | 只回填表单并提示，**不自动跑** |
+| 全部渲完 | 删除 | 不会有动作 |
+| 工程或 blender 挪了位置 | 保留（不删） | 提示原因，挪回去还能救 |
 
 「一直重启」的实测口径 —— 用同一个「前 6 次启动必定失败」的启动器（`.bat`，之后原样转交真 Blender），
 只改重启上限这一个变量：
@@ -53,8 +70,13 @@
 ```bash
 dist/blender-render-console.exe              # 双击也行：打开界面
 dist/blender-render-console.exe --gui 工程.blend
+dist/blender-render-console.exe --autostart  # 开机自启项用的就是这条（一般不用手敲）
 dist/brc.exe 工程.blend -s 1 -e 240 -o out/frame_####   # 命令行版，保留终端输出
 ```
+
+想开机自动接着渲：打开界面 → 勾上「**开机自动启动**」（旁边会显示登记到注册表的命令原文）。
+它会往 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写一项，**不需要管理员权限**，
+取消勾选即删除。注意 exe 换目录后要重新勾一次（登记的是绝对路径）。
 
 exe 已经把 tcl/tk 与驱动脚本一并打包（单文件、免安装、不依赖本机 Python）。
 自己重新构建：
@@ -162,10 +184,12 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   ├── parser.py            # Blender 原生输出解析（5.2 格式）
 │   ├── eta.py               # ETA 估算（去预热 + EMA）
 │   ├── state.py             # 断点状态文件（原子落盘）
+│   ├── taskstore.py         # 待办任务存档（开机续跑的依据）
+│   ├── autostart.py         # 开机自启（HKCU 的 Run 项）
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 126 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 194 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
@@ -183,7 +207,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（126 条，不依赖 Blender，约 36s）
+# 单测（194 条，不依赖 Blender，约 40s）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟（需要 Blender 5.2，约 120s）
@@ -203,6 +227,9 @@ python tools/make_icon.py --sheet sheet.png
 
 # 界面自检：自动填一套配置并用内置假 Blender 跑一轮
 python main.py --demo
+
+# 开机自启模式（自启项用的就是这条）：认领未完成任务，有就自动续跑
+python main.py --autostart
 ```
 
 单测用的是 `tests/fake_blender.py`（输出与真机同构的假进程），验证**接线**；
