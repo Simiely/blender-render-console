@@ -79,12 +79,34 @@ def node_of(path, root=ROOT):
     return rel
 
 
-def resolve_base(imp_from, here):
-    """`ImportFrom` 的基点解析成路径形式（不含被导入的名字）。"""
+def package_of(path, root=ROOT):
+    """当前文件**所属的包**（相对导入的基准）。
+
+    ⚠️ 不能用 `node_of()` 去掉 "/__init__" 之后的结果去推：
+    `brconsole/__init__.py` 的节点名是 `brconsole`，但**它自己就是那个包**，
+    而 `brconsole/gui.py` 的所属包才是"节点名的上一级"。
+    两者混用会让 `__init__.py` 里的 `from .core import X` 解析成 `core`（而不是
+    `brconsole/core`）→ 解析不到本地节点 → **整条边被静默丢掉**，
+    于是工具"看不见"包 `__init__` 的去向（2026-10-05 实测：正因为这个，
+    新加的 init-stays-leaf 规则对真实的违规样本一声不吭）。
+    """
+    rel = os.path.relpath(path, root).replace(os.sep, "/")
+    if rel.endswith(".py"):
+        rel = rel[:-3]
+    if rel.endswith("/__init__"):
+        return rel[: -len("/__init__")]
+    return rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+
+def resolve_base(imp_from, here_pkg):
+    """`ImportFrom` 的基点解析成路径形式（不含被导入的名字）。
+
+    `here_pkg` 必须是**当前文件所属的包**（见 `package_of`），不是节点名。
+    """
     if not imp_from.level:
         return (imp_from.module or "").replace(".", "/")
-    parts = here.split("/")
-    pkg = parts[:-1]
+    parts = [x for x in here_pkg.split("/") if x]
+    pkg = parts
     up = imp_from.level - 1
     if up:
         pkg = pkg[: len(pkg) - up] if up <= len(pkg) else []
@@ -94,7 +116,7 @@ def resolve_base(imp_from, here):
     return "/".join(pkg)
 
 
-def collect_imports(node, here, default_bucket):
+def collect_imports(node, here_pkg, default_bucket):
     """从一段 AST 里产出 [(bucket, [候选目标...], 顶层模块名, 行号)]。
 
     带行号是为了让 tools/check_boundaries.py 能复用**同一个**解析器 ——
@@ -111,7 +133,7 @@ def collect_imports(node, here, default_bucket):
                 cands = ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
                 out.append((default_bucket, cands, parts[0], sub.lineno))
         elif isinstance(sub, ast.ImportFrom):
-            base = resolve_base(sub, here)
+            base = resolve_base(sub, here_pkg)
             root = base.split("/")[0] if base else ""
             # ⚠️ 一个名字一条边。写成"一条 ImportFrom 只产出一条记录、候选列表里塞满
             #    所有名字"是错的 —— 那样 `from . import a, b, c, d, e` 只会匹配到 `a`，
@@ -128,6 +150,7 @@ def collect_imports(node, here, default_bucket):
 
 def parse_file(path, root=ROOT):
     here = node_of(path, root)
+    here_pkg = package_of(path, root)
     tree = ast.parse(read_text(path), filename=path)
     records = []
     for stmt in tree.body:
@@ -135,15 +158,15 @@ def parse_file(path, root=ROOT):
         if isinstance(stmt, ast.If) and test is not None:
             names = {n.id for n in ast.walk(test) if isinstance(n, ast.Name)}
             if "TYPE_CHECKING" in names:
-                records += collect_imports(stmt, here, "typing")
+                records += collect_imports(stmt, here_pkg, "typing")
                 continue
         if isinstance(stmt, (ast.Import, ast.ImportFrom)):
-            records += collect_imports(stmt, here, "runtime")
+            records += collect_imports(stmt, here_pkg, "runtime")
     for sub in ast.walk(tree):
         if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for inner in sub.body:
                 if isinstance(inner, (ast.Import, ast.ImportFrom)):
-                    records += collect_imports(inner, here, "lazy")
+                    records += collect_imports(inner, here_pkg, "lazy")
     return records
 
 

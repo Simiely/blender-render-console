@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 
-from . import FROZEN_SUBDIR
+from .layout import FROZEN_SUBDIR
 from .eta import EtaEstimator
 from .parser import NativeParser
 from .state import JobState

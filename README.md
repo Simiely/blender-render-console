@@ -201,6 +201,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 .
 ├── main.py                  # 入口：无参数 → GUI，带参数 → CLI（PyInstaller 也从这里打包）
 ├── brconsole/
+│   ├── layout.py            # 打包布局常量（_brc）—— 叶子模块，单一来源，谁都能依赖它
 │   ├── gui.py               # tkinter 界面：控件 + 后台线程 + 事件队列
 │   ├── guimodel.py          # 界面逻辑层（表单校验 / 事件→状态 / 日志缓冲，可单测）
 │   ├── theme.py             # 深色主题（ttk 必须切 clam 才接受配色）
@@ -218,7 +219,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 290 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 294 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
@@ -239,13 +240,13 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（290 条，不依赖 Blender，约 55s）
+# 单测（294 条，不依赖 Blender，约 50s）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 架构度量：耦合（Ca/Ce/I）、依赖环、SDP 违规、扇入榜。**改依赖后重跑它**
 python tools/arch_metrics.py
 
-# 边界检查：6 条规则（GUI 边界 / 层方向 / 适配器只给组合根 / 无环 / driver 隔离 / 裸 print）
+# 边界检查：7 条规则（GUI 边界 / 层方向 / 适配器只给组合根 / 包 __init__ 保持叶子 / 无环 / driver 隔离 / 裸 print）
 python tools/check_boundaries.py       # 有违规则退出码 1
 
 # 真机冒烟（需要 Blender 5.2，约 120s）

@@ -88,6 +88,15 @@ class TestViolationsAreDetected(Base):
         self.assertEqual(len(hits), 1, hits)
         self.assertEqual(hits[0][1], "brconsole/core.py")
 
+    def test_init_stays_leaf(self):
+        """包的 `__init__.py` import 自己的子模块 —— 会成环（2026-10-05 实测复现过）。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", "from .core import JobConfig\n")
+        write(self.root, "brconsole/core.py", "class JobConfig(object):\n    pass\n")
+        hits = self.rules_hit("init-stays-leaf")
+        self.assertEqual(len(hits), 1, hits)
+        self.assertEqual(hits[0][1], "brconsole/__init__.py")
+
     def test_cycle(self):
         write(self.root, "main.py", "import os\n")
         write(self.root, "brconsole/__init__.py", "")
@@ -132,6 +141,27 @@ class TestNoFalsePositives(Base):
         write(self.root, "brconsole/__init__.py", "")
         write(self.root, "brconsole/gui.py", "import tkinter\n")
         self.assertEqual(self.rules_hit("layer-direction"), [])
+
+    def test_init_without_imports_is_fine(self):
+        """只放文档和常量的 `__init__` 是**期望**的形态。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", '"""包说明。"""\n\nVERSION = "1.0"\n')
+        write(self.root, "brconsole/core.py", "X = 1\n")
+        self.assertEqual(self.rules_hit("init-stays-leaf"), [])
+
+    def test_init_may_import_stdlib(self):
+        """只拦"import 自己的子模块"，import 标准库不该误报。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", "import os\nimport sys\n")
+        self.assertEqual(self.rules_hit("init-stays-leaf"), [])
+
+    def test_normal_module_may_import_siblings(self):
+        """规则只作用于包的 `__init__.py`，普通模块之间互相 import 是正常的。"""
+        write(self.root, "main.py", "import os\n")
+        write(self.root, "brconsole/__init__.py", '"""包说明。"""\n')
+        write(self.root, "brconsole/core.py", "X = 1\n")
+        write(self.root, "brconsole/gui.py", "import tkinter\nfrom . import core\n")
+        self.assertEqual(self.rules_hit("init-stays-leaf"), [])
 
     def test_composition_root_may_import_adapters(self):
         """组合根拉起命令行入口是它的本职 —— 真仓库里 `main.py` 就是这么干的。"""

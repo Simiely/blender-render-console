@@ -10,6 +10,7 @@
 | `layer-direction` | **包内**底层的文件不许 import 界面层。界面层 `I=1.00`（最不稳定），底层 `I=0.00`，依赖必须指向更稳定的方向（SDP）。**组合根 `main.py` 例外** —— 它天然"什么都知道"，这正是它的职责 |
 | `no-cycles` | 运行时依赖图不许有环（ADP）。实测 0 环 |
 | `adapters-for-root` | **只有组合根可以依赖适配器**（`cli.py` 是终端适配器）。2026-10-05 实测抓到的真事：界面层 `from .cli import parse_frames` —— 只为了借一个帧范围解析函数，就把"界面依赖命令行"这条方向错误的边建了起来（`gui.py:25`）。共用工具该待在下层，修法见 `core.parse_frames` |
+| `init-stays-leaf` | **包的 `__init__.py` 不许 import 子模块**。2026-10-05 实测踩到：把共用常量放进 `__init__` 后，包根成了"谁都要来取一句"的汇聚点；这时谁按 PEP8 在 `__init__` 顶部补一句 `from .core import X`，就会撞上"还没执行到常量定义"的包，报 `ImportError: cannot import name ... from partially initialized module`。共用常量请放**叶子模块**（如 `brconsole/layout.py`）。只拦"import 自己的子模块"，import 标准库不拦 |
 | `driver-isolated` | `driver.py` 跑在 **Blender 进程内**（它 `import bpy`），app 侧 import 它必然当场炸。它靠**源码字符串注入**，不是模块依赖 |
 | `no-stray-print` | 库代码不许裸 `print` 抢 stdout：进度要走事件回调/日志。例外：**终端适配器** `cli.py`（打印就是它的职责）与 `if __name__ == "__main__":` 里的手动排错入口 |
 
@@ -41,6 +42,8 @@ COMPOSITION_ROOT = "main.py"
 PRINT_OK = {"brconsole/cli.py"}
 # 适配器层：只该被组合根依赖。别处要用共用工具，请把工具放到下层模块
 ADAPTER_MODULES = {"brconsole/cli"}
+# 包的 __init__：只该放文档与版本号，不许 import 自己的子模块（会成环）
+INIT_FILES = {"brconsole/__init__.py"}
 
 
 def _rel(path, root):
@@ -99,6 +102,12 @@ def check_boundaries(root=None):
                                  "不该依赖终端适配器 %s —— 共用工具请放到下层模块"
                                  "（参照 core.parse_frames 的做法）" % tgt))
 
+            # 2c) 包 __init__ 不许 import 自己的子模块
+            if rel in INIT_FILES and tgt is not None:
+                problems.append(("init-stays-leaf", rel, lineno,
+                                 "包 __init__ 不许 import 子模块 %s —— 子模块又要从包上取东西时"
+                                 "会成环（共用常量请放叶子模块，如 brconsole/layout.py）" % tgt))
+
             # 3) app 侧不许 import driver
             if tgt == driver_node and node != driver_node:
                 problems.append(("driver-isolated", rel, lineno,
@@ -117,8 +126,8 @@ def check_boundaries(root=None):
     return problems
 
 
-RULES = ("gui-boundary", "layer-direction", "adapters-for-root", "no-cycles",
-         "driver-isolated", "no-stray-print")
+RULES = ("gui-boundary", "layer-direction", "adapters-for-root", "init-stays-leaf",
+         "no-cycles", "driver-isolated", "no-stray-print")
 
 
 def main():

@@ -16,7 +16,8 @@ import sys
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-from brconsole import FROZEN_SUBDIR, tkboot  # noqa: E402
+from brconsole import tkboot  # noqa: E402
+from brconsole.layout import FROZEN_SUBDIR  # noqa: E402
 from brconsole.cli import main as cli_main  # noqa: E402
 
 GUI_FLAGS = {"--gui", "--demo", "--autostart"}

@@ -11,13 +11,21 @@
 - **界面层不再依赖命令行适配器**。`gui.py` 原先为了借一个帧范围解析函数写了
   `from .cli import parse_frames` —— 一条"界面依赖命令行"的**方向错误**的边。
   按同性质的 `parse_restart_limit` 的做法，把 `parse_frames` 挪进 `core.py`
-  （"用户输入字符串 → JobConfig 字段"的解析收在一处）。实测依赖变化：
-  `gui` 的 Ce **9 → 8**，`cli` 的 Ca **2 → 1**（现在只被组合根 `main` 依赖，
-  正是适配器该待的位置）。
+  （"用户输入字符串 → JobConfig 字段"的解析收在一处）。
+  实测：**`gui` 那条 `→ cli` 的边消失**，`cli` 的 Ca **2 → 1**（现在只被组合根 `main`
+  依赖，正是适配器该待的位置）。
+  ⚠️ 更正：`gui` 的 Ce **仍是 9**（不是先前记的 8）—— 它换了一条边（`cli` → `layout`），
+  数量没变。数字要按"边集合"读，不能只看计数。
 - **`"_brc"` 从 5 处硬编码收成单一来源**（`tkboot` / `core` / `main` / `gui` /
   `tools/build_exe.py`），其中一处原来靠注释「与 tkboot.FROZEN_SUBDIR 保持一致」维持。
-  现在统一取 `brconsole.FROZEN_SUBDIR`。这类"靠注释维持的一致性"断掉之后的现象是
-  **打包后功能静默缺失** —— 不容易当场发现。
+  这类"靠注释维持的一致性"断掉之后的现象是**打包后功能静默缺失** —— 不容易当场发现。
+- **常量放进了新的叶子模块 `brconsole/layout.py`，不是 `__init__.py`**。
+  第一版放在包根，看着能跑，但 `__init__` 立刻变成"谁都要来取一句"的汇聚点；
+  这时谁按 PEP8 在 `__init__` 顶部补一句 `from .core import RenderJob`，
+  `core → from .layout import ...` 就会撞上**还没执行到常量定义**的包，
+  报 `ImportError: cannot import name 'FROZEN_SUBDIR' from partially initialized module`
+  —— 已实测复现。放成叶子模块后这个雷从根上不存在（`layout` 的 Ca=4 / Ce=0 / I=0.00，
+  正好在最稳定那一层）。配套第 7 条边界规则 `init-stays-leaf` 守着。
 
 ### 写单测时抓出来的两个真 bug（`locate.py`）
 
@@ -42,8 +50,14 @@
 
 ### 工程
 
-- 边界检查 5 → **6** 条规则（新增 `adapters-for-root`：只有组合根可以依赖适配器）。
-  已验证它能精准报出 `gui.py:25` 那条旧写法。
+- 边界检查 5 → **7** 条规则：新增 `adapters-for-root`（只有组合根可以依赖适配器，
+  已验证能精准报出 `gui.py:25` 那条旧写法）与 `init-stays-leaf`（包的 `__init__.py`
+  不许 import 子模块，已验证能报出包根循环导入的写法）。
+- **修掉度量脚本自己的第 4 个解析盲点**：`__init__.py` 里的相对导入被解析成
+  `core`（而不是 `brconsole/core`），解析不到本地节点就**整条边静默丢弃** ——
+  正因为这个，新加的 `init-stays-leaf` 规则第一版对真实的违规样本一声不吭。
+  根因是把"节点名"和"文件所属的包"当成了同一个东西（`brconsole/__init__.py` 的节点名是
+  `brconsole`，而它自己就是那个包）。已拆成 `node_of()` / `package_of()` 两个函数。
 - 单测 265 → **290** 全绿；`brconsole/__init__.py` 里过期的分层说明一并修正
   （原来漏了 6 个模块，还把 `cli.py` 写成"界面消费方" —— 正是这次修掉的那个方向）。
 - 版本 0.6.3，重打包两个 exe。

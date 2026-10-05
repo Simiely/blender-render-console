@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 
-from . import FROZEN_SUBDIR
+from .layout import FROZEN_SUBDIR
 
 BOOT_FLAG = "BRC_TK_BOOTSTRAP"
 

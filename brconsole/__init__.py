@@ -29,12 +29,13 @@
 实测 0 环、0 违规；这条由 `tools/check_boundaries.py` 守着。
 """
 
-# 打包后所有内置数据的根目录名。**单一来源** ——
-# tkboot（把 tcl/tk 从哪儿挂回来）、core（去哪儿找 driver 源码）、
-# tools/build_exe.py（往哪儿塞）都从这里取。
-# 历史上这句 "_brc" **在 5 处各写了一份**（tkboot / core / main / gui / build_exe），
-# 其中一处靠注释「与 tkboot.FROZEN_SUBDIR 保持一致」维持 —— 那种一致性迟早会断，
-# 而且断了的现象是"打包后功能静默缺失"（自检看得见，人手不一定看得见）。
-FROZEN_SUBDIR = "_brc"
+# ⚠️ 这个文件**只放文档和版本号，绝不 import 子模块、也不放共用常量**。
+#    理由有两条，都是实测踩过的：
+#    ① 一旦在这里 import 子模块，而子模块又要从包上取东西，就会撞上"还没执行到那行"的
+#       包 → `ImportError: cannot import name ... from partially initialized module`
+#       （PEP8 还建议把 import 写在文件顶部，正好是最容易炸的位置，2026-10-05 复现过）。
+#    ② 在这里放共用常量会让包根变成"谁都要来取一句"的汇聚点，把①的雷埋起来。
+#    共用常量放**叶子模块**：打包布局见 `layout.py`。
+#    这条由 `tools/check_boundaries.py` 的 `init-stays-leaf` 规则守着。
 
 __version__ = "0.6.3"

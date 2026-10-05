@@ -21,7 +21,8 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import FROZEN_SUBDIR, autostart, diskspace, locate, taskstore, theme
+from . import autostart, diskspace, locate, taskstore, theme
+from .layout import FROZEN_SUBDIR
 from .core import RenderJob, parse_frames
 from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                        DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
