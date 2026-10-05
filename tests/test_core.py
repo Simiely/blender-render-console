@@ -506,5 +506,75 @@ class TestStateFilePath(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestOutputNormalisation(unittest.TestCase):
+    """输出模板必须**绝对化** —— 这是开机自启那条路的命门。
+
+    真正拿模板写盘的是 Blender 子进程，断点文件也照着它的目录放；而开机自启时进程的
+    工作目录跟用户当初点「开始渲染」时**不是同一个**（Windows 的 Run 项只给一条命令行）。
+    相对模板会让产物和断点一起漂走，开机还会因为找不到断点把已渲的帧重渲一遍。
+    """
+
+    def test_relative_becomes_absolute(self):
+        cfg = JobConfig(blend="a.blend", frames=[1], output_template="out/f_####")
+        self.assertTrue(os.path.isabs(cfg.output_template), cfg.output_template)
+        self.assertEqual(cfg.output_template.replace("\\", "/"),
+                         os.path.join(os.getcwd(), "out", "f_####").replace("\\", "/"))
+
+    def test_reboot_does_not_move_the_target(self):
+        """**这就是开机自启的真实路径**：工作目录 A 里点开始 → 存档 → "开机"（工作目录 B）
+        从存档读回，产物路径必须还是 A 时定下的那个绝对路径。
+
+        绝对化的时机是"建 JobConfig 的那一刻"（= 用户点开始的那一刻），而不是"跑的时候" ——
+        因为跑的可能是几小时后的另一个进程、另一个工作目录。
+        """
+        d = tempfile.mkdtemp(prefix=".brc-out-")
+        blend = os.path.join(d, "a.blend")
+        with open(blend, "wb") as f:
+            f.write(b"BLENDER-v5")
+        cwd = os.getcwd()
+        try:
+            cfg = JobConfig(blend=blend, frames=[1], output_template="out/f_####")
+            archived = cfg.to_dict()                    # 存档（此刻 cwd = A）
+            # ⚠️ 期望值必须在 chdir **之前**取好：state_file()/signature() 都是现算的，
+            #    切换目录后再取，两边会"一起漂"而把 bug 掩盖过去
+            want_out, want_state, want_sig = (cfg.output_template, cfg.state_file(),
+                                              cfg.signature())
+            os.chdir(d)                                 # "重启后"工作目录变了（B）
+            restored = JobConfig.from_dict(archived)
+            # ⚠️ 必须在 cwd 还是 B 的时候取值：等 finally 把 cwd 换回去再算，
+            #    两边又会"一起漂"、把 bug 掩盖掉（本用例第一版就栽在这）
+            got_out, got_state, got_sig = (restored.output_template, restored.state_file(),
+                                           restored.signature())
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(got_out, want_out)
+        self.assertEqual(got_state, want_state)
+        self.assertEqual(got_sig, want_sig)
+
+    def test_double_slash_is_relative_to_blend(self):
+        """`//` 是 Blender 的"相对 .blend 所在目录"，不能当普通相对路径 abspath
+        （实测会变成 `\\\\out\\f_####` 这种 UNC 路径）。"""
+        cfg = JobConfig(blend="D:/proj/house.blend", frames=[1],
+                        output_template="//out/f_####")
+        self.assertEqual(cfg.output_template.replace("\\", "/"), "D:/proj/out/f_####")
+
+    def test_double_slash_without_blend_is_left_alone(self):
+        cfg = JobConfig(blend="", frames=[1], output_template="//out/f_####")
+        self.assertEqual(cfg.output_template, "//out/f_####")
+
+    def test_absolute_and_empty_untouched(self):
+        cfg = JobConfig(blend="a.blend", frames=[1], output_template="C:/x/o/f_####")
+        self.assertEqual(cfg.output_template.replace("\\", "/"), "C:/x/o/f_####")
+        empty = JobConfig(blend="a.blend", frames=[1], output_template="")
+        self.assertEqual(empty.output_template, "")
+
+    def test_archive_roundtrip_does_not_drift(self):
+        """存档往返不能二次变形 —— 开机续跑会反复读它，漂一点就再也对不上断点。"""
+        cfg = JobConfig(blend="a.blend", frames=[1], output_template="out/f_####")
+        d = cfg.to_dict()
+        self.assertEqual(JobConfig.from_dict(d).to_dict(), d)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

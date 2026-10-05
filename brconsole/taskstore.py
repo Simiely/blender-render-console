@@ -50,7 +50,7 @@ def pending_path():
 
 
 # ---------------- 存 / 取 ----------------
-def save(cfg, blender_exe, autoresume=True):
+def save(cfg, blender_exe, autoresume=True, reason=""):
     """写入（或覆盖）当前待办任务。原子落盘，返回存档路径。
 
     ⚠️ 覆盖是**有意的**：只保留一个"当前任务"。渲染是独占 GPU 的重活，
@@ -64,6 +64,7 @@ def save(cfg, blender_exe, autoresume=True):
         "updated": round(time.time(), 3),
         "blender_exe": blender_exe or "",
         "autoresume": bool(autoresume),
+        "auto_reason": "" if autoresume else (reason or ""),
         "config": cfg.to_dict(),
     }
     fd, tmp = tempfile.mkstemp(prefix=".brc-task-", suffix=".tmp", dir=os.path.dirname(path))
@@ -96,6 +97,7 @@ def load():
     if rec.get("version") != STORE_VERSION:
         return None
     rec.setdefault("autoresume", True)
+    rec.setdefault("auto_reason", "")
     rec.setdefault("blender_exe", "")
     return rec
 
@@ -109,16 +111,22 @@ def clear():
         return False
 
 
-def set_autoresume(flag):
+def set_autoresume(flag, reason=""):
     """改存档里的自动续跑标记。返回是否真的改到了（没存档就返回 False）。
 
-    只改这一个字段、**不整份重写**，是为了不碰 config —— 万一用户改了界面上的参数
-    但还没点开始，存档里的任务定义仍应是"上次真正跑的那个"。
+    只改这两个字段、**不整份重写 config**，是为了不碰任务定义 —— 万一用户改了界面上的
+    参数但还没点开始，存档里的任务定义仍应是"上次真正跑的那个"。
+
+    `reason` 会记进存档。开机续跑那一步**没人在旁边看着**，日志里必须能说清
+    "为什么这次不自动跑"，否则用户只看到一个静默的窗口，无从判断。
+    ⚠️ 每次调用都**整条重写**这个字段（而不是"没传就保留旧值"）：留着上一条原因，
+    下次因为别的原因关掉自动续跑时，日志会把旧原因当成新原因报出来 —— 那比没有原因更坏。
     """
     rec = load()
     if rec is None:
         return False
     rec["autoresume"] = bool(flag)
+    rec["auto_reason"] = "" if flag else str(reason or "")
     rec["updated"] = round(time.time(), 3)
     path = pending_path()
     fd, tmp = tempfile.mkstemp(prefix=".brc-task-", suffix=".tmp", dir=os.path.dirname(path))
@@ -185,9 +193,9 @@ def resume_decision(rec=None):
     返回 (action, reason)：
 
     - `"run"`    未完成且允许自动续跑 → 直接跑
-    - `"prompt"` 未完成但用户主动停过 → 回填表单，等用户点开始
+    - `"prompt"` 未完成但自动续跑被关掉了 → 回填表单，等用户点开始；reason 说明是谁关的
     - `"done"`   已经渲完了 → 清理存档
-    - `"drop"`   存档坏了 / 前置条件不满足 → 清理（或保留？见下）
+    - `"drop"`   存档坏了 / 前置条件不满足 → **保留**，等用户把工程/blender 放回去
     """
     rec = rec if rec is not None else load()
     if rec is None:
@@ -205,7 +213,7 @@ def resume_decision(rec=None):
     if prog and prog["complete"]:
         return "done", ""
     if not rec.get("autoresume"):
-        return "prompt", ""
+        return "prompt", (rec.get("auto_reason") or "").strip()
     return "run", ""
 
 

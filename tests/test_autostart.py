@@ -138,5 +138,35 @@ class TestSync(Base):
         self.assertIn("不支持", msg)
 
 
+class TestCommandLength(Base):
+    """Microsoft KB 179365：Run 项的数据值是**不超过 260 个字符**的命令行。
+
+    超了会"写进去了、开机却不执行" —— 最坏的情况就是界面显示"已登记"，其实从来没生效。
+    所以宁可不写、当场告诉用户，也不留一条骗人的自启项。
+    """
+
+    LONG = "C:\\" + "x" * 300 + "\\brc.exe"
+
+    def test_too_long_writes_nothing(self):
+        with mock.patch.object(sys, "frozen", True, create=True):
+            with mock.patch.object(sys, "executable", self.LONG):
+                with self.assertRaises(ValueError) as cm:
+                    autostart.enable()
+        self.assertIn("260", str(cm.exception))
+        self.assertFalse(autostart.is_enabled())          # 一个字都没进注册表
+
+    def test_sync_reports_instead_of_raising(self):
+        with mock.patch.object(sys, "frozen", True, create=True):
+            with mock.patch.object(sys, "executable", self.LONG):
+                ok, msg = autostart.sync(True)
+        self.assertFalse(ok)
+        self.assertIn("太长", msg)
+        self.assertFalse(autostart.is_enabled())
+
+    def test_real_world_command_is_well_under_the_limit(self):
+        cmd = autostart.launch_command()
+        self.assertLessEqual(len(cmd), autostart.MAX_COMMAND_CHARS, cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,11 @@ RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "blender-render-console"
 AUTOSTART_FLAG = "--autostart"
 
+# Microsoft KB 179365 原文：「The data value for a key is a command line no longer
+# than 260 characters.」超了会**写进去但开机不执行**（"看起来登记成功"是最坏的情况），
+# 所以宁可不写、并当场告诉用户，也别留一条自启项在那骗人。
+MAX_COMMAND_CHARS = 260
+
 
 class RegistryBackend(object):
     """真实注册表后端。只做"取值 / 写值 / 删值"三件事。"""
@@ -130,8 +135,13 @@ def is_current():
 
 
 def enable():
-    """开启自启，返回写进去的命令。"""
+    """开启自启，返回写进去的命令。命令过长时抛 `ValueError`（消息可直接给用户看）。"""
     cmd = launch_command()
+    if len(cmd) > MAX_COMMAND_CHARS:
+        raise ValueError(
+            "路径太长：登记命令 %d 个字符，超过 Windows 允许的 %d 个，"
+            "开机不会执行。请把程序挪到更短的目录（例如 D:\\Tool\\）再试。\n%s"
+            % (len(cmd), MAX_COMMAND_CHARS, cmd))
     backend().set(VALUE_NAME, cmd)
     return cmd
 
@@ -152,5 +162,7 @@ def sync(enabled):
             return True, "开机自启本来就是关的"
         disable()
         return True, "已取消开机自启"
+    except ValueError as e:
+        return False, str(e)                    # 我们自己抛的，消息已经是给人看的
     except Exception as e:
         return False, "改注册表失败：%s: %s" % (type(e).__name__, e)

@@ -27,6 +27,8 @@ import subprocess
 import sys
 import tempfile
 
+from .core import normalise_output_template
+
 MARK = "##BRCINFO##"
 CREATE_NO_WINDOW = 0x08000000
 
@@ -126,14 +128,12 @@ def output_template_from(output_path, blend="", default_name="frame"):
     `//` 是 Blender 的"相对 .blend 所在目录"（**默认输出路径就是 `//`**），
     必须先展开成绝对路径再判断，否则会被下面"以 / 开头 = Windows 上不存在"那条规则误杀，
     结果是"读到的输出路径永远是工程名_####"、多个场景之间也看不出区别。
+    展开规则与 core 共用一份（`normalise_output_template`），别在两处各写一遍。
     """
     p = (output_path or "").strip()
     if p.startswith("//"):
-        if not blend:
-            p = ""
-        else:
-            rel = p[2:].replace("\\", "/").lstrip("/")
-            p = os.path.join(os.path.dirname(os.path.abspath(blend)), rel)
+        # 没有工程可参照 → 只能当"用户没设置"（下面会退回用工程名命名）
+        p = normalise_output_template(p, blend) if blend else ""
     # Blender 的默认输出路径是 `/tmp/`（Windows 上也一样），等于"用户没设置"；
     # 而 `/` 开头的路径在 Windows 上根本不存在 —— 两种情况都退回工程目录。
     if p.replace("\\", "/").rstrip("/") == "/tmp":

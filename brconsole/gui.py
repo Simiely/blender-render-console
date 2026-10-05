@@ -28,7 +28,7 @@ from .guimodel import (DEFAULT_RESTART_OPTION, DEVICES, ENGINES, FORMATS,
                        RESTART_OPTIONS, SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
                        event_line, fields_from_detail, guess_state_path, scene_to_config,
-                       state_summary)
+                       settle_task_action, state_summary)
 from .inspect import (read_blend_info, scene_detail, scene_names,
                       summarize as summarize_blend)
 
@@ -96,6 +96,7 @@ class App(object):
         self._build(root)
         self._autofill_blender()
         self._sync_autostart_ui()
+        self._sync_resume_ui()
         if demo:
             self._setup_demo()
         elif autostart_mode:
@@ -258,8 +259,14 @@ class App(object):
             boot, text="开机自动启动", variable=self.v_autostart,
             command=self.on_toggle_autostart)
         self.chk_autostart.pack(side="left")
-        ttk.Checkbutton(boot, text="启动时自动续跑未完成任务",
-                        variable=self.v_auto_resume).pack(side="left", padx=(12, 0))
+        # ⚠️ 这个勾选**必须真的接上**：曾经它只是个摆设（v_auto_resume 建了、显示了，
+        #    全项目没有一处读它 —— 勾/取消都没作用）。现在它有两个作用点：
+        #    ① 点「开始渲染」时按勾选态写存档里的 autoresume；
+        #    ② 当场改已有存档的标记（取消勾选立刻生效，不用等下次开始）。
+        self.chk_auto_resume = ttk.Checkbutton(
+            boot, text="启动时自动续跑未完成任务", variable=self.v_auto_resume,
+            command=self.on_toggle_auto_resume)
+        self.chk_auto_resume.pack(side="left", padx=(12, 0))
         self.lbl_autostart = ttk.Label(boot, text="", style="Muted.TLabel")
         self.lbl_autostart.pack(side="left", padx=10)
 
@@ -551,6 +558,26 @@ class App(object):
         self._log(msg)
         self._sync_autostart_ui()
 
+    def on_toggle_auto_resume(self):
+        """「启动时自动续跑未完成任务」——不只是个偏好，还当场改存档里的标记。
+
+        为什么要当场改：用户取消勾选时的意思就是"别自己跑"。等到下次点开始才生效的话，
+        这段时间里机器一崩，开机还是会自动跑起来 —— 与他的意思相反。
+        """
+        want = bool(self.v_auto_resume.get())
+        if taskstore.load() is None:
+            return                          # 还没有待办任务，等开始渲染时按勾选态写入
+        if taskstore.set_autoresume(
+                want, "" if want else "你在界面上取消了「启动时自动续跑未完成任务」"):
+            self._log("已%s开机自动续跑未完成任务（断点不受影响）"
+                      % ("开启" if want else "取消"))
+
+    def _sync_resume_ui(self):
+        """勾选态对齐到**存档的真实情况**（而不是程序自己记的默认值）。"""
+        rec = taskstore.load()
+        if rec is not None:
+            self.v_auto_resume.set(bool(rec.get("autoresume", True)))
+
     def _apply_form_model(self, fm):
         """把 `FormModel` 铺到控件上（开机续跑回填用）。"""
         self.form = fm
@@ -581,9 +608,13 @@ class App(object):
 
     def _save_task(self, cfg, blender):
         """点击开始后**先存档再跑**：只有这样，进程被强杀时才有东西可供开机续跑。"""
+        auto = bool(self.v_auto_resume.get())
         try:
-            p = taskstore.save(cfg, blender, autoresume=True)
-            self._log("任务已存档：%s（意外中断后开机可自动续跑）" % p)
+            p = taskstore.save(cfg, blender, autoresume=auto,
+                               reason="你在界面上关掉了「启动时自动续跑未完成任务」")
+            self._log("任务已存档：%s（%s）"
+                      % (p, "意外中断后开机可自动续跑" if auto
+                         else "已按你的设置关掉自动续跑，中断后需手动点开始"))
         except Exception as e:
             # 存不上只损失"自动续跑"，不该拦住建档本身，但必须在日志里说清楚
             self._log("! 任务存档失败（不影响本次渲染，但开机不会自动续跑）：%s: %s"
@@ -612,7 +643,9 @@ class App(object):
                                                      rec.get("blender_exe") or ""))
         if action == "prompt":
             self._log("检测到未完成任务：%s" % taskstore.describe(rec))
-            self._log("  上次是你主动停止的，所以**不自动跑** —— 确认参数后点「开始渲染」继续")
+            # 原因本身可能带括号（"上次运行没能跑完（有帧一直失败）"），所以别再套一层括号
+            self._log("  不自动跑 —— %s；确认参数后点「开始渲染」接着跑"
+                      % (why or "自动续跑已关闭"))
             return
         self._log("检测到未完成任务，自动续跑：%s" % taskstore.describe(rec))
         self.root.after(300, self.on_start)
@@ -707,7 +740,7 @@ class App(object):
         self._log("正在停止…（已完成的部分已保存，下次可从断点继续）")
         # 主动停止 = "我知道，别自己跑"：撤掉自动续跑标记，但断点文件原样留着。
         # 改标记而不是删存档 —— 删了断点就成了"没跑过"，用户还得从头来。
-        if taskstore.set_autoresume(False):
+        if taskstore.set_autoresume(False, "你点了「停止」"):
             self._log("已取消开机自动续跑（断点保留，想继续随时点「开始渲染」）")
 
     def on_close(self):
@@ -717,7 +750,7 @@ class App(object):
                 return
             self.job.cancel()
             # 关窗退出等同于「主动停止」：撤掉自动续跑，别下次开机偷跑
-            taskstore.set_autoresume(False)
+            taskstore.set_autoresume(False, "你在渲染过程中关掉了窗口")
             if self.worker and self.worker.is_alive():
                 self.worker.join(timeout=5)
         self.root.destroy()
@@ -753,23 +786,18 @@ class App(object):
             self.btn_stop.configure(state="disabled")
             self.worker = None
             self._refresh_state_label()
-            if kind == "job_done":
-                self._settle_task(ev)
+            self._settle_task(kind, ev)
 
-    def _settle_task(self, ev):
-        """一轮跑完后处理待办存档。
-
-        这里的分支和「崩溃时来不及写文件」是配套的：**只有明确知道结果时才动存档**。
-        - 渲完 → 删档，否则下次开机会白跑一次（虽然会立刻发现已完成，但仍是噪音）
-        - 被取消 → 撤掉自动续跑（用户点的停止，别开机偷跑）
-        - 其它失败（额度耗尽/无进展/异常）→ **原样保留**，下次开机再试一次；
-          这些失败可能是关机导致的，重试一次的成本远低于"任务丢了"
-        """
-        if ev.get("ok"):
+    def _settle_task(self, kind, ev):
+        """一轮跑完后处置待办存档。判据在 `guimodel.settle_task_action`（可单测）。"""
+        action, reason = settle_task_action(kind, ev)
+        if action == "clear":
             if taskstore.clear():
                 self._log("全部帧渲完，已清理待办存档（下次开机不会再自动跑）")
-        elif ev.get("cancelled"):
-            taskstore.set_autoresume(False)
+        elif taskstore.set_autoresume(False, reason):
+            self._log("已撤掉开机自动续跑（原因：%s；断点保留，修好后点「开始渲染」接着跑）"
+                      % reason)
+        self._sync_resume_ui()
 
     def _flush_log(self):
         lines = self.log.drain()

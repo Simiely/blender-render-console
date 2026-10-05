@@ -70,6 +70,30 @@ def parse_restart_limit(value, default=5):
     return default
 
 
+def normalise_output_template(template, blend=""):
+    """输出模板 → 绝对路径（`//` 前缀按工程目录展开）。
+
+    **为什么必须绝对化**：`blend` 一直就绝对化了，输出模板却原样留着 —— 可真正拿它写盘的
+    是 **Blender 子进程**，它还决定断点文件放哪个目录。子进程用的是"当时的工作目录"，
+    而开机自启那条路上工作目录**和当初点「开始渲染」时不是同一个**（Windows 的 Run 项
+    只给一条命令行，没有指定工作目录的机制 —— Microsoft KB 179365），于是相对模板会把
+    产物和断点甩到别处，开机续跑还会因为找不到断点而把已渲的帧**重渲一遍**。
+
+    **`//` 不能直接 abspath**：那是 Blender 的"相对 .blend 所在目录"写法，而实测
+    `abspath("//out/f_####")` 得到 `\\\\out\\f_####`（UNC 路径），完全不是本意。
+    所以先按工程目录展开、再绝对化 —— 与 `inspect.output_template_from` 同一套规则。
+    """
+    tpl = (template or "").strip()
+    if not tpl:
+        return tpl
+    if tpl.startswith("//"):
+        if not blend:
+            return tpl                      # 没有工程可参照，原样交给 Blender 自己解析
+        rel = tpl[2:].replace("\\", "/").lstrip("/")
+        return os.path.join(os.path.dirname(os.path.abspath(blend)), rel)
+    return os.path.abspath(tpl)
+
+
 # 存档时要落盘的全部任务参数。**加新参数时记得往这里补**，
 # 漏了的话开机续跑重建出来的任务会缺这一项、静默按默认值跑（最难查的那种 bug）。
 JOB_CONFIG_FIELDS = (
@@ -90,7 +114,9 @@ class JobConfig(object):
                  resume=True, restart_delay=2.0, max_no_progress_rounds=3, scene=None):
         self.blend = os.path.abspath(blend)
         self.frames = [int(f) for f in frames]
-        self.output_template = output_template
+        # 绝对化：见 normalise_output_template 的说明（开机自启时工作目录会变）。
+        # 传**原始** blend：空 = 没有工程可参照，`//` 就原样留着别乱猜。
+        self.output_template = normalise_output_template(output_template, blend)
         self.engine = engine
         self.samples = samples
         self.device = device

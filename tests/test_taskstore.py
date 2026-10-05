@@ -140,10 +140,35 @@ class TestAutoresumeFlag(Base):
         taskstore.set_autoresume(False)
         self.assertEqual(taskstore.config_of(taskstore.load()).to_dict(), cfg.to_dict())
 
+    def test_reason_recorded_and_cleared(self):
+        """开机那一步**没人在旁边看着**，日志必须能说清"为什么这次不自动跑"。"""
+        taskstore.save(self.cfg(), self.blender, autoresume=True)
+        taskstore.set_autoresume(False, "你点了「停止」")
+        self.assertEqual(taskstore.load()["auto_reason"], "你点了「停止」")
+        taskstore.set_autoresume(True)
+        self.assertEqual(taskstore.load()["auto_reason"], "")     # 重新开启就别留旧原因
+
 
 class TestDecision(Base):
     def test_no_archive(self):
         self.assertEqual(taskstore.resume_decision()[0], "none")
+
+    def test_prompt_carries_the_reason(self):
+        """prompt 必须带上原因 —— 用户开机只看到一行日志，得知道是谁关掉的自动续跑。"""
+        cfg = self.cfg()
+        taskstore.save(cfg, self.blender, autoresume=True)
+        self.write_state(cfg, done=[1])
+        taskstore.set_autoresume(False, "上次运行没能跑完")
+        action, why = taskstore.resume_decision()
+        self.assertEqual(action, "prompt")
+        self.assertEqual(why, "上次运行没能跑完")
+
+    def test_save_records_reason_when_auto_is_off(self):
+        taskstore.save(self.cfg(), self.blender, autoresume=False,
+                       reason="你在界面上关掉了自动续跑")
+        action, why = taskstore.resume_decision()
+        self.assertEqual(action, "prompt")
+        self.assertEqual(why, "你在界面上关掉了自动续跑")
 
     def test_fresh_task_runs(self):
         """核心承诺：点了开始、存了档，然后进程被强杀（断点不完整）→ 开机直接续跑。"""

@@ -21,7 +21,8 @@ from brconsole.guimodel import (DEFAULT_RESTART_OPTION, RESTART_OPTIONS,  # noqa
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                                 FormModel, LogModel, ProgressModel, event_line,
                                 fields_from_detail, frames_to_text, guess_state_path,
-                                restart_label_for, scene_to_config, state_summary)
+                                restart_label_for, scene_to_config, settle_task_action,
+                                state_summary)
 from brconsole.state import JobState  # noqa: E402
 
 
@@ -497,6 +498,46 @@ class TestFormFromConfig(unittest.TestCase):
         fm = FormModel.from_config({}, "")
         self.assertEqual(fm.blend, "")
         self.assertEqual(fm.max_restarts, DEFAULT_RESTART_OPTION)
+
+
+class TestSettleTaskAction(unittest.TestCase):
+    """跑完后怎么处置待办存档 —— 这决定「开机要不要自动跑」，最不能出错的一环。
+
+    核心分界：**崩溃**（进程被强杀/掉电，压根没机会写文件）→ 开机自动续跑；
+    **活着的进程报出来的失败**（取消 / 重试额度耗尽 / 抛异常）→ 别自动跑，
+    否则一个注定失败的任务会每次开机白跑一遍。所以这里看的是"谁报的结果"，不是"成没成功"。
+    """
+
+    def test_complete_clears_the_archive(self):
+        self.assertEqual(settle_task_action("job_done", {"ok": True}), ("clear", ""))
+
+    def test_cancelled_stops_authorun_but_keeps_reason(self):
+        action, reason = settle_task_action("job_done", {"ok": False, "cancelled": True})
+        self.assertEqual(action, "stop")
+        self.assertIn("停止", reason)
+
+    def test_restart_exhausted_does_not_rerun_at_boot(self):
+        """重启额度用完 ⇒ 下次开机别再自动跑（断点还在，用户点一下就能继续）。"""
+        action, reason = settle_task_action(
+            "job_done", {"ok": False, "cancelled": False, "error": None})
+        self.assertEqual(action, "stop")
+        self.assertIn("没能跑完", reason)
+
+    def test_error_is_reported_with_its_message(self):
+        action, reason = settle_task_action("job_error", {"error": "Blender 崩了"})
+        self.assertEqual(action, "stop")
+        self.assertIn("Blender 崩了", reason)
+
+    def test_partial_ok_is_not_complete(self):
+        """`ok=False` 但零失败（例如被取消）绝不能当成「渲完了」去删档。"""
+        self.assertEqual(settle_task_action("job_done", {"ok": False})[0], "stop")
+
+    def test_broken_event_does_not_crash(self):
+        for kind, ev in (("job_done", {}), ("job_error", {}),
+                         ("job_done", {"ok": None, "cancelled": None})):
+            action, reason = settle_task_action(kind, ev)
+            self.assertEqual(action, "stop", (kind, ev))
+            self.assertTrue(reason)
 
 
 if __name__ == "__main__":

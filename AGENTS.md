@@ -51,6 +51,10 @@
 32. **"崩溃后接着渲"不能靠"崩溃时打标记"**：进程被 `taskkill /F` 强杀或系统掉电时**根本来不及写文件**，任何"退出钩子里记一笔"的设计都是空谈。必须**反向设计**：点开始时默认置 `autoresume=True`（"要自动续跑"），只有**用户主动停止**或**正常渲完**才撤销/删档。于是崩溃 = 存档原封不动 = 下次开机自动续跑（实测：强杀后 `pending.json` 里 `autoresume` 仍是 True、断点 `created` 时间戳停留在首次启动、重启后从第 662 帧接着跑到 1550/4000）。
 33. **存档要存"能重建任务的全部东西"，而不是 JobConfig**：`blender_exe` **不在 `JobConfig` 里**（它是 `RenderJob` 的构造参数），`resolution_percentage` / `max_frame_attempts` / `max_no_progress_rounds` 也不在断点文件里 —— 漏了任何一个，开机后重建出来的任务都会"缺胳膊少腿地按默认值跑"。所以 `taskstore` 存的是 `JobConfig.to_dict()` **加** `blender_exe`；`JOB_CONFIG_FIELDS` 加参数时必须同步，`test_core.py` 里有一条**对着实例属性核对**的测试专门防漏。
 34. **开机自启只写 HKCU，且必须能识别"登记项指向别处"**：写 `HKEY_CURRENT_USER` 免提权、也只影响自己（HKLM 要管理员且影响所有用户）。但注册表存的是**绝对路径**，exe 一挪窝，开机拉起来的就变成另一个程序 —— `autostart.is_current()` 必须能比对出不一致，界面要提示"⚠ 登记的是别的位置，重新勾一次即刷新"。另外 Run 项无法指定"不弹控制台"，源码模式要用 `pythonw.exe`（否则登录后闪一个黑窗）。
+35. **"界面开关不通电"是本项目最容易犯的 bug 类型**：`v_auto_resume`（「启动时自动续跑未完成任务」）曾经建了、显示了，但**全项目没有一处读它** —— 勾上/取消行为完全一样，而界面截图看不出任何异常。新增控件时必做两件事：①全局搜变量名确认**有消费方**；②问自己"我怎么**从外部观察到**这个开关产生了效果"。观察不到的开关就是没接线。
+36. **会被"另一个进程、另一个时刻"使用的路径，一律在配置诞生时绝对化**：`blend` 早就 `abspath` 了，输出模板却原样留着 —— 而开机自启拉起的进程**工作目录 ≠ 用户点开始时的工作目录**（Windows 的 Run 项只规定"数据值是一条命令行"，没有任何指定工作目录的机制，见 Microsoft KB 179365）。后果不报错、只是**静默重渲**：产物和 `.render_state.json` 都漂到别处，续跑找不到断点就从头再来。`//` 前缀要先按工程目录展开再绝对化（`abspath("//out/f_####")` 会变成 `\\out\f_####` 这种 UNC 路径）。
+37. **Run 项的数据值上限 260 个字符**：Microsoft KB 179365 原文 "The data value for a key is a command line no longer than 260 characters." 超了**写入本身会成功**、开机却不执行 —— "开关开着、功能没生效"是最坏的状态（用户只会以为自己没设对）。`autostart.enable()` 超限直接拒绝并提示把程序挪到更短的目录。
+38. **失败与崩溃不能共用同一套自动重试策略**：判据是「进程有没有**活着**把结果报出来」，而不是「成功还是失败」。被强杀/掉电 → 压根没代码执行 → `autoresume` 保持 True → 开机续跑；而被取消 / 重试额度耗尽 / 抛异常都是**活着的进程**写出来的结果 → 撤掉自动续跑（断点保留）并把 **原因**记进存档（`auto_reason`），否则一个注定失败的任务（如场景里没有相机）会每次登录都白跑一遍。这段判据放在 `guimodel.settle_task_action()`（不碰 tkinter）就是为了能被单测钉住。
 
 ## 约定
 
@@ -67,7 +71,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（194 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（212 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 6 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景（需要 Blender 5.2）
