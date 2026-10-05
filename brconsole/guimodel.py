@@ -12,7 +12,8 @@
 import os
 from collections import deque
 
-from .core import UNLIMITED, parse_restart_limit, state_file_for
+from .core import (UNLIMITED, complete_output_template, parse_restart_limit,
+                   state_file_for)
 from .eta import fmt_duration
 from .state import JobState
 
@@ -278,19 +279,12 @@ class FormModel(object):
     # ---------- 补全 ----------
     @staticmethod
     def complete_output(path, blend=""):
-        """用户给目录/文件名时自动补出 `name_####.ext` 形式的模板。"""
-        if not path:
-            if blend:
-                base = os.path.splitext(os.path.basename(blend))[0]
-                return os.path.join(os.path.dirname(os.path.abspath(blend)), base + "_####")
-            return ""
-        if "####" in path:
-            return path
-        base, ext = os.path.splitext(path)
-        # 没扩展名就当目录（输出模板一般带 .png/.exr，不带扩展名的多半是目录）
-        if (not ext) or os.path.isdir(path) or path.endswith(("\\", "/")):
-            return os.path.join(path, "frame_####")
-        return base + "_####" + ext
+        """用户给目录/文件名时自动补出 `name_####.ext` 形式的模板。
+
+        规则本体在 `core.complete_output_template()` —— CLI 与 GUI 必须共用一份，
+        别在这里重写（`-o render` 这种输入，两个入口曾给出两种落点）。
+        """
+        return complete_output_template(path, blend)
 
     @staticmethod
     def default_blend_dir(blend):

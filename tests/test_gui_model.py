@@ -134,6 +134,20 @@ class TestCompleteOutput(unittest.TestCase):
     def test_empty_without_blend(self):
         self.assertEqual(FormModel.complete_output(""), "")
 
+    def test_cli_and_gui_share_one_rule(self):
+        """★ CLI 与 GUI 必须是**同一份**规则 —— 原先各写一遍且语义不同
+        （`-o render`：CLI 当文件名前缀、GUI 当目录，同一个输入两种落点）。
+        钉住"委托"这件事本身：哪边想把规则再抄一份，这条就红。
+        """
+        import brconsole.cli as cli
+        from brconsole.core import complete_output_template
+        self.assertIs(cli.complete_output_template, complete_output_template)
+        for path, blend in (("D:/out", ""), ("D:/out/scene.png", ""),
+                            ("D:/out/f_####", ""), ("", "D:/proj/scene.blend"),
+                            ("D:/renders/render", "")):
+            self.assertEqual(FormModel.complete_output(path, blend),
+                             complete_output_template(path, blend), path)
+
 
 class TestFormValidation(unittest.TestCase):
     def setUp(self):

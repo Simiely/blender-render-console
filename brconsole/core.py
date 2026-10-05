@@ -144,6 +144,36 @@ def state_file_for(output_template, state_path=None):
                         DEFAULT_STATE_FILENAME)
 
 
+def complete_output_template(path, blend=""):
+    """用户给的输出位置 → `name_####` 形式的模板（**CLI 与 GUI 共用一份规则**）。
+
+    规则（与 `inspect.output_template_from` 的"工程里读到的路径"是**两回事**，
+    那边处理的是 Blender 的 `//`、`/tmp`、`#` 等工程内写法）：
+
+    - 没给路径 → 用工程名（`工程目录/工程名_####`）
+    - 已含 `####` → 原样
+    - 有扩展名 → `名字_####.扩展名`
+    - **没扩展名 → 当目录**（输出模板一般带 .png/.exr，不带扩展名的多半是目录）
+
+    ⚠️ 这条规则以前 CLI 与 GUI **各写一遍且不一致**：`-o render`（无扩展名、不是
+    已存在的目录）在 CLI 里被当**文件名前缀**（`render_####`），在 GUI 里被当**目录**
+    （`render/frame_####`）—— 同一个用户输入，两个入口给出两种落点。统一按 GUI 这边
+    （与 CLI 自己的 `--output` 帮助文本"输出模板或输出目录"也更一致），CLI 的旧行为
+    变化记录在 CHANGELOG 0.6.6。
+    """
+    if not path:
+        if blend:
+            base = os.path.splitext(os.path.basename(blend))[0]
+            return os.path.join(os.path.dirname(os.path.abspath(blend)), base + "_####")
+        return ""
+    if "####" in path:
+        return path
+    base, ext = os.path.splitext(path)
+    if (not ext) or os.path.isdir(path) or path.endswith(("\\", "/")):
+        return os.path.join(path, "frame_####")
+    return base + "_####" + ext
+
+
 # 存档时要落盘的全部任务参数。**加新参数时记得往这里补**，
 # 漏了的话开机续跑重建出来的任务会缺这一项、静默按默认值跑（最难查的那种 bug）。
 JOB_CONFIG_FIELDS = (

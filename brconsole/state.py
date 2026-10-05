@@ -69,6 +69,12 @@ class JobState(object):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 d = json.load(f)
+            if d.get("version") != STATE_VERSION:
+                # ⚠️ 版本不认识就当"文件坏了"（与 taskstore.load 同一条约定）。
+                #    `version` 字段原先**只写不查** —— 哪天真改了格式，旧代码会把
+                #    新格式的断点当 v1 硬读，字段对不上就静默按默认值续跑，
+                #    "参数悄悄变了"比报错难查得多。
+                return None
             st = cls(path)
             for k in ("version", "blend", "output_template", "engine", "samples",
                       "device", "file_format", "scene", "created", "updated"):

@@ -92,6 +92,27 @@ class TestState(_Base):
                 f.write(bad)
             self.assertIsNone(JobState.load(self.path), bad)
 
+    def test_foreign_version_is_rejected(self):
+        """版本不认识 → 当"文件坏了"（与 taskstore.load 同一条约定）。
+
+        `version` 原先只写不查：哪天格式变了，旧代码会把新断点当 v1 硬读，
+        字段对不上就静默按默认值续跑。
+        """
+        for bad in ('{"version": 999, "frames": [1], "done": {}}',
+                    '{"frames": [1], "done": {}}'):          # 没写 version 的也不认
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write(bad)
+            self.assertIsNone(JobState.load(self.path), bad)
+
+    def test_current_version_loads(self):
+        """反向护栏：本版本的文件必须照常读回（防止版本校验写成"一律拒绝"）。"""
+        st = JobState(self.path, blend="a.blend", frames=[1], output_template="o/####")
+        st.mark_done(1)
+        st.save()
+        st2 = JobState.load(self.path)
+        self.assertIsNotNone(st2)
+        self.assertEqual(st2.done_count, 1)
+
     def test_signature_matches_jobconfig(self):
         """「同一个任务」的判据必须与 JobConfig 那侧逐字一致（开机续跑靠这条）。
 

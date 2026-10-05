@@ -21,7 +21,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import autostart, diskspace, locate, taskstore, theme
+from . import applock, autostart, diskspace, locate, taskstore, theme
 from .layout import FROZEN_SUBDIR
 from .core import RenderJob, parse_frames
 from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
@@ -38,6 +38,7 @@ from .inspect import (read_blend_info, scene_detail, scene_names,
 POLL_MS = 80
 LOG_MAX_LINES = 4000
 TITLE = "blender-render-console"
+WINDOW_TITLE = "%s · 无头渲染控制台" % TITLE
 
 # 「重启次数」旁边那句说明。两种态各一句，由 _apply_restart_defaults 二选一 ——
 # 写死在控件上会和实际行为对不上（选中「一直重启」后两框已被填成 0=不限，
@@ -98,7 +99,7 @@ class App(object):
         self._inspecting = False
         self._scene_info = None          # 最近一次读到的工程配置（含各场景详情）
 
-        root.title("%s · 无头渲染控制台" % TITLE)
+        root.title(WINDOW_TITLE)   # 与 applock.focus_window 按标题找窗口共用同一句
         _apply_icon(root)
         root.geometry("1000x840")
         root.minsize(900, 700)
@@ -930,13 +931,35 @@ class App(object):
 
 def run_gui(demo=False, cmd_factory=None, preset_blend=None, autostart_mode=False):
     """构造并启动界面（阻塞直到窗口关闭）。"""
+    # ---- 单实例 ----
+    # 渲染独占 GPU，且两个实例会互踩断点文件与输出图（Blender 官方 #37974 同款问题），
+    # 所以界面只允许一个。方案用命名互斥量（微软推荐：崩溃自动回收、原子、无 PID 复用坑），
+    # 不用锁文件 —— 残锁会把用户挡在门外。
+    # `--demo`（自检）旁路：它写自己的临时目录，要能与真实例并存。
+    lock = None
     root = tk.Tk()
     theme.apply(root)                           # 深色主题要在建控件之前套上
     try:
         root.tk.call("tk", "scaling", 1.3)      # 高 DPI 下别糊
     except Exception:
         pass
-    App(root, demo=demo, cmd_factory=cmd_factory, preset_blend=preset_blend,
-        autostart_mode=autostart_mode)
-    root.mainloop()
+    if not demo:
+        ok, lock = applock.acquire()
+        if not ok:
+            # 已有实例在跑：把那个窗口调到前面，让用户明白"为什么没开出新窗口"。
+            # 调不到（互斥量在、窗口不在的罕见情形）才弹框说明。
+            if not applock.focus_window(WINDOW_TITLE):
+                messagebox.showwarning(
+                    "程序已经在运行",
+                    "blender-render-console 已经有一个窗口在运行了（可能是开机自启拉起的"
+                    "那个，正在续跑任务）。\n\n请到那个窗口里操作；本窗口即将关闭。",
+                    parent=root)
+            root.destroy()
+            return 0
+    try:
+        App(root, demo=demo, cmd_factory=cmd_factory, preset_blend=preset_blend,
+            autostart_mode=autostart_mode)
+        root.mainloop()
+    finally:
+        applock.release(lock)
     return 0

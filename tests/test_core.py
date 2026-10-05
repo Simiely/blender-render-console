@@ -20,7 +20,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from brconsole.core import (UNLIMITED, JobConfig, RenderJob,  # noqa: E402
-                            default_cmd_factory, parse_restart_limit)
+                            complete_output_template, default_cmd_factory,
+                            parse_restart_limit)
 from brconsole.state import JobState  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_blender.py")
@@ -495,6 +496,28 @@ class TestJobConfigArchive(unittest.TestCase):
         self.assertEqual(set(JOB_CONFIG_FIELDS), set(vars(cfg).keys()))
         for k in JOB_CONFIG_FIELDS:
             self.assertTrue(hasattr(cfg, k), "字段名写错了：%s" % k)
+
+
+class TestCompleteOutputTemplate(unittest.TestCase):
+    """用户给的输出位置 → 模板的补全规则（CLI 与 GUI 共用 core 这一份）。"""
+
+    def test_no_extension_is_treated_as_directory(self):
+        """`-o render`（无扩展名、不是已存在的目录）→ 按**目录**处理。
+
+        CLI 原先把它当文件名前缀（`render_####`）、GUI 当目录 —— 同一个输入两个落点。
+        统一到目录规则（与 CLI 自己的 --output 帮助文本"输出模板或输出目录"一致）。
+        """
+        out = complete_output_template("D:/renders/render")
+        self.assertTrue(out.replace("\\", "/").endswith("renders/render/frame_####"), out)
+
+    def test_placeholder_and_extension_untouched_in_shape(self):
+        self.assertEqual(complete_output_template("D:/out/f_####"), "D:/out/f_####")
+        self.assertTrue(complete_output_template("D:/out/scene.png").endswith("scene_####.png"))
+
+    def test_blend_fallback(self):
+        out = complete_output_template("", "D:/proj/scene.blend")
+        self.assertTrue(out.replace("\\", "/").endswith("proj/scene_####"), out)
+        self.assertEqual(complete_output_template(""), "")
 
 
 class TestStateFilePath(unittest.TestCase):

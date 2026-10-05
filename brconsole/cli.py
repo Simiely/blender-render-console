@@ -12,7 +12,8 @@ import sys
 import time
 
 from . import locate
-from .core import JobConfig, RenderJob, parse_frames, parse_restart_limit
+from .core import (JobConfig, RenderJob, complete_output_template, parse_frames,
+                   parse_restart_limit)
 from .eta import fmt_duration
 
 
@@ -199,17 +200,9 @@ def main(argv=None):
         return 2
 
     # ---- 输出模板 ----
-    if args.output:
-        out = args.output
-        if os.path.isdir(out) or out.endswith(("\\", "/")):
-            out = os.path.join(out, "frame_####")
-        elif "####" not in out:
-            base, ext = os.path.splitext(out)
-            out = base + "_####" + ext
-    else:
-        out = os.path.join(os.path.dirname(blend),
-                           os.path.splitext(os.path.basename(blend))[0] + "_####")
-    out = os.path.abspath(out)
+    # 补全规则与界面共用一份（core.complete_output_template）——
+    # 原先这里手写了一遍且语义不同（`-o render` 被当前缀，界面当目录）。
+    out = os.path.abspath(complete_output_template(args.output or "", blend))
 
     # ---- Blender ----
     try:
