@@ -315,7 +315,7 @@ class RenderJob(object):
     """一个可运行、可取消、会自己续跑的渲染任务。"""
 
     def __init__(self, cfg, blender_exe, driver_path=None, cmd_factory=None,
-                 workdir=None, keep_workdir=False):
+                 workdir=None, keep_workdir=False, power_guard=None):
         self.cfg = cfg
         self.blender_exe = blender_exe
         self.driver_path = driver_path or DEFAULT_DRIVER
@@ -323,6 +323,11 @@ class RenderJob(object):
         self.workdir = workdir or tempfile.mkdtemp(prefix="brc-job-")
         self._owns_workdir = workdir is None
         self._keep_workdir = keep_workdir
+        # 防睡眠守卫：`(keep, allow)` 一对可调用，由**组合根**注入（与 cmd_factory
+        # 同一模式）。core 不 import power —— 电源管理是平台支线，core 是平台中立
+        # 的调度核心；注入而不是依赖，才不会把支线拉进主线的依赖图（曾因此产生
+        # 一条 SDP 边：core 的 I 被抬到与 inspect 追平）。None = 不防睡眠。
+        self._power_keep, self._power_allow = power_guard or (None, None)
 
         self.state = None
         self.eta = EtaEstimator()
@@ -497,6 +502,14 @@ class RenderJob(object):
             "cancelled": False, "error": None, "reporter_error": None,
         }
 
+        # ---- 防睡眠（守卫由组合根注入，见 __init__）----
+        # 渲染独占 GPU 且动辄数小时，Windows 的空闲计时器会把机器睡掉 ——
+        # 断点虽能续，但"早上起来只渲了一小时"不可接受。finally 保证取消/崩溃/
+        # 异常路径都释放 —— 微软文档明确警告别无限期持有防睡眠标志。
+        keep_awake, allow_sleep = self._power_keep, self._power_allow
+        if keep_awake:
+            keep_awake()
+
         def emit(kind, **kw):
             kw["type"] = kind
             if callable(on_event):
@@ -632,6 +645,8 @@ class RenderJob(object):
             emit("job_error", error=result["error"])
         finally:
             result["elapsed"] = round(time.time() - t_start, 2)
+            if allow_sleep:              # 与开头的 keep 成对：取消/崩溃/异常都要走这
+                allow_sleep()
             if self._log_fp:
                 try:
                     self._log_fp.close()

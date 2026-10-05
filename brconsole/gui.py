@@ -21,14 +21,16 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from . import applock, autostart, diskspace, locate, taskstore, theme
+from . import applock, autostart, diskspace, locate, notify, power, taskstore, theme
 from .layout import FROZEN_SUBDIR
 from .core import RenderJob, parse_frames
-from .guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
+from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
+                       DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                        DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
                        SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
-                       event_line, fields_from_detail, guess_state_path,
+                       aftermath_plan, event_line, fields_from_detail,
+                       guess_state_path,
                        is_unlimited_restart, restart_limits_plan,
                        restore_limits_backup, scene_to_config, settle_task_action,
                        state_summary)
@@ -46,6 +48,12 @@ WINDOW_TITLE = "%s · 无头渲染控制台" % TITLE
 NOTE_RESTART_LIMITED = "选「一直重启，直到全部渲完」= 重启次数不限；上面两个限次会自动填 0（不限）"
 NOTE_RESTART_UNLIMITED = "「一直重启」：上面两个限次已填 0（不限）；想留兜底可把数字改回去"
 AUTOSTART_FLAG = autostart.AUTOSTART_FLAG
+
+# 「任务结束后」下拉：显示文案 ↔ 实际值（值就是 guimodel.AFTERMATH_*，别再写一份字面量）
+AFTERMATH_LABELS = [("什么都不做", AFTERMATH_NOTHING),
+                    ("关机（60 秒倒计时，可取消）", AFTERMATH_SHUTDOWN),
+                    ("睡眠", AFTERMATH_SLEEP)]
+AFTERMATH_BY_LABEL = {label: value for label, value in AFTERMATH_LABELS}
 
 
 def _stamp():
@@ -158,6 +166,13 @@ class App(object):
         # 界面必须反映"真的会自启吗"，不能显示一个自己记的、可能已经失效的状态
         self.v_autostart = tk.BooleanVar(value=False)
         self.v_auto_resume = tk.BooleanVar(value=True)
+        # 「任务结束后」：本次会话的选择，**不入存档** —— 每次启动都回到"什么都不做"，
+        # 这是更安全的默认（开机自启续跑完一个任务后，机器不该因为上次的旧选择被关掉）
+        self.v_aftermath = tk.StringVar(value=AFTERMATH_LABELS[0][0])
+        # Blender 多版本候选（locate 探测结果），供下拉选择；选择即写 v_blender
+        self._blender_by_label = {}
+        self._blender_candidates = []
+        self.v_blender_ver = tk.StringVar()
 
         r = 0
         ttk.Label(box, text="工程 .blend").grid(row=r, column=0, sticky="w", **pad)
@@ -287,6 +302,22 @@ class App(object):
         self.lbl_autostart.pack(side="left", padx=10)
 
         r += 1
+        misc = ttk.Frame(box)
+        misc.grid(row=r, column=1, columnspan=3, sticky="w")
+        ttk.Label(misc, text="任务结束后").pack(side="left")
+        self.cmb_aftermath = ttk.Combobox(misc, textvariable=self.v_aftermath, width=15,
+                                          state="readonly",
+                                          values=[l for l, _ in AFTERMATH_LABELS])
+        self.cmb_aftermath.pack(side="left", padx=(4, 0))
+        ttk.Label(misc, text="Blender 版本").pack(side="left", padx=(18, 2))
+        self.cmb_blender_ver = ttk.Combobox(misc, textvariable=self.v_blender_ver,
+                                            width=20, state="readonly", values=[])
+        self.cmb_blender_ver.pack(side="left")
+        self.cmb_blender_ver.bind("<<ComboboxSelected>>", self.on_blender_version)
+        ttk.Label(misc, text="（探测到多个版本时可切换）",
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
+
+        r += 1
         info = ttk.Frame(box)
         info.grid(row=r, column=1, columnspan=3, sticky="ew")
         self.btn_inspect = ttk.Button(info, text="读取工程配置", width=14,
@@ -346,11 +377,37 @@ class App(object):
             cands = locate.find_blender()
         except Exception:
             cands = []
+        self._blender_candidates = list(cands)
+        self._sync_blender_versions()
         if cands:
             self.v_blender.set(cands[0])
             if len(cands) > 1:
                 self._log("检测到多个 Blender，使用 %s（其余：%s）"
                           % (cands[0], ", ".join(cands[1:3])))
+
+    def _sync_blender_versions(self):
+        """把 locate 的候选列表灌进版本下拉（显示父目录名，重名退回全路径）。"""
+        self._blender_by_label = {}
+        labels = []
+        for p in self._blender_candidates:
+            parent = os.path.basename(os.path.dirname(p))
+            label = parent if parent else p
+            if label in self._blender_by_label:      # 同名父目录 → 用全路径区分
+                label = p
+            self._blender_by_label[label] = p
+            labels.append(label)
+        self.cmb_blender_ver.configure(values=labels)
+        if labels:
+            self.v_blender_ver.set(labels[0])
+        else:
+            self.v_blender_ver.set("")
+
+    def on_blender_version(self, _event=None):
+        """版本下拉选择 → 写入 Blender 路径（与手填等价，后续渲染用哪份一目了然）。"""
+        path = self._blender_by_label.get(self.v_blender_ver.get())
+        if path and path != self.v_blender.get():
+            self.v_blender.set(path)
+            self._log("Blender 改为：%s" % path)
 
     def autofill_blender(self):
         old = self.v_blender.get()
@@ -774,7 +831,9 @@ class App(object):
         # 存档要**赶在起线程之前**：晚一步就意味着"已经开始跑但还没存档"这段窗口里
         # 被强杀会让这次任务无从续起
         self._save_task(cfg, blender)
-        self.job = RenderJob(cfg, blender, cmd_factory=self.cmd_factory)
+        # 防睡眠守卫在这里注入（组合根职责）：CLI 与 GUI 都长跑，谁构造谁注入
+        self.job = RenderJob(cfg, blender, cmd_factory=self.cmd_factory,
+                             power_guard=(power.keep_awake, power.allow_sleep))
         self.stopping = False
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
@@ -865,6 +924,8 @@ class App(object):
             self.worker = None
             self._refresh_state_label()
             self._settle_task(kind, ev)
+            self._finish_notify(kind, ev)
+            self._maybe_aftermath(kind, ev)
 
     def _settle_task(self, kind, ev):
         """一轮跑完后处置待办存档。判据在 `guimodel.settle_task_action`（可单测）。"""
@@ -876,6 +937,88 @@ class App(object):
             self._log("已撤掉开机自动续跑（原因：%s；断点保留，修好后点「开始渲染」接着跑）"
                       % reason)
         self._sync_resume_ui()
+
+    def _finish_notify(self, kind, ev):
+        """渲完/出错时发通知（提示音 + 任务栏闪烁 + toast 尽力而为）。
+
+        过夜渲染人不在屏幕前，结果必须能穿过注意力盲区 —— 竞品 BRQ 的卖点
+        "排队→挂机→走人→收通知"。失败也通知：早上应该知道"没渲完"而不是白等。
+        """
+        if kind == "job_done":
+            title = "渲染已取消" if ev.get("cancelled") else (
+                "渲染完成" if ev.get("ok") else "渲染未完成")
+        else:
+            title = "渲染出错"
+        # 结果文案直接复用进度模型的口径，别再拼一份
+        msg = self.prog.status_text()
+        r = notify.announce(self.root.winfo_id(), title, msg)
+        self._log("%s（通知：提示音 %s · 任务栏闪烁 %s · toast %s）"
+                  % (title, "✓" if r.get("beep") else "×",
+                     "✓" if r.get("flash") else "×",
+                     "✓" if r.get("toast") else "×"))
+
+    def _maybe_aftermath(self, kind, ev):
+        """渲完 → 按下拉选择执行关机/睡眠（60 秒倒计时，可取消）。
+
+        只有「全部渲完」触发（决策在 guimodel.aftermath_plan：取消/失败不动作 ——
+        用户在场或需要人来看原因）；demo 自检绝不触发。
+        """
+        if kind != "job_done" or self.demo:
+            return
+        plan = aftermath_plan(AFTERMATH_BY_LABEL.get(self.v_aftermath.get()),
+                              bool(ev.get("ok")), bool(ev.get("cancelled")))
+        if plan == AFTERMATH_SHUTDOWN:
+            self._countdown("关机", power.SHUTDOWN_COUNTDOWN_SECONDS,
+                            lambda: power.shutdown_after(0))
+        elif plan == AFTERMATH_SLEEP:
+            self._countdown("睡眠", power.SHUTDOWN_COUNTDOWN_SECONDS, power.sleep_now)
+
+    def _countdown(self, action_name, seconds, fire):
+        """倒计时弹窗：到 0 执行 fire()；点「取消」或关窗 = 不执行。
+
+        刻意**不在弹窗前就排系统级关机**（`shutdown /t`）：万一本程序在这 60 秒里
+        崩了，OS 倒计时照样执行 —— "崩了反而把机器关了"是错误方向；
+        由本程序在 0 秒时才发动作，崩了就停在原地（安全侧）。
+        """
+        dlg = tk.Toplevel(self.root)
+        dlg.title("任务完成 · 即将%s" % action_name)
+        dlg.attributes("-topmost", True)
+        dlg.resizable(False, False)
+        ttk.Label(dlg, text="全部渲染完成，%d 秒后自动%s。" % (seconds, action_name),
+                  padding=(18, 14, 18, 2)).pack()
+        left = {"n": seconds}
+        lbl = ttk.Label(dlg, text=str(seconds), style="Accent.TLabel",
+                        font=("TkDefaultFont", 16, "bold"))
+        lbl.pack(pady=(0, 8))
+
+        def fire_now():
+            dlg.destroy()
+            ok, msg = fire()
+            self._log("自动%s：%s" % (action_name, msg))
+
+        def cancel(_e=None):
+            dlg.destroy()
+            self._log("已取消自动%s" % action_name)
+
+        btns = ttk.Frame(dlg)
+        btns.pack(pady=(0, 14))
+        ttk.Button(btns, text="取消%s" % action_name, command=cancel).pack(
+            side="left", padx=6)
+        dlg.protocol("WM_DELETE_WINDOW", cancel)
+        self._log("任务完成：%d 秒后自动%s（点「取消%s」可撤）"
+                  % (seconds, action_name, action_name))
+
+        def tick():
+            if not dlg.winfo_exists():
+                return
+            left["n"] -= 1
+            if left["n"] <= 0:
+                fire_now()
+                return
+            lbl.configure(text=str(left["n"]))
+            dlg.after(1000, tick)
+
+        dlg.after(1000, tick)
 
     def _flush_log(self):
         lines = self.log.drain()

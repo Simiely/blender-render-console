@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-from . import locate
+from . import locate, power
 from .core import (JobConfig, RenderJob, complete_output_template, parse_frames,
                    parse_restart_limit)
 from .eta import fmt_duration
@@ -241,7 +241,9 @@ def main(argv=None):
         max_no_progress_rounds=args.max_no_progress,
         resume=not args.no_resume)
 
-    job = RenderJob(cfg, blender, keep_workdir=args.keep_workdir)
+    # 防睡眠守卫在这里注入（组合根职责）：CLI 长跑同样会被 Windows 睡眠打断
+    job = RenderJob(cfg, blender, keep_workdir=args.keep_workdir,
+                    power_guard=(power.keep_awake, power.allow_sleep))
     reporter = ConsoleReporter(verbose=args.verbose)
 
     t0 = time.time()

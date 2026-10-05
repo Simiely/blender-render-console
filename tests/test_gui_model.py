@@ -17,11 +17,13 @@ sys.path.insert(0, ROOT)
 from brconsole import tkboot  # noqa: E402
 from brconsole.core import parse_frames  # noqa: E402
 from brconsole.core import parse_restart_limit  # noqa: E402
-from brconsole.guimodel import (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS,  # noqa: E402
-                                DEFAULT_RESTART_OPTION, RESTART_OPTIONS,
+from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: E402
+                                AFTERMATH_SLEEP, DEFAULT_ATTEMPTS,
+                                DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
+                                RESTART_OPTIONS,
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                                 UNLIMITED_LIMITS, UNLIMITED_RESTART_LABEL, FormModel,
-                                LogModel, ProgressModel, event_line,
+                                LogModel, ProgressModel, aftermath_plan, event_line,
                                 fields_from_detail, frames_to_text, guess_state_path,
                                 is_unlimited_restart, restart_label_for,
                                 restart_limits_plan, restore_limits_backup,
@@ -724,6 +726,35 @@ class TestSettleTaskAction(unittest.TestCase):
             action, reason = settle_task_action(kind, ev)
             self.assertEqual(action, "stop", (kind, ev))
             self.assertTrue(reason)
+
+
+class TestAftermathPlan(unittest.TestCase):
+    """任务结束后的关机/睡眠决策 —— 只认「全部渲完」，其他一律不动。
+
+    为什么这么严：用户点停止 = 他还在机器前，替他关机是惊吓；
+    失败/放弃 = 正需要人来看原因，把机器睡了反而把问题藏到明天。
+    竞品的自动关机同样只在"100% 完成"时触发。
+    """
+
+    def test_shutdown_only_on_full_success(self):
+        self.assertEqual(aftermath_plan(AFTERMATH_SHUTDOWN, True, False), "shutdown")
+
+    def test_sleep_only_on_full_success(self):
+        self.assertEqual(aftermath_plan(AFTERMATH_SLEEP, True, False), "sleep")
+
+    def test_cancelled_never_triggers(self):
+        self.assertIsNone(aftermath_plan(AFTERMATH_SHUTDOWN, True, True))
+        self.assertIsNone(aftermath_plan(AFTERMATH_SLEEP, True, True))
+
+    def test_failure_and_give_up_never_trigger(self):
+        self.assertIsNone(aftermath_plan(AFTERMATH_SHUTDOWN, False, False))
+        self.assertIsNone(aftermath_plan(AFTERMATH_SLEEP, False, True))
+
+    def test_nothing_and_garbage_are_noop(self):
+        self.assertIsNone(aftermath_plan(AFTERMATH_NOTHING, True, False))
+        self.assertIsNone(aftermath_plan("", True, False))
+        self.assertIsNone(aftermath_plan("关机", True, False))     # 界面存的是值不是文案
+        self.assertIsNone(aftermath_plan(None, True, False))
 
 
 if __name__ == "__main__":

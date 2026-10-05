@@ -636,5 +636,43 @@ class TestOutputNormalisation(unittest.TestCase):
         self.assertEqual(JobConfig.from_dict(d).to_dict(), d)
 
 
+class TestKeepAwakeWiring(unittest.TestCase):
+    """渲染期间必须防睡眠，且**任何**退出路径都要释放。
+
+    微软官方文档明确警告：别无限期持有 ES_SYSTEM_REQUIRED | ES_CONTINUOUS
+    （现代待机设备合盖也狂掉电）。所以这里钉的是"成对"——
+    少了 finally 里的释放，这条会红。
+    """
+
+    def test_paired_on_error_path(self):
+        from brconsole import core
+        calls = []
+
+        def keep():
+            calls.append("keep")
+            return True
+
+        def allow():
+            calls.append("allow")
+            return True
+
+        # 守卫由组合根注入：这里测试就是"组合根"
+        cfg = JobConfig(blend="C:/nope.blend", frames=[1],
+                        output_template="C:/x/f_####")
+        job = RenderJob(cfg, "blender.exe", cmd_factory=lambda *a, **k: ["x"],
+                        power_guard=(keep, allow))
+        job.run(on_event=lambda k, ev: None)     # 工程不存在 → 异常路径
+        self.assertEqual(calls, ["keep", "allow"])
+
+    def test_no_guard_is_harmless(self):
+        """没注入守卫（None）→ 不防睡眠也不炸 —— 组合根忘了传也不至于崩。"""
+        cfg = JobConfig(blend="C:/nope.blend", frames=[1],
+                        output_template="C:/x/f_####")
+        job = RenderJob(cfg, "blender.exe", cmd_factory=lambda *a, **k: ["x"])
+        r = job.run(on_event=lambda k, ev: None)
+        self.assertIn("找不到工程文件", r["error"] or "")
+        self.assertIn("elapsed", r)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

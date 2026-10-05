@@ -228,6 +228,32 @@ def settle_task_action(kind, ev):
     return "stop", reason
 
 
+# ---------------- 任务结束后的善后（关机 / 睡眠） ----------------
+AFTERMATH_NOTHING = "nothing"
+AFTERMATH_SHUTDOWN = "shutdown"
+AFTERMATH_SLEEP = "sleep"
+AFTERMATH_VALUES = (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP)
+
+
+def aftermath_plan(choice, ok, cancelled):
+    """任务结束后要不要执行善后动作 → 返回 `"shutdown"` / `"sleep"` / `None`。
+
+    **只有"全部渲完"才触发**，被取消或失败都不触发：
+
+    - 用户点了停止 = 他还在机器前，替他关机是惊吓
+    - 失败/放弃 = 正需要人来看原因，把机器睡了或关了反而把问题藏到明天
+
+    竞品（BRQ / Render Manager）的自动关机同样只在"队列 100% 完成"时触发，
+    并且都带取消倒计时 —— 执行侧的倒计时见 `power`（60 秒，`shutdown /a` 可撤）。
+    界面选项存的就是这里的值（`AFTERMATH_*`），别再各写一份字面量。
+    """
+    if choice not in (AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP):
+        return None
+    if cancelled or not ok:
+        return None
+    return choice
+
+
 def restart_label_for(value):
     """重启次数（存档里的整数）→ 下拉文案。
 
