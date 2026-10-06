@@ -21,7 +21,7 @@ sys.path.insert(0, ROOT)
 
 from brconsole.core import (UNLIMITED, JobConfig, RenderJob,  # noqa: E402
                             complete_output_template, default_cmd_factory,
-                            parse_restart_limit)
+                            expand_segment, parse_frames, parse_restart_limit)
 from brconsole.state import JobState  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_blender.py")
@@ -364,6 +364,107 @@ class TestParseRestartLimit(unittest.TestCase):
         cfg2 = JobConfig(blend="a.blend", frames=[1], output_template="o/f_####",
                          max_restarts=5)
         self.assertFalse(cfg2.unlimited_restarts)
+
+
+class TestExpandSegment(unittest.TestCase):
+    """★ 区间展开的**唯一规则**：命令行 `parse_frames` 与界面的帧段列表都走它。
+
+    只要有人想再写一遍 `range(a, b+1, step)`，就该改成调这里 —— 否则
+    "命令行渲的帧"和"界面上看到的帧"会慢慢漂开，而且不报错。
+    """
+
+    def test_bounds_are_inclusive(self):
+        self.assertEqual(expand_segment(1, 4), [1, 2, 3, 4])
+
+    def test_step_only_lands_on_the_grid(self):
+        self.assertEqual(expand_segment(1, 10, 5), [1, 6])       # 10 不在步长上 → 不取
+        self.assertEqual(expand_segment(1, 11, 5), [1, 6, 11])
+
+    def test_end_omitted_means_single_frame(self):
+        self.assertEqual(expand_segment(7), [7])
+        self.assertEqual(expand_segment(7, ""), [7])
+
+    def test_reversed_bounds_are_swapped(self):
+        self.assertEqual(expand_segment(9, 7), [7, 8, 9])
+
+    def test_negative_frames(self):
+        self.assertEqual(expand_segment(-3, 1), [-3, -2, -1, 0, 1])
+
+    def test_step_below_one_raises(self):
+        for bad in (0, -1):
+            with self.assertRaises(ValueError):
+                expand_segment(1, 10, bad)
+
+
+class TestParseFrames(unittest.TestCase):
+    """命令行 `-f` 的文本写法：多段不连续 + 每段自带步长。"""
+
+    def test_single_frame(self):
+        self.assertEqual(parse_frames("15"), [15])
+
+    def test_range(self):
+        self.assertEqual(parse_frames("1-10"), list(range(1, 11)))
+
+    def test_colon_range(self):
+        self.assertEqual(parse_frames("1:4"), [1, 2, 3, 4])
+
+    def test_multiple_discontinuous_ranges(self):
+        self.assertEqual(parse_frames("1-3,7,10-12"), [1, 2, 3, 7, 10, 11, 12])
+
+    def test_per_segment_step(self):
+        """★ 本次新增：每段各带步长，`x` 后缀只作用于本段。"""
+        self.assertEqual(parse_frames("1-11x5,100-102"), [1, 6, 11, 100, 101, 102])
+
+    def test_global_step_applies_to_segments_without_one(self):
+        self.assertEqual(parse_frames("1-10,20-30", step=5), [1, 6, 20, 25, 30])
+
+    def test_segment_step_overrides_global(self):
+        self.assertEqual(parse_frames("1-10x2", step=5), [1, 3, 5, 7, 9])
+
+    def test_fullwidth_comma(self):
+        """中文输入法下随手打的逗号 —— 早先会直接抛 int() 的原文报错。"""
+        self.assertEqual(parse_frames("1-3，7"), [1, 2, 3, 7])
+
+    def test_dedup_and_sort(self):
+        self.assertEqual(parse_frames("5-8,1-6"), list(range(1, 9)))
+        self.assertEqual(parse_frames("9,1,5,1"), [1, 5, 9])
+
+    def test_negative_frames(self):
+        self.assertEqual(parse_frames("-5"), [-5])
+        self.assertEqual(parse_frames("-5--3"), [-5, -4, -3])
+
+    def test_blank_parts_are_skipped(self):
+        self.assertEqual(parse_frames(" 1-2 , ,4 "), [1, 2, 4])
+
+    def test_explicit_spec_wins_over_start_end(self):
+        self.assertEqual(parse_frames("3", start=100, end=200), [3])
+
+    def test_start_end_when_no_spec(self):
+        self.assertEqual(parse_frames("", 2, 6, 2), [2, 4, 6])
+        self.assertEqual(parse_frames(None, 5), [5])
+        self.assertEqual(parse_frames(None), [])
+
+    def test_error_names_the_segment_and_the_text(self):
+        """★ 报错必须指出第几段、原文是什么 —— 界面上有好几段时，只说
+        "invalid literal for int()" 等于什么都没说。"""
+        with self.assertRaises(ValueError) as ctx:
+            parse_frames("1-10,abc")
+        self.assertIn("第 2 段", str(ctx.exception))
+        self.assertIn("abc", str(ctx.exception))
+
+    def test_error_for_unsupported_separator(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_frames("1-10;20")
+        self.assertIn("第 1 段", str(ctx.exception))
+
+    def test_zero_step_in_spec_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            parse_frames("1-10x0")
+        self.assertIn("步长", str(ctx.exception))
+
+    def test_matches_expand_segment(self):
+        """同一段写法，文本入口与"段入口"必须给出一模一样的帧号。"""
+        self.assertEqual(parse_frames("1-11x5"), expand_segment(1, 11, 5))
 
 
 class TestSceneSelection(_Base):

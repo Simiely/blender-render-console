@@ -71,33 +71,83 @@ def parse_restart_limit(value, default=5):
     return default
 
 
-def parse_frames(spec, start=None, end=None, step=1):
-    """`1-10,15,20-25` / `1:240` → 帧号列表。
+def expand_segment(start, end=None, step=1):
+    """**一段**帧范围 → 帧号列表。**全项目唯一的"区间展开"规则**。
 
-    语义：**显式帧列表优先**，给了它就忽略 start/end（更符合直觉，
-    也避免"填了列表又带着默认范围"导致范围被悄悄并进来）。
+    调用方三处，都走这里，避免同一个 `range(a, b+1, step)` 写三遍后漂开：
+    - `parse_frames()`（命令行 `-f 1-100x5` 的文本写法）
+    - `guimodel.segments_to_frames()`（界面上的帧段列表）
+    - `guimodel.frames_to_segments()` 的往返校验
+
+    `end` 省略（None）= 单帧。起 > 止 自动交换（用户把两个框填反了而已，
+    报错只会让人重填一次）；`step < 1` 必须报错 —— 静默当 1 处理会让
+    "我明明写了每 5 帧"变成每帧都渲，是最不该静默的那类翻转。
+    """
+    a = int(start)
+    b = a if end is None or str(end).strip() == "" else int(end)
+    if b < a:
+        a, b = b, a
+    # ⚠️ 不能用 `int(step or 1)`：那会把 `0` 当成"没填"而静默变成 1，
+    #    于是"每 5 帧"手滑写成 0 时变成**每帧都渲** —— 最不该静默的那类翻转。
+    s = 1 if step is None or str(step).strip() == "" else int(step)
+    if s < 1:
+        raise ValueError("步长必须 ≥ 1，当前：%s" % (step,))
+    return list(range(a, b + 1, s))
+
+
+# 一段帧范围的写法：`15` / `1-10` / `1:340` / `1-100x5` / `-10--5`
+#
+# 为什么要正则、而不是原先的 `"-" in part.lstrip("-")` + `split("-", 1)`：
+# 后者在负数帧上直接崩（Blender 允许负帧号，`-10--5` 会被切成 `['', '10--5']`），
+# 也认不出"每段自带步长"。帧号两端的 `-?` 不能省。
+RE_FRAME_SEGMENT = re.compile(
+    r"^(?P<a>-?\d+)\s*(?:[-:]\s*(?P<b>-?\d+))?\s*(?:[xX*]\s*(?P<step>\d+))?$")
+
+# 段与段之间的分隔符：半角 + **全角**逗号。
+# 全角这条不是锦上添花：中文输入法下随手打的逗号就是 `，`，早先的解析直接报
+# `invalid literal for int() with base 10: '10，20'` —— 用户照着帮助文本敲都一样中招。
+# **不能拿空格当分隔符**：`1 - 3` 里空格是区间自己的一部分。
+RE_FRAME_SEP = re.compile(r"[,，]")
+
+
+def parse_frames(spec, start=None, end=None, step=1):
+    """`1-10,15,20-25` / `1-100x5,200-300x2` / `1:240` → 帧号列表。
+
+    语义：
+    - **显式帧列表优先**：给了 `spec` 就忽略 start/end（更符合直觉，
+      也避免"填了列表又带着默认范围"导致范围被悄悄并进来）
+    - **每段可自带步长**：`1-100x5` 表示本段每 5 帧取一次（`x`/`X`/`*` 都认）；
+      没写就用全局 `step`
+    - 段之间用（半角或全角）逗号分隔；重复帧去重后升序排列
+
+    ⚠️ 报错必须**指出是第几段、原文是什么**：早先这里直接把 `int()` 的
+    `invalid literal for int() with base 10: '1~3'` 抛给用户，界面/终端里根本看不出
+    是自己哪一处写错了（错误信息只有"某个字符串不是整数"）。
     """
     frames = []
     spec = (spec or "").strip()
     if spec:
-        for part in spec.replace(":", "-").split(","):
+        # 这里**保留空段的序号**（`enumerate` 在 `continue` 之前自增）：
+        # 界面把每一段各拼一段文本、没填的段拼成空串，于是这里的"第 N 段"
+        # 与界面上的行号严格对齐，报错能直接指到那一行。
+        for i, part in enumerate(RE_FRAME_SEP.split(spec), 1):
             part = part.strip()
             if not part:
                 continue
-            if "-" in part.lstrip("-"):
-                a, b = part.split("-", 1)
-                a, b = int(a), int(b)
-                if b < a:
-                    a, b = b, a
-                frames.extend(range(a, b + 1, step))
-            else:
-                frames.append(int(part))
+            m = RE_FRAME_SEGMENT.match(part)
+            if not m:
+                raise ValueError("第 %d 段「%s」看不懂，应形如 1-10、15、1-100x5"
+                                 % (i, part))
+            try:
+                frames.extend(expand_segment(
+                    m.group("a"), m.group("b"),
+                    int(m.group("step")) if m.group("step") else step))
+            except ValueError as e:
+                raise ValueError("第 %d 段「%s」：%s" % (i, part, e))
     elif start is not None or end is not None:
         s = int(start) if start is not None else 1
         e = int(end) if end is not None else s
-        if e < s:
-            s, e = e, s
-        frames = frames + list(range(s, e + 1, step))
+        frames = frames + expand_segment(s, e, step)
     seen, out = set(), []
     for f in frames:
         if f not in seen:

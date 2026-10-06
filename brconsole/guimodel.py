@@ -12,8 +12,8 @@
 import os
 from collections import deque
 
-from .core import (UNLIMITED, complete_output_template, parse_restart_limit,
-                   state_file_for)
+from .core import (UNLIMITED, complete_output_template, expand_segment,
+                   parse_restart_limit, state_file_for)
 from .eta import fmt_duration
 from .state import JobState
 
@@ -43,6 +43,10 @@ DEFAULT_NO_PROGRESS = "3"
 # `max_attempts <= 0` 表示不限，`RenderJob` 用 `max_no_progress_rounds > 0` 才启用兜底。
 # 所以"不限"根本不需要给内核加新语义，填 0 即可。
 UNLIMITED_LIMITS = ("0", "0")
+
+#: 第一段帧范围的默认起止（也是"没读到工程配置"时的兜底），界面与 FormModel 共用一份
+DEFAULT_SEGMENT_START = "1"
+DEFAULT_SEGMENT_END = "250"
 
 
 def is_unlimited_restart(value):
@@ -181,11 +185,14 @@ def fields_from_detail(detail, blend=""):
 
 
 def frames_to_text(frames):
-    """帧号列表 → `1-240,300` 这样的紧凑文本（写回表单用）。
+    """帧号列表 → `1-240,300` 这样的紧凑文本。
 
     只把**连续 3 帧以上**的折成区间：`1-240` 比列 240 个数字清楚得多。
-    ⚠️ 折成区间后会受表单 `step` 影响（`parse_frames` 对区间是 `range(a, b+1, step)`），
-    所以还原时必须把 step 一起置回 1 —— 见 `FormModel.from_config`。
+    （老版本界面直接把这个文本填进输入框；现在界面用帧段列表，它保留了
+    `parse_frames` 的往返测试作为对账用。）
+
+    ⚠️ 折成区间后会受全局 `step` 影响（`parse_frames` 对区间是 `range(a, b+1, step)`），
+    所以拿它还原时必须把 step 一起置回 1。
     """
     fs = sorted({int(f) for f in (frames or [])})
     if not fs:
@@ -201,6 +208,159 @@ def frames_to_text(frames):
             out.extend(str(f) for f in fs[i:j + 1])
         i = j + 1
     return ",".join(out)
+
+
+# ---------------- 帧段（界面上「添加一段 → 填起/止/步长」的那个列表）----------------
+#
+# 设计说明（为什么是"段"，不再是"起/止/步长 + 一个帧列表输入框"）：
+# 早先界面只有一组 起/止/步长，多段不连续帧要靠最右边那个约 90px 宽、
+# 没写语法、报错还是 Python 原文的「帧列表」输入框，实际不可用。
+# 现在改成**段列表**：一段一行、可增可删、每段自带步长，全部经
+# `core.expand_segment` 展开 —— 区间展开规则全项目只此一处。
+
+def new_segment(start="", end="", step=""):
+    """一个空帧段。**界面与存档回填共用**，别在各处手写这个 dict 字面量。"""
+    return {"start": str(start), "end": str(end), "step": str(step)}
+
+
+def normalise_segment(seg):
+    """把外来 dict（可能缺键 / 值不是字符串）归一成 `{start,end,step}` 三个字符串。"""
+    seg = seg or {}
+    return {k: ("" if seg.get(k) is None else str(seg.get(k)).strip())
+            for k in ("start", "end", "step")}
+
+
+def segment_label(seg, step=1):
+    """一段 → 人类可读描述（实时回显用）：`1-250` / `1-200 每 5 帧` / `第 250 帧`。"""
+    seg = normalise_segment(seg)
+    s, e, st = seg["start"], seg["end"], seg["step"]
+    if not s and not e:
+        return "（未填）"
+    if not s or not e:
+        # 只填了一边 = 单帧：回显必须写成「第 N 帧」，不能让人以为它是"从 N 到工程末帧"
+        return "第 %s 帧" % (s or e)
+    try:
+        a, b = int(s), int(e)
+    except ValueError:
+        return "%s-%s" % (s, e)
+    if b < a:
+        a, b = b, a
+    if a == b:
+        return "第 %d 帧" % a
+    eff = st or str(step or 1)
+    return "%d-%d%s" % (a, b, "" if eff == "1" else " 每 %s 帧" % eff)
+
+
+def segments_to_frames(segments, step=1):
+    """界面上的帧段列表 → `(帧号列表, 错误列表)`。
+
+    段语义（每一条都要能被界面上的回显看出来，别让它变成"填了才知道"）：
+    - 起/止 **都空** → 这一段还没填，跳过（不算错 —— 刚点「添加一段」的空行就是这状态）
+    - 只填一边 → **单帧**（回显写成「第 N 帧」）
+    - 都填 → 区间，起 > 止 自动交换（填反了而已）
+    - 步长空 → 用全局 `step`；步长 < 1 报错（静默当 1 会让"每 5 帧"变成每帧都渲）
+    - 段之间重复的帧去重后升序 —— 两段重叠不会被渲两遍
+
+    错误一律带**段号**：界面上有若干行，不说是哪一行等于没说。
+    """
+    frames, errors = [], []
+
+    def as_int(text, label, no):
+        t = str(text or "").strip()
+        if not t:
+            return None, False
+        try:
+            return int(t), False
+        except ValueError:
+            errors.append("第 %d 段：%s 得是整数，当前填的是「%s」" % (no, label, t))
+            return None, True
+
+    for i, raw in enumerate(segments or [], 1):
+        seg = normalise_segment(raw)
+        if not seg["start"] and not seg["end"]:
+            continue
+        s, bad_s = as_int(seg["start"], "起帧", i)
+        e, bad_e = as_int(seg["end"], "止帧", i)
+        st, bad_st = as_int(seg["step"], "步长", i)
+        if bad_s or bad_e or bad_st:
+            continue
+        try:
+            if s is None or e is None:
+                frames.append(e if s is None else s)
+            else:
+                frames.extend(expand_segment(s, e, st if st is not None else step))
+        except ValueError as exc:
+            errors.append("第 %d 段：%s" % (i, exc))
+
+    seen, out = set(), []
+    for f in frames:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return sorted(out), errors
+
+
+def frames_to_segments(frames, step=1):
+    """帧号列表 → 帧段列表（开机续跑回填界面用）。
+
+    ⚠️ 存档里只有**展开后的帧号**（`JobConfig` 不存段、只存 frames），所以"每 5 帧"
+    这件事回填时是**推断**出来的：按相邻差值恒定切段 —— 差值一变就新起一段。
+    `[1..240]` → 一段每 1 帧；`[1,6,11,26]` → `1-11 每 5 帧` + `26`。
+    推断只影响"界面显示成几段"，展开回去的帧号与原列表逐项相等（有往返单测钉着）。
+    """
+    fs = sorted({int(f) for f in (frames or [])})
+    if not fs:
+        return []
+    segs, i = [], 0
+    while i < len(fs):
+        if i + 1 >= len(fs):                      # 落单的一帧
+            segs.append(new_segment(fs[i], "", ""))
+            break
+        d = fs[i + 1] - fs[i]
+        j = i + 1
+        while j + 1 < len(fs) and fs[j + 1] - fs[j] == d:
+            j += 1
+        segs.append(new_segment(fs[i], fs[j], d))
+        i = j + 1
+    return segs
+
+
+#: 回显里最多列几段就省略（多了会撑破那一行）
+PREVIEW_MAX_SEGMENTS = 4
+#: 合并后的紧凑写法最多留多少个字符（`1-2500,3000-3200` 这种）
+PREVIEW_MAX_MERGED = 60
+#: 单段且帧数不超过这个数时，回显里把帧号全列出来
+PREVIEW_MAX_LIST = 12
+
+
+def frames_preview(segments, step=1):
+    """帧段列表 → `(帧号列表, 回显文本, 是否合法)`。
+
+    界面每改一个字符就调它一次：合法 → 绿字「共 N 帧：…」，
+    不合法 → 红字「！第 2 段：…」。**按下「开始渲染」前就能看出问题在哪**，
+    而不是等弹框。
+    """
+    frames, errors = segments_to_frames(segments, step)
+    if errors:
+        return frames, "！ " + "；".join(errors), False
+    if not frames:
+        return frames, "！ 还没有可渲染的帧 —— 至少填一段的起帧", False
+
+    labels = [segment_label(sg, step) for sg in (segments or [])]
+    labels = [x for x in labels if x != "（未填）"]
+    if len(labels) > PREVIEW_MAX_SEGMENTS:
+        labels = labels[:PREVIEW_MAX_SEGMENTS] + ["…"]
+    body = " · ".join(labels)
+    if len(labels) > 1:
+        # 多段时再补一句"合并后是什么"：两个段**重叠或首尾相接**时，光看每段看不出
+        # 最后究竟渲哪些帧（重复的帧会被去掉、只渲一次）。这一句就是那份对账。
+        merged = frames_to_text(frames)
+        if len(merged) <= PREVIEW_MAX_MERGED:
+            body += "；合并后 %s" % merged
+    elif len(frames) <= PREVIEW_MAX_LIST:
+        body += "（%s）" % ", ".join(str(f) for f in frames)
+    return frames, "共 %d 帧：%s" % (len(frames), body), True
+
 
 
 def settle_task_action(kind, ev):
@@ -273,16 +433,22 @@ def restart_label_for(value):
 
 
 class FormModel(object):
-    """界面表单的字段容器。`to_config()` 负责校验与补全。"""
+    """界面表单的字段容器。`to_config()` 负责校验与补全。
+
+    ⚠️ 帧范围是 **`segments`（段列表）**，不再是 `start/end/step` 三个单值：
+    多段不连续的序列帧（`1-100 每 5 帧` + `250` + `300-400`）是常规用法，
+    单值表示法根本表达不了。三个单值属性已删除 —— 留着就会有控件去读它，
+    然后"界面上明明改了段、跑的还是旧值"。
+    """
 
     def __init__(self, **kw):
         self.blend = kw.get("blend", "")
         self.blender = kw.get("blender", "")
         self.output = kw.get("output", "")
-        self.frames = kw.get("frames", "")          # 显式帧列表，可空
-        self.start = kw.get("start", "1")
-        self.end = kw.get("end", "250")
-        self.step = kw.get("step", "1")
+        #: 帧段列表：[{"start","end","step"}, ...]，值都是字符串（界面控件里就是字符串）
+        segs = kw.get("segments")
+        self.segments = ([normalise_segment(s) for s in segs] if segs
+                         else [new_segment(DEFAULT_SEGMENT_START, DEFAULT_SEGMENT_END)])
         self.engine = kw.get("engine", KEEP)
         self.samples = kw.get("samples", "")
         self.device = kw.get("device", KEEP)
@@ -321,9 +487,11 @@ class FormModel(object):
     def from_config(cls, cfg_dict, blender_exe=""):
         """`JobConfig.to_dict()` 的结果 → 表单字段。
 
-        帧范围**走显式列表**并把 step 置回 1：`to_config` 里显式列表优先于
-        起始/结束帧，而区间展开又要乘 step —— 两处都摆平才能做到"填回去和上次
-        跑的是同一批帧"。这个往返有单测盯着。
+        帧范围走 **`frames_to_segments`**：存档里只有展开后的帧号列表
+        （`JobConfig` 不存段），这里按"相邻差值恒定"把它还原成段 ——
+        回填的界面上看到的段数、步长可能与当初填的不一样（`1,6,11,26` 会被
+        还原成「1-11 每 5 帧」+「26」），但**展开回去的帧号逐项相同**，
+        也就是"填回去和上次跑的是同一批帧"。这个往返有单测盯着。
         """
         d = dict(cfg_dict or {})
         res = d.get("resolution") or []
@@ -331,8 +499,7 @@ class FormModel(object):
             blend=d.get("blend") or "",
             blender=blender_exe or "",
             output=d.get("output_template") or "",
-            frames=frames_to_text(d.get("frames")),
-            start="1", end="250", step="1",
+            segments=frames_to_segments(d.get("frames")) or None,
             engine=d.get("engine") or KEEP,
             samples="" if d.get("samples") is None else str(d["samples"]),
             device=d.get("device") or KEEP,
@@ -351,10 +518,12 @@ class FormModel(object):
         )
 
     # ---------- 校验 → JobConfig ----------
-    def to_config(self, frames_parser):
+    def to_config(self):
         """返回 (JobConfig|None, errors:list[str], warnings:list[str])。
 
-        `frames_parser` 传入 core.parse_frames（界面不自己实现一遍帧解析）。
+        帧号由 `segments_to_frames`（本模块，纯逻辑）展开，它内部走
+        `core.expand_segment` —— 界面**不自己实现**区间展开规则，
+        与命令行 `parse_frames` 共用同一个原语。
         """
         from .core import JobConfig
 
@@ -368,16 +537,10 @@ class FormModel(object):
         elif not blend.lower().endswith(".blend"):
             warns.append("这个文件的扩展名不是 .blend，确认没选错？")
 
-        frames = []
-        try:
-            start = int(str(self.start).strip()) if str(self.start).strip() else None
-            end = int(str(self.end).strip()) if str(self.end).strip() else None
-            step = int(str(self.step).strip() or 1) or 1
-            frames = frames_parser((self.frames or "").strip(), start, end, step)
-        except ValueError as e:
-            errors.append("帧范围解析失败：%s" % e)
+        frames, frame_errors = segments_to_frames(self.segments)
+        errors.extend(frame_errors)
         if not frames:
-            errors.append("没有可渲染的帧（检查起始/结束帧或帧列表）")
+            errors.append("没有可渲染的帧 —— 在「帧范围」里至少填一段的起帧")
 
         output = self.complete_output(self.output.strip(), blend)
         if not output:

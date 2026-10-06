@@ -23,15 +23,16 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import applock, autostart, diskspace, locate, notify, power, taskstore, theme
 from .layout import FROZEN_SUBDIR
-from .core import RenderJob, parse_frames
+from .core import RenderJob
 from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
                        DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                        DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
                        SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
                        aftermath_plan, event_line, fields_from_detail,
-                       guess_state_path,
-                       is_unlimited_restart, restart_limits_plan,
+                       frames_preview, guess_state_path,
+                       is_unlimited_restart, new_segment, normalise_segment,
+                       restart_limits_plan,
                        restore_limits_backup, scene_to_config, settle_task_action,
                        state_summary)
 from .inspect import (read_blend_info, scene_detail, scene_names,
@@ -107,6 +108,7 @@ class App(object):
         self._inspected_path = None      # 已经读过配置的工程，避免重复读
         self._inspecting = False
         self._scene_info = None          # 最近一次读到的工程配置（含各场景详情）
+        self._frame_preview = []         # 帧段列表展开后的帧号（实时回显的副产物）
 
         root.title(WINDOW_TITLE)   # 与 applock.focus_window 按标题找窗口共用同一句
         _apply_icon(root)
@@ -147,10 +149,8 @@ class App(object):
         self.v_scene = tk.StringVar(value=SCENE_NEED_READ_LABEL)
         self.v_blender = tk.StringVar()
         self.v_output = tk.StringVar()
-        self.v_frames = tk.StringVar()
-        self.v_start = tk.StringVar(value="1")
-        self.v_end = tk.StringVar(value="250")
-        self.v_step = tk.StringVar(value="1")
+        # ⚠️ 帧范围没有 v_* 单值（起/止/步长）：它是**段列表**，每段一行控件、
+        #    段数会变，用固定的 StringVar 表达不了（见 `_add_segment_row`）。
         self.v_engine = tk.StringVar(value=ENGINES[0][1])
         self.v_samples = tk.StringVar()
         self.v_device = tk.StringVar(value=DEVICES[0][1])
@@ -208,17 +208,33 @@ class App(object):
             row=r, column=4, **pad)
 
         r += 1
-        ttk.Label(box, text="帧范围").grid(row=r, column=0, sticky="w", **pad)
-        f = ttk.Frame(box)
-        f.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Label(f, text="起").pack(side="left")
-        ttk.Entry(f, textvariable=self.v_start, width=7).pack(side="left", padx=2)
-        ttk.Label(f, text="止").pack(side="left", padx=(8, 0))
-        ttk.Entry(f, textvariable=self.v_end, width=7).pack(side="left", padx=2)
-        ttk.Label(f, text="步长").pack(side="left", padx=(8, 0))
-        ttk.Entry(f, textvariable=self.v_step, width=4).pack(side="left", padx=2)
-        ttk.Label(f, text="帧列表（填了就只用它）").pack(side="left", padx=(14, 0))
-        ttk.Entry(f, textvariable=self.v_frames, width=20).pack(side="left", padx=2)
+        # ---- 帧范围：**段列表**（一段一行、可增可删、每段自带步长）----
+        #
+        # 早先这里是「起/止/步长 + 一个 20 字符宽的帧列表输入框」：多段不连续的序列帧
+        # 只能挤在那个框里手打，语法没写在界面上、报错还是 Python 原文，
+        # 而且框几乎看不见 —— 等于"功能有，但没人用得上"。
+        # 现在改成：点「＋ 添加一段」→ 新起一行 → 填这一段的起/止/步长。
+        ttk.Label(box, text="帧范围").grid(row=r, column=0, sticky="nw", **pad)
+        self.seg_box = ttk.Frame(box)
+        self.seg_box.grid(row=r, column=1, columnspan=3, sticky="ew")
+        self.seg_box.columnconfigure(0, weight=1)
+        # 段行容器：增删只重建它，不动下面的按钮与回显行
+        self.seg_rows = ttk.Frame(self.seg_box)
+        self.seg_rows.grid(row=0, column=0, sticky="w")
+        self._seg_rows = []
+        seg_btns = ttk.Frame(self.seg_box)
+        seg_btns.grid(row=1, column=0, sticky="w", pady=(3, 0))
+        ttk.Button(seg_btns, text="＋ 添加一段", width=12,
+                   command=self.on_add_segment).pack(side="left")
+        ttk.Label(seg_btns, text="多段不连续：加一段填一段；每段可单独填步长"
+                                 "（如 100-200 每 5 帧）；段之间重复的帧只渲一次",
+                  style="Muted.TLabel").pack(side="left", padx=(10, 0))
+        # 实时回显：改了任一格就重算 —— 按下开始之前就能看到"到底会渲哪些帧"
+        # wraplength 随容器宽度变：段多的时候这行会很长，不折行就会被右边缘裁掉
+        self.lbl_frames = ttk.Label(self.seg_box, text="", style="Muted.TLabel",
+                                    justify="left")
+        self.lbl_frames.grid(row=2, column=0, sticky="w", pady=(3, 0))
+        self.seg_box.bind("<Configure>", self._on_seg_box_resize)
 
         r += 1
         ttk.Label(box, text="引擎 / 采样").grid(row=r, column=0, sticky="w", **pad)
@@ -362,13 +378,18 @@ class App(object):
 
         self.pb = ttk.Progressbar(prog, orient="horizontal", mode="determinate",
                                   maximum=100)
-        self.pb.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 2))
-        self.lbl_status = ttk.Label(prog, text="就绪")
-        self.lbl_status.grid(row=1, column=0, sticky="w", padx=6)
-        self.lbl_eta = ttk.Label(prog, text="", style="Accent.TLabel")
-        self.lbl_eta.grid(row=1, column=1, sticky="e", padx=6)
+        self.pb.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+        # 状态与 ETA **合成一行**（曾经 ETA 是右侧另贴的一个右对齐 Label：
+        # 它没有权重、宽度随文字变，长起来会往左顶、和状态文字叠在一起 —— 界面会错乱）。
+        # 现在只有这一个 Label，整行 left 对齐，`_refresh` 把两段文字拼起来塞进去。
+        self.lbl_status = ttk.Label(prog, text="就绪", anchor="w", justify="left")
+        self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
 
-        self.txt = tk.Text(prog, height=12, wrap="none", state="disabled",
+        # ⚠️ `wrap="none"` 会让长行（Windows 路径动辄上百字符）**直接被右边缘裁掉**，
+        #    而这里只有竖向滚动条，横着看不到 —— 出错时最关键的那行往往就是被裁的那行。
+        #    `wrap="word"` 实测两件事都做到了：中文/英文按词换行；单个超长 token（路径）
+        #    也会在控件边界处断开（`tmp_probe/probe_wrap.py` 对照过三种模式）。
+        self.txt = tk.Text(prog, height=12, wrap="word", state="disabled",
                            font=("Consolas", 9), relief="flat",
                            **theme.log_widget_colors())
         vs = ttk.Scrollbar(prog, orient="vertical", command=self.txt.yview)
@@ -381,6 +402,96 @@ class App(object):
                              "崩溃或停止后再次开始即可从断点继续。",
                   style="Muted.TLabel").grid(row=3, column=0, sticky="w",
                                              padx=10, pady=(0, 8))
+
+        # 段行的初始值取自 `FormModel` 的默认（**唯一来源**，别在这里再写一份 "1"/"250"）
+        self._set_segments(self.form.segments)
+
+    # ---------------- 帧段（多段不连续的序列帧） ----------------
+    def _add_segment_row(self, seg, focus=False):
+        """建一行「段 N · 起 / 止 / 步长 · ✕」。返回这一行的句柄（存在 `_seg_rows`）。"""
+        seg = normalise_segment(seg)
+        row = ttk.Frame(self.seg_rows)
+        row.grid(row=0, column=0, sticky="w")      # 真正的位置由 _sync_segment_ui 重排
+        handle = {"row": row, "label": ttk.Label(row, text="段 %d" % (len(self._seg_rows) + 1),
+                                                 width=5),
+                  "vars": {}, "entries": {}, "btn_remove": None}
+        handle["label"].pack(side="left")
+        for key, caption, width in (("start", "起", 7), ("end", "止", 7),
+                                    ("step", "步长", 4)):
+            ttk.Label(row, text=caption).pack(side="left", padx=(6, 2))
+            var = tk.StringVar(value=seg.get(key, ""))
+            ent = ttk.Entry(row, textvariable=var, width=width)
+            ent.pack(side="left")
+            var.trace_add("write", lambda *_a: self._refresh_frame_preview())
+            handle["vars"][key] = var
+            handle["entries"][key] = ent
+        btn = ttk.Button(row, text="✕", width=2,
+                         command=lambda: self.on_remove_segment(handle))
+        btn.pack(side="left", padx=(8, 0))
+        handle["btn_remove"] = btn
+        self._seg_rows.append(handle)
+        if focus:
+            handle["entries"]["start"].focus_set()
+        return handle
+
+    def _set_segments(self, segments):
+        """用一份段列表**重建**界面上的段行（增删 / 存档回填 / 读工程配置都走它）。
+
+        为什么是重建而不是逐行同步：段数是会变的，逐个改控件又要处理"多了少了"，
+        容易留下没接线的控件。这里一次拆光重建，配合 `_sync_segment_ui` 重排编号。
+        """
+        for h in self._seg_rows:
+            h["row"].destroy()
+        self._seg_rows = []
+        for seg in (list(segments) or [new_segment()]):
+            self._add_segment_row(seg)
+        self._sync_segment_ui()
+
+    def _sync_segment_ui(self):
+        """重排段号与**位置** + 只剩一段时禁掉「✕」（任务至少要有一段）+ 刷新回显。
+
+        ⚠️ 位置必须在这里重排，不能在 `_add_segment_row` 里用 `len(self._seg_rows)` 当行号：
+        删掉中间一段后，列表长度与"已被占用的网格行"就对不上了 —— 再添加一段会**落在
+        同一格里，两行重叠，界面上少一行**（实测抓到：段 1、段 2、段 3 里显示出的只有
+        段 1 和段 3，而模型里三段都在）。位置这件事只由这里说了算。
+        """
+        only_one = len(self._seg_rows) <= 1
+        for i, h in enumerate(self._seg_rows):
+            h["row"].grid(row=i, column=0, sticky="w", pady=1)
+            h["label"].configure(text="段 %d" % (i + 1))
+            h["btn_remove"].configure(state="disabled" if only_one else "normal")
+        self._refresh_frame_preview()
+
+    def _read_segments(self):
+        return [{k: v.get() for k, v in h["vars"].items()} for h in self._seg_rows]
+
+    def _refresh_frame_preview(self):
+        """实时回显：改任一格就重算 —— 合法绿字「共 N 帧：…」，不合法红字指出第几段。"""
+        frames, text, ok = frames_preview(self._read_segments())
+        self._frame_preview = frames
+        self.lbl_frames.configure(text=text, style="OK.TLabel" if ok else "Warn.TLabel")
+
+    def _on_seg_box_resize(self, event):
+        """帧范围那块变宽/变窄 → 跟着调回显的折行宽度，保证它永远不被右边缘裁掉。
+
+        只设 `wraplength`（idempotent），不去改父容器尺寸，所以不会和布局互相触发。
+        """
+        self.lbl_frames.configure(wraplength=max(320, event.width - 8))
+
+    def on_add_segment(self):
+        """「＋ 添加一段」：新起一行并把光标放进去 —— 加完直接输。"""
+        self._add_segment_row(new_segment(), focus=True)
+        self._sync_segment_ui()
+        self._log("新增第 %d 段帧范围 —— 填「起」（只渲一帧就只填起帧，"
+                  "要区间就把「止」也填上）" % len(self._seg_rows))
+
+    def on_remove_segment(self, handle):
+        if len(self._seg_rows) <= 1:
+            return                       # 只剩一段时按钮是禁用的，这里再兜一道
+        handle["row"].destroy()
+        self._seg_rows.remove(handle)
+        self._sync_segment_ui()
+        self._log("已移除 1 段帧范围，现在 %d 段" % len(self._seg_rows))
 
     # ---------------- 表单动作 ----------------
     def _autofill_blender(self):
@@ -522,10 +633,18 @@ class App(object):
         self._report_scene_camera(info, active)
 
     def _fill_from_detail(self, detail, name=""):
-        """按一个场景的配置重填表单（引擎/采样/分辨率/帧范围/输出路径都是 per-scene 的）。"""
+        """按一个场景的配置重填表单（引擎/采样/分辨率/输出路径、帧范围都是 per-scene 的）。
+
+        帧范围只填**第 1 段**、其余段原样留着：用户自己加的那几段是他明确要渲的片断，
+        读一次工程配置就全抹掉等于把他的输入吃了。而第 1 段本来就是"工程自己的帧范围"。
+        """
         fields = fields_from_detail(detail, self.v_blend.get().strip())
-        for key, var in (("start", self.v_start), ("end", self.v_end),
-                         ("step", self.v_step), ("engine", self.v_engine),
+        segs = self._read_segments() or [new_segment()]
+        for key in ("start", "end", "step"):
+            if key in fields:
+                segs[0][key] = str(fields[key])
+        self._set_segments(segs)
+        for key, var in (("engine", self.v_engine),
                          ("samples", self.v_samples), ("device", self.v_device),
                          ("width", self.v_w), ("height", self.v_h),
                          ("pct", self.v_pct), ("file_format", self.v_format),
@@ -720,10 +839,7 @@ class App(object):
         self.v_blend.set(fm.blend)
         self.v_blender.set(fm.blender)
         self.v_output.set(fm.output)
-        self.v_frames.set(fm.frames)
-        self.v_start.set(fm.start)
-        self.v_end.set(fm.end)
-        self.v_step.set(fm.step)
+        self._set_segments(fm.segments)
         self.v_engine.set(fm.engine)
         self.v_samples.set(fm.samples)
         self.v_device.set(fm.device)
@@ -813,10 +929,7 @@ class App(object):
         self.form.scene = self.v_scene.get()
         self.form.blender = self.v_blender.get()
         self.form.output = self.v_output.get()
-        self.form.frames = self.v_frames.get()
-        self.form.start = self.v_start.get()
-        self.form.end = self.v_end.get()
-        self.form.step = self.v_step.get()
+        self.form.segments = self._read_segments()
         self.form.engine = self.v_engine.get()
         self.form.samples = self.v_samples.get()
         self.form.device = self.v_device.get()
@@ -832,7 +945,7 @@ class App(object):
 
     def on_start(self):
         self._collect_form()
-        cfg, errors, warns = self.form.to_config(parse_frames)
+        cfg, errors, warns = self.form.to_config()
         for w in warns:
             self._log("! %s" % w)
         if errors:
@@ -875,8 +988,11 @@ class App(object):
         self.btn_clear_state.configure(state="disabled")
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
-        self._log("开始渲染：%s%s（%d 帧）"
-                  % (cfg.blend, "（场景 %s）" % cfg.scene if cfg.scene else "", len(cfg.frames)))
+        # 把"哪几段、共几帧"写进日志：过夜挂机时回头查日志，得能一眼看出这次渲的是什么
+        self._log("开始渲染：%s%s（%d 段，%d 帧 —— %s）"
+                  % (cfg.blend, "（场景 %s）" % cfg.scene if cfg.scene else "",
+                     len(self.form.segments), len(cfg.frames),
+                     self.lbl_frames.cget("text")))
 
     def _scene_conflict(self):
         """选了场景、但该工程里没这个名字 → 拦下来。
@@ -1097,9 +1213,10 @@ class App(object):
     def _refresh(self):
         p = self.prog
         self.pb["value"] = p.fraction * 100
-        self.lbl_status.configure(text=p.status_text())
+        # 状态 · ETA · 单帧 全在一行里 —— 不再另贴一个右对齐 Label
         tail = " · ".join(x for x in (p.eta_text(), p.per_frame_text()) if x)
-        self.lbl_eta.configure(text=tail)
+        text = p.status_text()
+        self.lbl_status.configure(text=("%s　|　%s" % (text, tail)) if tail else text)
 
     def _refresh_state_label(self):
         info = state_summary(guess_state_path(self.v_output.get()))
@@ -1124,11 +1241,12 @@ class App(object):
         # demo 走假 Blender，这里只需一个"存在"的可执行文件满足 core 的校验
         if not self.v_blender.get():
             self.v_blender.set(sys.executable)
-        self.v_start.set("1")
-        self.v_end.set("6")
+        # 故意用**两段不连续**的帧（1-4 + 9-10）：截图/自检里就能看到多段功能的样子
+        # （总帧数与早先的 1-6 相同，避免动到别人的预期）
+        self._set_segments([new_segment("1", "4"), new_segment("9", "10")])
         self.v_output.set(os.path.join(d, "out", "frame_####"))
         self._inspected_path = blend      # 假工程，别真去调 Blender 读配置
-        self.lbl_state.configure(text="demo 模式：用假 Blender 模拟 6 帧")
+        self.lbl_state.configure(text="demo 模式：用假 Blender 模拟 6 帧（分 1-4、9-10 两段）")
         self.root.after(300, self.on_start)
 
 

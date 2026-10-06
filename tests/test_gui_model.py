@@ -15,7 +15,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from brconsole import tkboot  # noqa: E402
-from brconsole.core import parse_frames  # noqa: E402
 from brconsole.core import parse_restart_limit  # noqa: E402
 from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: E402
                                 AFTERMATH_SLEEP, DEFAULT_ATTEMPTS,
@@ -24,7 +23,9 @@ from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: 
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                                 UNLIMITED_LIMITS, UNLIMITED_RESTART_LABEL, FormModel,
                                 LogModel, ProgressModel, aftermath_plan, event_line,
-                                fields_from_detail, frames_to_text, guess_state_path,
+                                fields_from_detail, frames_preview, frames_to_text,
+                                frames_to_segments, guess_state_path, new_segment,
+                                segment_label, segments_to_frames,
                                 is_unlimited_restart, restart_label_for,
                                 restart_limits_plan, restore_limits_backup,
                                 scene_to_config, settle_task_action, state_summary,
@@ -104,14 +105,14 @@ class TestSceneHelpers(unittest.TestCase):
             with open(blend, "wb") as f:
                 f.write(b"BLENDER")
             cfg, errors, _ = FormModel(blend=blend, output=os.path.join(d, "o_####"),
-                                       start="1", end="2",
-                                       scene="Scene.002").to_config(parse_frames)
+                                       segments=[new_segment("1", "2")],
+                                       scene="Scene.002").to_config()
             self.assertEqual(errors, [])
             self.assertEqual(cfg.scene, "Scene.002")
             # 占位文案要走 None（= 用工程里激活的那个场景）
             cfg2, _, _ = FormModel(blend=blend, output=os.path.join(d, "o_####"),
-                                   start="1", end="2",
-                                   scene=SCENE_NEED_READ_LABEL).to_config(parse_frames)
+                                   segments=[new_segment("1", "2")],
+                                   scene=SCENE_NEED_READ_LABEL).to_config()
             self.assertIsNone(cfg2.scene)
         finally:
             shutil.rmtree(d, ignore_errors=True)
@@ -166,71 +167,108 @@ class TestFormValidation(unittest.TestCase):
             pass
 
     def _form(self, **kw):
-        base = dict(blend=self.blend, output=self.out, start="1", end="4")
+        base = dict(blend=self.blend, output=self.out,
+                    segments=[new_segment("1", "4")])
         base.update(kw)
         return FormModel(**base)
 
     def test_ok(self):
-        cfg, errors, warns = self._form().to_config(parse_frames)
+        cfg, errors, warns = self._form().to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.frames, [1, 2, 3, 4])
         self.assertEqual(cfg.output_template, self.out)
         self.assertIsNone(cfg.engine)          # KEEP 要翻译成 None（保持工程设置）
 
     def test_missing_blend(self):
-        cfg, errors, _ = self._form(blend="").to_config(parse_frames)
+        cfg, errors, _ = self._form(blend="").to_config()
         self.assertIsNone(cfg)
         self.assertTrue(any("工程文件" in e for e in errors))
 
     def test_blend_not_exists(self):
-        cfg, errors, _ = self._form(blend="D:/nope.blend").to_config(parse_frames)
+        cfg, errors, _ = self._form(blend="D:/nope.blend").to_config()
         self.assertIsNone(cfg)
         self.assertTrue(any("不存在" in e for e in errors))
 
     def test_no_frames(self):
-        cfg, errors, _ = self._form(start="", end="", frames="").to_config(parse_frames)
+        cfg, errors, _ = self._form(segments=[new_segment("", "")]).to_config()
         self.assertIsNone(cfg)
         self.assertTrue(any("帧" in e for e in errors))
 
-    def test_explicit_frames_win(self):
-        cfg, _, _ = self._form(frames="2,5-7").to_config(parse_frames)
-        self.assertEqual(cfg.frames, [2, 5, 6, 7])
+    def test_multiple_discontinuous_segments(self):
+        """★ 多段不连续序列帧 —— 本次新增能力的内核：段列表直接展开成帧号，
+        每段自带步长，段之间重复的帧去重。"""
+        cfg, errors, _ = self._form(segments=[
+            new_segment("1", "10"),          # 每 1 帧
+            new_segment("15"),               # 单帧（只填起帧）
+            new_segment("20", "30", "5"),    # 每 5 帧
+        ]).to_config()
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.frames, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30])
+
+    def test_segment_overlap_is_deduped(self):
+        cfg, errors, _ = self._form(segments=[new_segment("1", "5"),
+                                              new_segment("3", "8")]).to_config()
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.frames, [1, 2, 3, 4, 5, 6, 7, 8])
+
+    def test_start_bigger_than_end_is_swapped(self):
+        cfg, errors, _ = self._form(segments=[new_segment("9", "7")]).to_config()
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.frames, [7, 8, 9])
+
+    def test_blank_segment_is_skipped(self):
+        """刚点「添加一段」还没填的空行不该拦住整个任务。"""
+        cfg, errors, _ = self._form(segments=[new_segment("1", "2"),
+                                              new_segment("", "")]).to_config()
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.frames, [1, 2])
+
+    def test_bad_segment_reports_which_one(self):
+        """报错必须说清是第几段 —— 界面上有好几行，只说"帧范围解析失败"等于没说。"""
+        _, errors, _ = self._form(segments=[new_segment("1", "4"),
+                                            new_segment("2 0", "9")]).to_config()
+        self.assertTrue(any("第 2 段" in e for e in errors), errors)
+
+    def test_zero_step_is_rejected(self):
+        """步长 0 静默当 1 处理会让"每 5 帧"变成每帧都渲 —— 必须报错。"""
+        _, errors, _ = self._form(segments=[new_segment("1", "100", "0")]).to_config()
+        self.assertTrue(any("步长" in e for e in errors), errors)
 
     def test_half_resolution_rejected(self):
-        cfg, errors, _ = self._form(width="1920").to_config(parse_frames)
+        cfg, errors, _ = self._form(width="1920").to_config()
         self.assertIsNone(cfg)
         self.assertTrue(any("宽高" in e for e in errors))
 
     def test_bad_int(self):
-        cfg, errors, _ = self._form(samples="很多").to_config(parse_frames)
+        cfg, errors, _ = self._form(samples="很多").to_config()
         self.assertIsNone(cfg)
         self.assertTrue(any("采样" in e for e in errors))
 
     def test_negative_restarts_means_unlimited(self):
         """-1 / unlimited 是合法输入，表示「一直重启直到渲完」，不该报错。"""
-        cfg, errors, _ = self._form(max_restarts="-1").to_config(parse_frames)
+        cfg, errors, _ = self._form(max_restarts="-1").to_config()
         self.assertEqual(errors, [])
         self.assertTrue(cfg.unlimited_restarts)
 
     def test_unlimited_word(self):
-        cfg, errors, _ = self._form(max_restarts="unlimited").to_config(parse_frames)
+        cfg, errors, _ = self._form(max_restarts="unlimited").to_config()
         self.assertEqual(errors, [])
         self.assertTrue(cfg.unlimited_restarts)
 
     def test_no_progress_limit(self):
-        cfg, errors, _ = self._form(max_no_progress="5").to_config(parse_frames)
+        cfg, errors, _ = self._form(max_no_progress="5").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_no_progress_rounds, 5)
 
     def test_zero_frame_attempts_means_unlimited(self):
-        cfg, errors, _ = self._form(max_frame_attempts="0").to_config(parse_frames)
+        cfg, errors, _ = self._form(max_frame_attempts="0").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_frame_attempts, 0)
 
     def test_numeric_options(self):
         cfg, errors, _ = self._form(samples="128", pct="50", width="1920",
                                     height="1080", engine="CYCLES",
-                                    device="OPTIX", resume=False).to_config(parse_frames)
+                                    device="OPTIX", resume=False).to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.samples, 128)
         self.assertEqual(cfg.resolution_percentage, 50)
@@ -243,7 +281,7 @@ class TestFormValidation(unittest.TestCase):
         weird = os.path.join(self.dir, "scene.txt")
         with open(weird, "wb") as f:
             f.write(b"x")
-        _, errors, warns = self._form(blend=weird).to_config(parse_frames)
+        _, errors, warns = self._form(blend=weird).to_config()
         self.assertEqual(errors, [])
         self.assertTrue(any("扩展名" in w for w in warns))
 
@@ -403,7 +441,7 @@ class TestTkBoot(unittest.TestCase):
 
 
 class TestFramesToText(unittest.TestCase):
-    """帧号列表 → 表单文本（开机续跑回填用）。"""
+    """帧号列表 → 紧凑文本（回显里"合并后是什么"那一句用）。"""
 
     def test_contiguous_run_collapses(self):
         self.assertEqual(frames_to_text([1, 2, 3, 4]), "1-4")
@@ -421,6 +459,113 @@ class TestFramesToText(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(frames_to_text([]), "")
         self.assertEqual(frames_to_text(None), "")
+
+
+class TestFramesToSegments(unittest.TestCase):
+    """帧号列表 → 帧段列表（开机续跑回填界面用）。
+
+    存档里只有展开后的帧号，所以"每 5 帧"是**推断**出来的。这里钉两件事：
+    ① 推断出的段（哪怕段数/步长与用户当初填的不同）能展开回**逐项相等**的帧号；
+    ② 界面要显示的段描述确实是人话。
+    """
+
+    def test_single_run(self):
+        self.assertEqual(frames_to_segments(list(range(1, 241))),
+                         [new_segment("1", "240", "1")])
+
+    def test_step_is_inferred(self):
+        self.assertEqual(frames_to_segments([1, 6, 11, 16]),
+                         [new_segment("1", "16", "5")])
+
+    def test_step_change_starts_a_new_segment(self):
+        self.assertEqual(frames_to_segments([1, 6, 11, 26]),
+                         [new_segment("1", "11", "5"), new_segment("26", "", "")])
+
+    def test_two_element_run(self):
+        self.assertEqual(frames_to_segments([10, 20]),
+                         [new_segment("10", "20", "10")])
+
+    def test_empty(self):
+        self.assertEqual(frames_to_segments([]), [])
+        self.assertEqual(frames_to_segments(None), [])
+
+    def test_roundtrip_is_exact(self):
+        """★ 这条是"开机续跑跑的是同一批帧"的保证。"""
+        for frames in ([1, 2, 3, 4], list(range(1, 9)), [1, 6, 11, 26],
+                       [5], [10, 20], [1, 2, 3, 7, 8], [3, 1, 2], [1, 240, 300, 500, 505]):
+            segs = frames_to_segments(frames)
+            back, errors = segments_to_frames(segs)
+            self.assertEqual(errors, [], frames)
+            self.assertEqual(back, sorted(set(frames)), frames)
+
+    def test_frame_text_roundtrip(self):
+        """帧段 → 文本 → 帧号 也必须回到同一批（回显与 CLI 的 `-f` 是同一套写法）。"""
+        for frames in ([1, 2, 3, 4, 9, 10], list(range(1, 241)) + [300]):
+            segs = frames_to_segments(frames)
+            text = frames_to_text(frames)
+            self.assertTrue(text)                    # 只为确认这条链上文本非空
+            back, errors = segments_to_frames(segs)
+            self.assertEqual((errors, back), ([], sorted(set(frames))), text)
+
+
+class TestSegmentLabel(unittest.TestCase):
+    """一段 → 人话（界面上的实时回显直接显示它，"填了什么就得看到什么"）。"""
+
+    def test_single_frame_never_looks_like_a_range(self):
+        # 只填起帧 = 单帧。回显若写成 "250" 或 "250-"，用户会以为是要渲到工程末帧
+        self.assertEqual(segment_label(new_segment("250")), "第 250 帧")
+        self.assertEqual(segment_label(new_segment("250", "250")), "第 250 帧")
+
+    def test_step_one_is_omitted(self):
+        self.assertEqual(segment_label(new_segment("1", "250", "1")), "1-250")
+
+    def test_step_is_shown(self):
+        self.assertEqual(segment_label(new_segment("1", "100", "5")), "1-100 每 5 帧")
+
+    def test_blank_segment(self):
+        self.assertEqual(segment_label(new_segment("", "")), "（未填）")
+
+    def test_reversed_bounds_are_normalised(self):
+        self.assertEqual(segment_label(new_segment("9", "7")), "7-9")
+
+
+class TestFramesPreview(unittest.TestCase):
+    """界面那行实时回显：内容与合法/非法判定。"""
+
+    def test_ok_text_lists_segments_and_total(self):
+        frames, text, ok = frames_preview([new_segment("1", "4"),
+                                           new_segment("9", "10")])
+        self.assertTrue(ok)
+        self.assertEqual(frames, [1, 2, 3, 4, 9, 10])
+        self.assertIn("共 6 帧", text)
+        self.assertIn("1-4", text)
+        self.assertIn("9-10", text)
+
+    def test_merged_form_shows_up_for_multiple_segments(self):
+        """多段时补一句"合并后"，重叠/相接才看得出来到底渲哪些帧。"""
+        _, text, ok = frames_preview([new_segment("1", "5"), new_segment("3", "8")])
+        self.assertTrue(ok)
+        self.assertIn("共 8 帧", text)
+        self.assertIn("合并后", text)
+
+    def test_error_points_at_the_segment(self):
+        frames, text, ok = frames_preview([new_segment("1", "4"),
+                                           new_segment("x", "9")])
+        self.assertFalse(ok)
+        self.assertEqual(frames, [1, 2, 3, 4])       # 好的那几段仍返回，便于排错
+        self.assertIn("第 2 段", text)
+
+    def test_empty_is_not_ok(self):
+        frames, text, ok = frames_preview([new_segment("", "")])
+        self.assertFalse(ok)
+        self.assertEqual(frames, [])
+        self.assertIn("没有可渲染的帧", text)
+
+    def test_preview_never_lists_a_huge_frame_list(self):
+        """回显不能长到撑破那一行。"""
+        _, text, ok = frames_preview([new_segment("1", "100000")])
+        self.assertTrue(ok)
+        self.assertLess(len(text), 80)
 
 
 class TestRestartLabelFor(unittest.TestCase):
@@ -477,18 +622,27 @@ class TestFormFromConfig(unittest.TestCase):
 
     def test_full_roundtrip(self):
         d = self._dict()
-        cfg, errors, warns = FormModel.from_config(d, "C:/bl/blender.exe").to_config(
-            parse_frames)
+        cfg, errors, warns = FormModel.from_config(d, "C:/bl/blender.exe").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(warns, [])
         self.assertIsNotNone(cfg)
         self.assertEqual(cfg.to_dict(), d)
 
-    def test_frames_become_explicit_list_with_step_one(self):
-        """区间展开要乘 step：回填时必须把 step 置回 1，否则 [1..8] 会变成 [1,3,5,7]。"""
+    def test_frames_are_restored_as_segments_that_expand_back(self):
+        """区间展开要乘步长：回填走 `frames_to_segments`，展开必须逐项回到同一批帧
+        （早先是把 step 置回 1 再填文本；现在段自带步长，判据更强）。"""
         fm = FormModel.from_config(self._dict(frames=list(range(1, 9))))
-        self.assertEqual(fm.step, "1")
-        self.assertEqual(fm.frames, "1-8")
+        self.assertEqual(fm.segments, [new_segment("1", "8", "1")])
+        back, errors = segments_to_frames(fm.segments)
+        self.assertEqual(errors, [])
+        self.assertEqual(back, list(range(1, 9)))
+
+    def test_restored_segments_keep_step(self):
+        """★ 存档里"每 5 帧"的帧号回填后，界面上得看得出是每 5 帧、且展开不变。"""
+        fm = FormModel.from_config(self._dict(frames=[1, 6, 11, 16]))
+        self.assertEqual(fm.segments, [new_segment("1", "16", "5")])
+        back, _ = segments_to_frames(fm.segments)
+        self.assertEqual(back, [1, 6, 11, 16])
 
     def test_carries_fields_that_have_no_widget(self):
         """extra_args / restart_delay 界面上没有控件，但**必须原样带过去**：
@@ -497,7 +651,7 @@ class TestFormFromConfig(unittest.TestCase):
         fm = FormModel.from_config(d, "b.exe")
         self.assertEqual(fm.extra_args, ["--cycles-device", "OPTIX"])
         self.assertEqual(fm.restart_delay, 0.25)
-        cfg, _, _ = fm.to_config(parse_frames)
+        cfg, _, _ = fm.to_config()
         self.assertEqual(cfg.extra_args, ["--cycles-device", "OPTIX"])
         self.assertEqual(cfg.restart_delay, 0.25)
 
@@ -542,7 +696,7 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
 
     def _form(self, restart, attempts, no_progress):
         return FormModel(blend=self.blend, output=os.path.join(self.d, "out", "f_####"),
-                         frames="1-3", max_restarts=restart,
+                         segments=[new_segment("1", "3")], max_restarts=restart,
                          max_frame_attempts=attempts, max_no_progress=no_progress)
 
     def test_only_the_unlimited_label_counts_as_unlimited(self):
@@ -567,8 +721,7 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
         self.assertIsNone(unlimited_limit_fill("瞎写"))
 
     def test_filled_zeros_really_mean_unlimited_in_config(self):
-        cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, *UNLIMITED_LIMITS).to_config(
-            parse_frames)
+        cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, *UNLIMITED_LIMITS).to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_frame_attempts, 0)
         self.assertEqual(cfg.max_no_progress_rounds, 0)
@@ -576,22 +729,21 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
 
     def test_user_can_put_the_guard_back(self):
         """护栏用例：把默认值实现成强制值的话，这条会红。"""
-        cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, "9", "3").to_config(
-            parse_frames)
+        cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, "9", "3").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_frame_attempts, 9)
         self.assertEqual(cfg.max_no_progress_rounds, 3)
         self.assertTrue(cfg.unlimited_restarts)
 
     def test_finite_restart_keeps_the_typed_limits(self):
-        cfg, errors, _ = self._form("5 次（默认）", "9", "7").to_config(parse_frames)
+        cfg, errors, _ = self._form("5 次（默认）", "9", "7").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_frame_attempts, 9)
         self.assertEqual(cfg.max_no_progress_rounds, 7)
         self.assertFalse(cfg.unlimited_restarts)
 
     def test_negative_no_progress_still_rejected(self):
-        _, errors, _ = self._form("5 次（默认）", "3", "-2").to_config(parse_frames)
+        _, errors, _ = self._form("5 次（默认）", "3", "-2").to_config()
         self.assertTrue(any("无进展" in e for e in errors))
 
     def test_unlimited_roundtrip_is_stable(self):
@@ -601,7 +753,7 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
                       output_template=os.path.join(self.d, "out", "f_####"),
                       max_restarts=-1, max_frame_attempts=0,
                       max_no_progress_rounds=0).to_dict()
-        cfg, errors, _ = FormModel.from_config(d, "b.exe").to_config(parse_frames)
+        cfg, errors, _ = FormModel.from_config(d, "b.exe").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.to_dict(), d)
 
@@ -652,7 +804,7 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
         self.assertEqual((a, n), (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
         self.assertIsNone(left)                     # 用完即弃
 
-        cfg, errors, _ = self._form("5 次（默认）", a, n).to_config(parse_frames)
+        cfg, errors, _ = self._form("5 次（默认）", a, n).to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_restarts, 5)
         self.assertEqual(cfg.max_frame_attempts, int(DEFAULT_ATTEMPTS))
@@ -681,7 +833,7 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
                                       backup)
         fm.max_frame_attempts, fm.max_no_progress = a, n
         fm.max_restarts = "10 次"
-        cfg, errors, _ = fm.to_config(parse_frames)
+        cfg, errors, _ = fm.to_config()
         self.assertEqual(errors, [])
         self.assertEqual((cfg.max_restarts, cfg.max_frame_attempts,
                           cfg.max_no_progress_rounds),

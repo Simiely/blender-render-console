@@ -1,7 +1,8 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-05（commit `da8abe6`）v0.7.0 · 过夜挂机三件套 + 版本切换
-> v0.6.6（单实例锁）、v0.6.5（第二轮全量审核）、v0.6.4（替身分叉 / 双扩展名 / 真值判断）与更早版本见 CHANGELOG
+> 📌 **文档基线**：2026-10-06（commit `PIN_COMMIT`）v0.8.0 · 多段不连续序列帧 + 界面三处错乱修复
+> v0.7.0（过夜挂机三件套 + 版本切换）、v0.6.6（单实例锁）、v0.6.5（第二轮全量审核）、
+> v0.6.4（替身分叉 / 双扩展名 / 真值判断）与更早版本见 CHANGELOG
 > v0.6.2（磁盘空间预检 + 架构度量/边界检查工具）、v0.6.1、v0.6.0 见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
@@ -69,6 +70,16 @@
 45. **"兜底"类的文档承诺要对照实现验一遍，而且要连着下一个环节一起验**：`state.load` 的 docstring 写"状态文件坏了宁可从头来"，但类型转换写在 try 外面 —— 一半的坏文件照样抛异常；更隐蔽的是 `blend: null` 这类**能通过 load、死在下一个环节**的坏数据（`os.path.abspath(None)` 抛 TypeError），炸的位置在开机认领这条无人值守路径上，窗口版 stderr 无处可去，现象是"功能静默失效"。对策：① 写完兜底逻辑，用"**合法 JSON + 错误字段值**"实测一遍（只测半个文件这种老Case测不出）；② 无人值守路径（`root.after` 拉起的回调）必须整段兜住并**留下日志** —— 那种场景下日志是唯一的线索。
 44. **"测试替身"里的常量表会跟真实现分叉，而且分叉时测试照样全绿**：`tests/fake_blender.py` 自己有一份输出扩展名表，只有 PNG/JPEG/EXR **三项**，而真 driver 有 13 项 —— 于是"TIFF 的输出文件名对不对"这件事，**用假 Blender 跑的所有测试都验不到**，打包自检用的又正是假 Blender。这类分叉不会报错、不会变红，只会在用户真用 TIFF 时以"文件名莫名多了个后缀"的形式出现。对策：**给替身与真实现之间加一条逐项相等的契约用例**（`tests/test_driver_contract.py`），改了一边没改另一边立刻红。同理，只要"同一个规则在两处各写一遍"，就该有一条测试把它们锁在一起。
 
+47. **tkinter 里"动态增删的行"，位置必须由一处集中重排，不能拿列表长度当网格行号**：帧段列表第一版在 `_add_segment_row` 里写 `row.grid(row=len(self._seg_rows))` —— 删掉中间一段后，列表长度与"已被占用的网格行"就对不上了，接着添加的新段会**落在同一格里**：模型里明明有段 1/2/3，屏幕上只画得出段 1 和段 3（重叠的那行被盖住），而**单测全绿**（`guimodel` 里段数据完好无损）。现在位置只由 `_sync_segment_ui()` 按 `enumerate` 统一重排。教训：这类 bug 只有"数一数屏幕上到底画了几行"才发现得了 —— 断言要写成 `winfo_ismapped()` 的**行数**和 `grid_info()["row"]` 的**序列**，别只断言数据模型。
+
+48. **`wrap="none"` 的 Text + 只有竖向滚动条 = 长行被静默裁掉**：日志区原来就是这样，而 Windows 路径动辄上百字符 —— 出错时最关键的那一行往往正好是被裁掉的那一行。改 `wrap="word"` 前先实测过才知道它够不够：本机 `tmp_probe/probe_wrap.py` 对 none/word/char 三种模式量了"显示行数"（420px 宽下 3 段文字：none=3 行＝没换行，word=5、char=5＝都换行了），也就是 **`word` 对超长的单个 token（路径）同样会在边界处断开**，不必退到 `char`。同一类问题在 Label 上是另一个开关：`wraplength`，且要跟着容器宽度动态设（`<Configure>` + `max(320, e.width-8)`）。
+
+49. **`int(x or 1)` 会把有意义的 `0` 当成"没填"**：步长写 `int(step or 1)`，于是 `--step 0` / `步长=0` 被静默当成 1 ——"我明明写了每 5 帧"变成每帧都渲，方向恰好相反且不报错。凡是 `0` 有语义（不限、不启用）的数值参数，一律显式判 `None`/空串，再单独校验下界。同族写法 `x if x else default` 也一样危险。
+
+50. **"同一个展开规则"必须收成一个原语，两条入口都调它**：帧号展开（`range(a, b+1, step)`）原先只在 `parse_frames` 里；界面改成帧段列表后就出现了"再写一遍"的诱惑 —— 那会让 CLI 渲的帧与界面显示的帧慢慢漂开且**不报错**。现在收成 `core.expand_segment()`，`parse_frames`（文本入口）与 `guimodel.segments_to_frames()`（段入口）都调它，并用 `test_matches_expand_segment` 把两条路锁在一起。判断"要不要收"的标准很朴素：**这条规则我能不能用一句话说清**（"闭区间 + 按步长取，起大于止就交换"能），能说清就该只有一份实现。
+
+51. **Blender 5.x 的 `Action` 已经没有 `fcurves` 了**：4.4 起换成 slotted actions，老写法 `for fc in obj.animation_data.action.fcurves` 直接 `AttributeError: 'Action' object has no attribute 'fcurves'`（实测 5.2.2）。造测试场景时**别去改插值**——想要"每帧画面都不同"，直接**逐帧** `keyframe_insert`（`rotation_euler=(0,0,(f-1)*0.5)`），插值方式就无所谓了。另外用 `--python-expr` 建场景**必须带 `--python-exit-code 1`**：不带的话上面那个 AttributeError 会被 Blender 吞掉，只剩"文件不存在"这一个现象（AGENTS 坑 5 的原样重演）。
+
 ## 约定
 
 - 命令一律用**绝对路径**调 `blender.exe`，不依赖 PATH
@@ -84,11 +95,13 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（341 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（391 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
-# 真机冒烟 6 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景（需要 Blender 5.2）
+# 真机冒烟 7 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景
+#              → **多段不连续帧**（-f 1-3x2,5；比三张图的 sha256，证明真的跳着渲了）（需要 Blender 5.2）
 python tools/smoke_real_blender.py
+python tools/smoke_real_blender.py --only 7     # 只跑多段不连续帧那一场
 
 # 打包成两个单文件 exe（产出后自动跑 5 项自检：--help / 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
 python tools/build_exe.py --both
@@ -98,6 +111,7 @@ python tools/make_icon.py
 python tools/make_icon.py --sheet sheet.png
 
 # 界面：直接打开 / 载入工程 / 自检跑一轮模拟任务（用假 Blender）
+# `--demo` 的默认示例就是**两段不连续帧**（1-4 + 9-10，共 6 帧）—— 顺带验证段列表真的按段逐帧渲
 python main.py
 python main.py --gui 工程.blend
 python main.py --demo
@@ -110,6 +124,12 @@ type "%LOCALAPPDATA%\blender-render-console\pending.json"
 # 抓界面截图（验证布局与配色；--probe 采样像素颜色，--list 列窗口标题）
 python tools/capture_screen.py --list
 python tools/capture_screen.py C:\Temp\ui.png --window "blender-render-console" --probe "400,79;400,500"
+
+# 帧段列表的真机核对（20 项：增段/删段/段号重排/行不重叠/回显/非法段定位/日志折行 + 截图）
+# ⚠️ 这两个探针在**会话工作区的 tmp_probe/**，不在仓库里；换机后按需重建
+python ..\tmp_probe\gui_segments.py
+# Tk 三种 wrap 模式的实测对照（none / word / char）
+python ..\tmp_probe\probe_wrap.py
 
 # 只读一个工程的渲染配置（排错用）
 python -m brconsole.inspect 工程.blend

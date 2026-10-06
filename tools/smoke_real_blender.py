@@ -13,6 +13,7 @@
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -114,7 +115,7 @@ def check(name, ok, detail=""):
 
 def case_plain_render(blend, out_dir):
     """场景一：完整跑一轮，6 帧全出。"""
-    log("\n[1/6] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
+    log("\n[1/7] 完整渲染 6 帧（Cycles / CPU / 8 samples）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "6", "-E", "CYCLES", "--samples", "8",
@@ -134,7 +135,7 @@ def case_plain_render(blend, out_dir):
 
 def case_kill_and_resume(blend, out_dir):
     """场景二：渲染中途杀掉 Blender，验证会自动重启并从断点接上。"""
-    log("\n[2/6] 中途杀掉 Blender，验证崩溃续跑")
+    log("\n[2/7] 中途杀掉 Blender，验证崩溃续跑")
     clean(out_dir)
     # 每帧要够慢（~1s），否则检测循环会一帧都抓不到中间态，等于没测到崩溃
     cmd = [PY, os.path.join(ROOT, "main.py"), blend, "-s", "1", "-e", "6",
@@ -188,7 +189,7 @@ def case_kill_and_resume(blend, out_dir):
 
 def case_eevee(blend, out_dir):
     """场景三：切 EEVEE，验证引擎别名（5.2 里可能叫 BLENDER_EEVEE_NEXT）能落地。"""
-    log("\n[3/6] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
+    log("\n[3/7] EEVEE 单帧（验证引擎别名 + 首帧 shader 预热）")
     clean(out_dir)
     t0 = time.time()
     rc, out = run_cli([blend, "-s", "1", "-e", "2", "-E", "BLENDER_EEVEE", "--samples", "16",
@@ -209,7 +210,7 @@ def case_eevee(blend, out_dir):
 
 def case_inspect(blend):
     """场景四：只读工程配置（不渲染）——验证 inspect.py 的 bpy 取数逻辑。"""
-    log("\n[4/6] 读取工程配置（无头 Blender 读 .blend，不渲染）")
+    log("\n[4/7] 读取工程配置（无头 Blender 读 .blend，不渲染）")
     from brconsole.inspect import output_template_from, read_blend_info
     t0 = time.time()
     info = read_blend_info(BLENDER, blend)
@@ -303,7 +304,7 @@ def case_multi_scene(blend, out_dir):
 
     ⚠️ 这一项**不能**传 `--res`：一覆盖分辨率，两个场景就分不出来了。
     """
-    log("\n[6/6] 多场景：-S 选场景（含场景名写错时的告警与回落）")
+    log("\n[6/7] 多场景：-S 选场景（含场景名写错时的告警与回落）")
     ok = True
     for name, want in (("SceneA", (64, 48)), ("SceneB", (128, 96))):
         d = os.path.join(out_dir, name.lower())
@@ -338,6 +339,108 @@ def case_multi_scene(blend, out_dir):
 CANARY_FAILS = 6        # 故意大于默认上限 5 —— 这样两个分支的结果才会分叉
 
 
+def make_animated_scene(path, frames=6, samples=8):
+    """带关键帧动画的极简场景（立方体绕 Z 轴逐帧转固定角度）。
+
+    为什么单为场景七造一个：验"多段不连续帧"时**必须比图的内容**才证得动 ——
+    静态场景帧帧一样，就算帧号全跳错了、或者干脆照着 1,2,3 渲，产物也长得一模一样，
+    测试会给出一个假的"已验证"。
+
+    ⚠️ 两个实测踩到的点：
+    1. **逐帧**打关键帧、不去改插值 —— Blender 5.x 的 `Action` 已经没有 `fcurves` 属性了
+       （4.4 起换成 slotted actions：`action.layers[].strips[].channelbag(slot).fcurves`），
+       照老写法改插值会直接 `AttributeError`。每帧一个键，插值方式就无所谓了。
+    2. 建场景这条命令也带 `--python-exit-code 1`：否则上面那个 AttributeError 会被 Blender
+       吞掉、只留一个"文件不存在"的现象，白猜半天（AGENTS 关键坑 5）。
+    """
+    expr = (
+        "import bpy;"
+        "sc=bpy.context.scene;"
+        "sc.render.engine='CYCLES';"
+        "sc.cycles.device='CPU';"
+        "sc.cycles.samples=%d;"
+        "sc.render.resolution_x=160;"
+        "sc.render.resolution_y=120;"
+        "sc.render.resolution_percentage=100;"
+        "sc.frame_start=1;sc.frame_end=%d;"
+        "sc.render.image_settings.file_format='PNG';"
+        "cu=bpy.data.objects['Cube'];"
+        "cu.rotation_mode='XYZ';"
+        "[(setattr(cu,'rotation_euler',(0,0,(f-1)*0.5)),"
+        "  cu.keyframe_insert('rotation_euler',frame=f)) for f in range(1,%d+1)];"
+        "bpy.ops.wm.save_as_mainfile(filepath=r'%s')" % (samples, frames, frames, path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    p = subprocess.run([BLENDER, "-b", "--factory-startup", "--python-exit-code", "1",
+                        "--python-expr", expr], capture_output=True)
+    if not os.path.exists(path):
+        raise SystemExit("建动画场景失败，rc=%s\n%s"
+                         % (p.returncode, p.stdout.decode("utf-8", "replace")[-800:]))
+    return path
+
+
+def sha256(path):
+    """取文件的 sha256 十六进制串（只读一次，出错返回 None）。
+
+    用**内容哈希**而不是"文件大小/修改时间"判断"两张图是不是同一张"：
+    大小相同的不同帧完全可能，而我们要的正是"帧真的跳了、渲的是不同画面"。
+    """
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def case_multi_segment(blend, out_dir):
+    """场景七：**多段不连续**的序列帧（含每段自带步长）—— 本次新增的能力。
+
+    `-f 1-3x2,5` 的含义：第 1 段「1-3 每 2 帧」= 1、3，第 2 段「5」= 单帧，
+    合起来 **1、3、5**。三条断言缺一不可：
+
+    ① 文件名正好是 `0001/0003/0005`（跳帧是否真的跳了）
+    ② 三张图的 **sha256 互不相同**（帧号对了但内容没跟着变的话，这条会红）
+    ③ 断点文件里的帧列表 = `[1, 3, 5]`（续跑依据，写错了下次开机就渲别的帧）
+    """
+    log("\n[7/7] 多段不连续帧：-f 1-3x2,5 → 只出 1/3/5，且三张图内容各不相同")
+    clean(out_dir)
+    state = os.path.join(out_dir, ".state.json")
+    rc, out = run_cli([blend, "-f", "1-3x2,5", "-E", "CYCLES", "--samples", "8",
+                       "--res", "160x120", "--device", "CPU", "--blender", BLENDER,
+                       "-o", os.path.join(out_dir, "seg_####"),
+                       "--log", os.path.join(out_dir, "blender.log"),
+                       "--state", state])
+    pngs = sorted(glob.glob(os.path.join(out_dir, "seg_*.png")))
+    names = [os.path.basename(p) for p in pngs]
+    sizes = [png_size(p) for p in pngs]
+    digests = [sha256(p) for p in pngs]
+
+    ok = check("退出码 0", rc == 0, "rc=%s" % rc)
+    ok &= check("只出 3 张图", len(pngs) == 3, "实际 %d 张：%s" % (len(pngs), names))
+    ok &= check("文件名正是 0001/0003/0005",
+                names == ["seg_0001.png", "seg_0003.png", "seg_0005.png"], str(names))
+    ok &= check("三张图都是 160x120 的有效 PNG",
+                sizes == [(160, 120)] * 3, str(sizes))
+    ok &= check("三张图内容互不相同（证明真的跳着渲了，不是连渲 1/2/3）",
+                len(set(digests)) == 3 and None not in digests,
+                "%d 种内容" % len(set(digests)))
+    for f in ("1", "3", "5"):
+        ok &= check("日志里有「帧 %s 完成」" % f, ("帧 %s 完成" % f) in out)
+    ok &= check("没有渲第 2/4/6 帧", all(("帧 %s 完成" % f) not in out
+                                      for f in ("2", "4", "6")))
+
+    frames = None
+    try:
+        with open(state, "r", encoding="utf-8") as fp:
+            frames = json.load(fp).get("frames")
+    except (OSError, ValueError):
+        pass
+    ok &= check("断点文件里的帧列表 = [1, 3, 5]", frames == [1, 3, 5], str(frames))
+    return ok, out
+
+
 def make_canary(path, blender, fails=CANARY_FAILS):
     """造一个「前 fails 次启动直接失败，之后原样转交真 Blender」的 .bat 启动器。
 
@@ -345,7 +448,7 @@ def make_canary(path, blender, fails=CANARY_FAILS):
     什么时候被杀，每次跑都不一样，实测崩溃次数在 5~7 之间浮动，断言必然时灵时不灵。
     而"一直重启"要验证的恰恰是**次数**，所以把"崩"变成确定事件；真渲染仍由真 Blender 完成。
 
-    （外部 taskkill 的真实场景另有 [2/6] 覆盖，两者互补。）
+    （外部 taskkill 的真实场景另有 [2/7] 覆盖，两者互补。）
     """
     # ⚠️ 这里用了 % 风格格式化，所以批处理自己的 % 全部要写成 %% 转义；
     # ⚠️ 转交路径必须是反斜杠 —— cmd.exe 不认正斜杠，写成 `C:/...exe` 会找不到而返回 1，
@@ -378,7 +481,7 @@ def case_unlimited_restart(blend12, out_dir, fails=CANARY_FAILS):
     两侧都关掉 no-progress 护栏（`--max-no-progress 0`），否则护栏会先于重启上限生效，
     分不清到底是谁让任务停下的 —— 少一个变量的对照才说明问题。
     """
-    log("\n[5/6] 「一直重启」A/B 对照：同一个「连崩 %d 次」启动器，两种上限" % fails)
+    log("\n[5/7] 「一直重启」A/B 对照：同一个「连崩 %d 次」启动器，两种上限" % fails)
     ok = True
 
     for tag, limit, expect_giveup in (("A 上限 5 次", "5", True),
@@ -421,7 +524,8 @@ def case_unlimited_restart(blend12, out_dir, fails=CANARY_FAILS):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true", help="保留产物目录")
-    ap.add_argument("--only", choices=["1", "2", "3", "4", "5", "6"], help="只跑某一个场景")
+    ap.add_argument("--only", choices=["1", "2", "3", "4", "5", "6", "7"],
+                    help="只跑某一个场景")
     args = ap.parse_args()
 
     if not os.path.exists(BLENDER):
@@ -431,7 +535,9 @@ def main():
     blend = make_scene(os.path.join(WORK, "smoke.blend"))
     blend12 = make_scene(os.path.join(WORK, "smoke12.blend"), frames=12)
     blend_multi = make_multi_scene(os.path.join(WORK, "multi.blend"))
-    log("场景文件：%s / %s / %s" % (blend, blend12, blend_multi))
+    blend_anim = make_animated_scene(os.path.join(WORK, "anim.blend"))
+    log("场景文件：%s / %s / %s / %s"
+        % (blend, blend12, blend_multi, blend_anim))
 
     results = []
     try:
@@ -447,6 +553,8 @@ def main():
             results.append(case_unlimited_restart(blend12, os.path.join(WORK, "out5")))
         if args.only in (None, "6"):
             results.append(case_multi_scene(blend_multi, os.path.join(WORK, "out6")))
+        if args.only in (None, "7"):
+            results.append(case_multi_segment(blend_anim, os.path.join(WORK, "out7")))
     finally:
         if not args.keep:
             try:

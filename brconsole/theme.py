@@ -18,6 +18,8 @@ MUTED = "#9aa0a6"
 ACCENT = "#0e639c"
 ACCENT_HOVER = "#1177bb"
 OK = "#4ec9b0"
+#: 需要用户注意的那类提示（帧范围填错了之类）—— 深色底上要够亮才看得清
+WARN = "#f48771"
 
 # 日志区（等宽字体，比正文更暗一点）
 LOG_BG = "#181818"
@@ -46,6 +48,7 @@ def apply(root):
     style.configure("Muted.TLabel", background=PANEL, foreground=MUTED)
     style.configure("Accent.TLabel", background=PANEL, foreground="#8ab4f8")
     style.configure("OK.TLabel", background=PANEL, foreground=OK)
+    style.configure("Warn.TLabel", background=PANEL, foreground=WARN)
 
     style.configure("TLabelframe", background=PANEL, bordercolor=BORDER,
                     relief="solid", borderwidth=1)

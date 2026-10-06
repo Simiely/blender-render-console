@@ -40,8 +40,10 @@ def build_parser():
     p.add_argument("blend", help=".blend 工程文件")
     p.add_argument("-s", "--start", type=int, help="起始帧")
     p.add_argument("-e", "--end", type=int, help="结束帧")
-    p.add_argument("--step", type=int, default=1, help="帧步长（默认 1）")
-    p.add_argument("-f", "--frames", help="显式帧列表，如 1-10,15,20-25")
+    p.add_argument("--step", type=int, default=1, help="帧步长（默认 1；区间可自带步长，见 -f）")
+    p.add_argument("-f", "--frames",
+                   help="帧列表，支持多段不连续与每段自带步长：1-10,15,20-25 / 1-100x5,300-400x2"
+                        "（填了就只用它，忽略 -s/-e）")
     p.add_argument("-S", "--scene",
                    help="渲染哪个场景（工程里有多个场景时用）；不给就用工程里激活的那个")
     p.add_argument("-o", "--output", help="输出模板（含 ####，如 out/frame_####）或输出目录")
