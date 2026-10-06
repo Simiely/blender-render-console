@@ -10,11 +10,12 @@
 """
 
 import os
+import time
 from collections import deque
 
 from .core import (UNLIMITED, complete_output_template, expand_segment,
                    parse_restart_limit, state_file_for)
-from .eta import fmt_duration
+from .eta import fmt_clock, fmt_duration
 from .state import JobState
 
 KEEP = ""          # 下拉框里"保持工程设置"对应的实际值就是空
@@ -618,11 +619,18 @@ class ProgressModel(object):
         self.error = ""
         self.stalled = False
         self.last_message = ""
+        #: 本任务是什么时候点开始跑的（job_start 收到时记）/ 是什么时候结束的
+        #: （job_done 收到时记）—— 显示「预计 x 完成 / 已于 x 完成」用。
+        #: 都是**本地墙钟**，不问 core 要（core 只报相对量 elapsed / eta_sec）。
+        self.started_at = None
+        self.finished_at = None
 
     def on_event(self, kind, ev):
         if kind == "job_start":
             self.running = True
             self.finished = False
+            self.started_at = time.time()
+            self.finished_at = None
             self.total = ev.get("total") or 0
             self.done = 0
             self.failed = 0
@@ -673,6 +681,7 @@ class ProgressModel(object):
         elif kind == "job_done":
             self.running = False
             self.finished = True
+            self.finished_at = time.time()
             self.done = len(ev.get("done") or [])
             self.failed = len(ev.get("failed") or {})
             self.exhausted = len(ev.get("exhausted") or [])
@@ -697,29 +706,48 @@ class ProgressModel(object):
         if not self.running and not self.finished:
             return "就绪"
         if self.cancelled:
-            return "已取消 · 完成 %d/%d · 用时 %s" % (
+            text = "已取消 · 完成 %d/%d · 用时 %s" % (
                 self.done, self.total, fmt_duration(self.elapsed))
+            if self.finished_at:
+                text += " · 停止于 %s" % fmt_clock(self.finished_at, seconds=True)
+            return text
         if self.finished:
             tail = "用时 %s" % fmt_duration(self.elapsed)
             if self.failed or self.exhausted:
                 tail += " · 失败 %d · 放弃 %d" % (self.failed, self.exhausted)
+            # 实际完成时刻 —— 与预估时间区分开，这才是"真的渲完"的时间点
+            if self.finished_at:
+                tail += " · 已于 %s 完成" % fmt_clock(self.finished_at, seconds=True)
             return ("全部完成 %d/%d · %s" if self.ok
                     else "未完成 %d/%d · %s") % (self.done, self.total, tail)
         if self.current_frame is not None:
-            return "正在渲染帧 %s · 已完成 %d/%d" % (
-                self.current_frame, self.done, self.total)
+            return "正在渲染帧 %s · 已完成 %d/%d%s" % (
+                self.current_frame, self.done, self.total, self._elapsed_suffix())
         if self.stalled:
-            return "%s（已有一会儿没有新输出，属于正常现象）" % (self.phase or "正在渲染")
+            return "%s（已有一会儿没有新输出，属于正常现象）%s" % (
+                self.phase or "正在渲染", self._elapsed_suffix())
         if self.phase:
-            return self.phase
-        return "已完成 %d/%d" % (self.done, self.total)
+            return "%s%s" % (self.phase, self._elapsed_suffix())
+        return "已完成 %d/%d%s" % (self.done, self.total, self._elapsed_suffix())
+
+    def _elapsed_suffix(self):
+        """运行中那几行尾巴上的「已用 X」—— 与 ETA（还剩多久）是一对：
+        一个回答"跑了多久了"，一个回答"还要多久"。
+        """
+        if self.started_at is None:
+            return ""
+        return " · 已用 %s" % fmt_duration(time.time() - self.started_at)
 
     def eta_text(self):
         if self.finished or not self.running:
             return ""
         if self.eta_sec is None:
             return "ETA 计算中…"
-        return "ETA %s（%s）" % (fmt_duration(self.eta_sec), self.eta_mode or "-")
+        # ETA 是"还剩多久"；下面这句把它换算成"预计几点几分完成" ——
+        # 过夜挂机时，人真正想看的往往就是这个（今天只显 HH:MM，跨天带日期，见 fmt_clock）
+        finish = time.time() + self.eta_sec
+        return "ETA %s（%s）· 预计 %s 完成" % (
+            fmt_duration(self.eta_sec), self.eta_mode or "-", fmt_clock(finish))
 
     def per_frame_text(self):
         return ("单帧 %s" % fmt_duration(self.per_frame)) if self.per_frame else ""

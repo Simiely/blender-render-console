@@ -354,6 +354,88 @@ class TestProgressModel(unittest.TestCase):
         self.assertEqual(p.fraction, 0.0)
 
 
+class TestCompletionClock(unittest.TestCase):
+    """实际完成时刻：任务跑完，状态行必须写明「已于 x 完成」（与预估时间分开）。
+
+    开工/结束的时刻是**界面上记**的（core 只报相对量 elapsed/eta_sec），
+    所以这组用例钉的是"事件到达 → 时刻被记下 → 文案带上时刻"这条链。
+    """
+
+    def test_job_start_and_job_done_record_clock(self):
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 2})
+        self.assertIsNotNone(p.started_at)
+        self.assertIsNone(p.finished_at)
+        p.on_event("job_done", {"done": [1, 2], "total": 2, "ok": True,
+                                "elapsed": 3.0, "failed": {}, "exhausted": [],
+                                "restarts": 0})
+        self.assertIsNotNone(p.finished_at)
+        text = p.status_text()
+        self.assertIn("已于", text)
+        self.assertIn("完成", text)
+        self.assertRegex(text, r"\d{2}:\d{2}:\d{2}")
+
+    def test_failed_finish_also_shows_clock(self):
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 4})
+        p.on_event("job_done", {"done": [1, 2], "total": 4, "ok": False,
+                                "elapsed": 5.0, "failed": {3: {}}, "exhausted": [4],
+                                "restarts": 1})
+        text = p.status_text()
+        self.assertIn("未完成", text)
+        self.assertIn("已于", text)
+
+    def test_cancelled_says_stopped_not_completed(self):
+        """取消不是"完成" —— 不能说「已于 x 完成」，要说"停止于"。"""
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 4})
+        p.on_event("job_done", {"done": [1], "total": 4, "ok": False, "cancelled": True,
+                                "elapsed": 5.0, "failed": {}, "exhausted": [],
+                                "restarts": 0})
+        text = p.status_text()
+        self.assertIn("已取消", text)
+        self.assertIn("停止于", text)
+        self.assertNotIn("已于", text)
+
+    def test_eta_text_shows_estimated_finish_clock(self):
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 10})
+        p.eta_sec = 120.0
+        p.eta_mode = "EMA"
+        text = p.eta_text()
+        self.assertIn("ETA", text)
+        self.assertIn("预计", text)
+        self.assertIn("完成", text)
+        self.assertRegex(text, r"\d{2}:\d{2}")
+
+    def test_eta_text_while_estimating_has_no_clock(self):
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 10})
+        self.assertEqual(p.eta_text(), "ETA 计算中…")
+
+    def test_running_shows_elapsed(self):
+        """运行中状态行要带「已用 X」（与 ETA 是一对：跑了多久 / 还要多久）。"""
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 10})
+        p.on_event("frame_start", {"frame": 3})
+        text = p.status_text()
+        self.assertIn("正在渲染帧 3", text)
+        self.assertIn("已用", text)
+
+    def test_elapsed_hidden_before_start(self):
+        p = ProgressModel()
+        self.assertNotIn("已用", p.status_text())
+
+    def test_finished_hides_eta(self):
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 2})
+        p.eta_sec = 30.0
+        p.on_event("job_done", {"done": [1, 2], "total": 2, "ok": True,
+                                "elapsed": 3.0, "failed": {}, "exhausted": [],
+                                "restarts": 0})
+        self.assertEqual(p.eta_text(), "")
+
+
 class TestLogModel(unittest.TestCase):
     def test_drain_and_clear(self):
         m = LogModel()

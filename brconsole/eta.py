@@ -121,3 +121,22 @@ def fmt_duration(secs):
     if h:
         return "%dh%02dm%02ds" % (h, m, s)
     return "%02dm%02ds" % (m, s)
+
+
+def fmt_clock(ts, now=None, seconds=False):
+    """时间戳 → 今天显 `HH:MM`；跨天显 `MM-DD HH:MM`（`seconds=True` 补秒）。
+
+    界面/终端上给用户看的**时刻**一律走这里，别在各处手写 `strftime` ——
+    「今天 23:59」与「明天 06:30」如果光靠 `%H:%M` 就分不清，而过夜挂机
+    恰恰是"跨天才最常见"的场景。
+
+    `now` 仅用于测试（让断言与时间无关），生产代码不传。
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    lt = _time.localtime(ts)
+    ln = _time.localtime(now)
+    same_day = (lt.tm_year, lt.tm_mon, lt.tm_mday) == (ln.tm_year, ln.tm_mon, ln.tm_mday)
+    if same_day:
+        return _time.strftime("%H:%M:%S" if seconds else "%H:%M", lt)
+    return _time.strftime("%m-%d %H:%M:%S" if seconds else "%m-%d %H:%M", lt)

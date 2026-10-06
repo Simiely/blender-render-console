@@ -14,7 +14,7 @@ import time
 from . import locate, power
 from .core import (JobConfig, RenderJob, complete_output_template, parse_frames,
                    parse_restart_limit)
-from .eta import fmt_duration
+from .eta import fmt_clock, fmt_duration
 
 
 def _non_negative_int(text):
@@ -157,10 +157,11 @@ class ConsoleReporter(object):
                           ev.get("scene") or "（工程默认）"))
             return
         if kind == "job_done":
-            self._line("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s"
+            self._line("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s | 完成于 %s"
                        % (len(ev.get("done") or []), ev.get("total", 0),
                           len(ev.get("failed") or {}), len(ev.get("exhausted") or []),
-                          ev.get("restarts", 0), fmt_duration(ev.get("elapsed"))))
+                          ev.get("restarts", 0), fmt_duration(ev.get("elapsed")),
+                          fmt_clock(time.time(), seconds=True)))
             if ev.get("cancelled"):
                 self._line("  已取消（进度已保存，下次同命令可续跑）")
             elif not ev.get("ok"):
@@ -212,7 +213,13 @@ def main(argv=None):
         return 2
 
     # ---- 帧范围 ----
-    frames = parse_frames(args.frames, args.start, args.end, args.step)
+    # ⚠️ `parse_frames` 的 ValueError 是**给人看的中文提示**（"第 2 段「abc」看不懂…"），
+    # 必须接住 —— 放任它变成 traceback，用户就会在错误信息最后几行找自己的错在哪。
+    try:
+        frames = parse_frames(args.frames, args.start, args.end, args.step)
+    except ValueError as e:
+        print("帧范围不对：%s" % e)
+        return 2
     if not frames:
         print("没有指定帧范围：用 -s/-e 或 -f")
         return 2

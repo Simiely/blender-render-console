@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from brconsole.eta import EtaEstimator, fmt_duration  # noqa: E402
+from brconsole.eta import EtaEstimator, fmt_clock, fmt_duration  # noqa: E402
 
 
 class TestEta(unittest.TestCase):
@@ -94,6 +94,34 @@ class TestEta(unittest.TestCase):
         self.assertEqual(fmt_duration(65.0), "01m05s")
         self.assertEqual(fmt_duration(3725.0), "1h02m05s")
         self.assertEqual(fmt_duration(-1), "0.0s")
+
+
+class TestFmtClock(unittest.TestCase):
+    """时刻显示：今天只显 HH:MM；跨天带日期（过夜挂机恰恰跨天最常见）。"""
+
+    def _mktime(self, y, m, d, hh, mm, ss):
+        import time as _t
+        return _t.mktime((y, m, d, hh, mm, ss, 0, 0, -1))
+
+    def test_same_day_shows_only_time(self):
+        now = self._mktime(2026, 10, 7, 20, 0, 0)
+        ts = self._mktime(2026, 10, 7, 23, 45, 30)
+        self.assertEqual(fmt_clock(ts, now=now), "23:45")
+        self.assertEqual(fmt_clock(ts, now=now, seconds=True), "23:45:30")
+
+    def test_other_day_shows_date(self):
+        """明天 06:30 若只显 "06:30"，会跟"今天 06:30"分不清。"""
+        now = self._mktime(2026, 10, 7, 20, 0, 0)
+        ts = self._mktime(2026, 10, 8, 6, 30, 5)
+        self.assertEqual(fmt_clock(ts, now=now), "10-08 06:30")
+        self.assertEqual(fmt_clock(ts, now=now, seconds=True), "10-08 06:30:05")
+
+    def test_now_defaults_to_real_clock(self):
+        import time as _t
+        ts = _t.time()
+        text = fmt_clock(ts)
+        self.assertRegex(text, r"^\d{2}:\d{2}$")
+
 
 
 if __name__ == "__main__":
