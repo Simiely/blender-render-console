@@ -54,6 +54,9 @@ def main():
     p.add_argument("--sleep", type=float, default=0.05, help="每帧假装渲染多久")
     p.add_argument("--no-native", action="store_true", help="不吐原生行")
     p.add_argument("--eof-early", action="store_true", help="不发 all_done 就退出（模拟被杀）")
+    p.add_argument("--missing-scene", action="store_true",
+                   help="模拟「要渲的场景在工程里不存在」：start 事件带 scene_ok=False，"
+                        "然后照常渲默认场景（真机 5.2.2 就是这样：只打一行提示、退出码 0）")
     args = p.parse_args()
 
     with open(args.job, "r", encoding="utf-8") as f:
@@ -68,8 +71,15 @@ def main():
         native("Fra: %d | Mem: 1M | Loading render kernels (may take a few minutes the first time)" % frames[0])
         native("Fra: %d | Mem: 1M | Updating Scene BVH | Building" % frames[0])
 
-    emit("start", frames=frames, blend=job.get("blend", "x.blend"), engine="CYCLES",
-         scene=job.get("scene") or "Scene", scene_requested=job.get("scene"))
+    if args.missing_scene:
+        native("Warning: Can't find scene: '%s'" % (job.get("scene") or "?"))
+        emit("start", frames=frames, blend=job.get("blend", "x.blend"), engine="CYCLES",
+             scene="Scene", scene_requested=job.get("scene"), scene_ok=False,
+             scenes=["Scene"])
+    else:
+        emit("start", frames=frames, blend=job.get("blend", "x.blend"), engine="CYCLES",
+             scene=job.get("scene") or "Scene", scene_requested=job.get("scene"),
+             scene_ok=True, scenes=[job.get("scene") or "Scene"])
     emit("info", engine="CYCLES", res=[320, 240], pct=100, output=tpl, samples=24)
 
     # 进程启动计次：core 每重启一轮就一个新进程，靠它区分「第一次」和「续跑」

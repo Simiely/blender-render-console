@@ -177,6 +177,10 @@ class TestStateReuse(_Base):
         starts = [ev["frame"] for k, ev in ev3 if k == "frame_start"]
         self.assertEqual(starts, [2, 3])            # 关键：1 没有重渲染
         self.assertTrue(any(k == "resume" for k, _ in ev3))
+        # job_start 必须把**已完成数**一起告诉界面：否则续跑时进度条从 0 开始，
+        # 第一帧完成才突然跳到"2/3"，看着就像断点没加载上
+        js = [ev for k, ev in ev3 if k == "job_start"][0]
+        self.assertEqual((js["total"], js["done"]), (3, 1))
 
     def test_mismatched_state_starts_fresh(self):
         """工程/输出/帧范围变了就别续 —— 否则会把别的任务的进度算进来。"""
@@ -275,6 +279,54 @@ class TestFailureModes(_Base):
         self.assertIsNotNone(st)                    # 进度仍在，下次可续
         self.assertGreaterEqual(len(st.done), 1)
         self.assertLessEqual(len(st.done), 5)       # 也不该跑到底
+
+
+class TestStopDoesNotEatRetry(_Base):
+    """用户点「停止」不能吃掉那一帧的重试额度（P-W2，走查捞出）。
+
+    `frame_start` 时就记一次尝试是"崩溃必续"的前提（进程被强杀时来不及补记），
+    但取消不是崩溃：那一帧往往一秒都没渲完。不退的话，单帧尝试=3 时在同一帧上
+    停 3 次就会被判 `exhausted`，续跑**直接跳过它**，最后报「有帧一直失败」——
+    少渲一帧，还归因到了工程/显存身上。
+    """
+
+    def test_cancel_during_a_frame_gives_the_attempt_back(self):
+        job, cfg, events = self.make_job(frames=(1,), extra=["--sleep", "0.6"])
+        started = threading.Event()
+
+        def on_event(kind, ev):
+            events.append((kind, ev))
+            if kind == "frame_start":
+                started.set()
+
+        def canceller():
+            # 等"这一帧真的开始渲了"再取消 —— 与机器快慢无关，也不靠挂钟赌
+            if started.wait(timeout=30):
+                job.cancel()
+
+        t = threading.Thread(target=canceller, daemon=True)
+        t.start()
+        try:
+            r = job.run(on_event=on_event)
+        finally:
+            t.join(timeout=5)
+
+        self.assertTrue(r["cancelled"], r)
+        self.assertFalse(r["ok"], "这一帧被杀掉了，任务当然没完成")
+        st = JobState.load(self.state)
+        self.assertNotIn(1, st.done)
+        self.assertEqual(st.attempts.get(1, 0), 0, "主动停止不该消耗这一帧的尝试名额")
+        self.assertEqual(st.remaining(3), [1], "下次续跑还得渲这一帧")
+
+    def test_crash_still_keeps_the_attempt(self):
+        """真崩溃（没点停止）**必须**保留这次尝试 —— 否则必崩的帧会被无限重试。"""
+        job, cfg, events = self.make_job(frames=(1, 2, 3), extra=["--fail-at", "2"],
+                                        max_frame_attempts=1)
+        r = self.run_job(job, events)
+        st = JobState.load(self.state)
+        self.assertFalse(r["ok"], r)
+        self.assertGreaterEqual(st.attempts.get(2, 0), 1,
+                                "崩在第 2 帧时那次尝试要留下，不能被当取消退回去")
 
 
 class TestRestartPolicy(_Base):
@@ -491,6 +543,31 @@ class TestSceneSelection(_Base):
         self.run_job(job, events)
         infos = [ev for k, ev in events if k == "engine_info"]
         self.assertEqual(infos[0]["scene"], "SceneA")
+
+    def test_missing_scene_fails_instead_of_rendering_the_wrong_one(self):
+        """场景名对不上 → **立刻失败**，不许渲出一整套错图再报成功（P-W1）。
+
+        真机行为（5.2.2 实测）：`-S 不存在的场景` 只打一行英文提示就照常渲默认场景，
+        退出码还是 0。driver 已经自己回读校验过（`scene_ok=False`），core 必须据此停下 ——
+        否则跑完 `settle_task_action` 还会把待办存档删掉，用户连"那批图是错的"都不知道。
+        """
+        job, cfg, events = self.make_job(frames=(1, 2), extra=["--missing-scene"],
+                                        scene="SceneB")
+        r = self.run_job(job, events)
+
+        self.assertFalse(r["ok"], r)
+        self.assertIn("SceneB", r["error"] or "")
+        self.assertIn("不存在", r["error"] or "")
+        self.assertEqual(self.produced(), [], "一帧都不该渲出来")
+        self.assertNotIn("frame_start", [k for k, _ in events])
+        self.assertTrue([k for k, _ in events if k == "job_error"])
+
+    def test_missing_scene_error_lists_the_real_scenes(self):
+        """失败信息里要带上"工程里到底有哪几个场景"，否则用户还得回 Blender 查。"""
+        job, cfg, events = self.make_job(frames=(1,), extra=["--missing-scene"],
+                                        scene="SceneB")
+        r = self.run_job(job, events)
+        self.assertIn("Scene", r["error"] or "")
 
     def test_switching_scene_does_not_resume(self):
         """同一个工程换场景：帧号一样但内容完全是另一张图，必须从头渲染。"""

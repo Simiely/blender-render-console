@@ -135,6 +135,22 @@ class JobState(object):
     def note_attempt(self, frame):
         self.attempts[int(frame)] = self.attempts.get(int(frame), 0) + 1
 
+    def rollback_attempt(self, frame):
+        """把一次尝试名额**退回去** —— 只给「用户主动停止」这个场景用。
+
+        `frame_start` 时就记一次尝试是"崩溃必续"的前提：进程被强杀时根本没机会补记，
+        不预记的话，一个每次必崩的帧会被无限重试。但**取消不是崩溃** ——
+        用户点停止时那一帧往往一秒都没渲完，额度却被扣掉了。不退的话，
+        同一帧上停 3 次（单帧尝试=3）就会被判 `exhausted`，续跑直接跳过它，
+        最后报「有帧一直失败」—— 少渲一帧还归因错误。
+        """
+        f = int(frame)
+        n = self.attempts.get(f, 0)
+        if n > 1:
+            self.attempts[f] = n - 1
+        elif n == 1:
+            self.attempts.pop(f, None)
+
     def mark_done(self, frame, secs=None, path=None):
         self.done[int(frame)] = {
             "secs": secs, "path": path or "", "t": round(time.time(), 3),

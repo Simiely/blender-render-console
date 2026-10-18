@@ -1,6 +1,7 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-06（commit `3d4b098`）v0.8.0 · 多段不连续序列帧 + 界面三处错乱修复
+> 📌 **文档基线**：2026-10-18 · v0.8.2 · 场景名对不上→立刻失败 + 停止不再吃重试额度 + 「渲完了」优先于「取消过」
+> （commit hash 待推送后补；上一基线：2026-10-17 v0.8.1 自绘 ✔ + 原生输出默认开 + 重试默认「一直重启」）
 > v0.7.0（过夜挂机三件套 + 版本切换）、v0.6.6（单实例锁）、v0.6.5（第二轮全量审核）、
 > v0.6.4（替身分叉 / 双扩展名 / 真值判断）与更早版本见 CHANGELOG
 > v0.6.2（磁盘空间预检 + 架构度量/边界检查工具）、v0.6.1、v0.6.0 见 CHANGELOG
@@ -80,6 +81,34 @@
 
 51. **Blender 5.x 的 `Action` 已经没有 `fcurves` 了**：4.4 起换成 slotted actions，老写法 `for fc in obj.animation_data.action.fcurves` 直接 `AttributeError: 'Action' object has no attribute 'fcurves'`（实测 5.2.2）。造测试场景时**别去改插值**——想要"每帧画面都不同"，直接**逐帧** `keyframe_insert`（`rotation_euler=(0,0,(f-1)*0.5)`），插值方式就无所谓了。另外用 `--python-expr` 建场景**必须带 `--python-exit-code 1`**：不带的话上面那个 AttributeError 会被 Blender 吞掉，只剩"文件不存在"这一个现象（AGENTS 坑 5 的原样重演）。
 
+52. **ttk 的 image 元素不持有 Python 对象，`PhotoImage` 一被 GC，元素就画不出东西（尺寸还在、不报错）**：`style.element_create(name, "image", img_off, ("selected", img_on))` 只把 Tcl 侧的图像名记进元素，Python 的 `PhotoImage` 谁都不引用就会被回收、Tcl 图像随之 `image delete`。此时元素**照旧占着 13px 的位置**，但一个像素都不画 —— 界面上表现为"复选框凭空消失"，`reqwidth` 量出来还是正常的 19px，日志里一个字都没有。堆栈里看不出任何异常，只有截图能发现。
+    接住引用的地方也踩过：最初写 `style._brc_check_images = (on, off)`，而调用方 `run_gui()` 里是裸的 `theme.apply(root)` —— **返回值没人接**，`ttk.Style` 实例出了函数就被回收，图片跟着没。现在引用挂在模块级的 `theme._IMAGE_REFS`，不依赖调用方是否留着 `Style`；`tests/test_theme.py::TestIndicatorImagesAreKeptAlive` 用替身把这条锁住（断言"图片只挂在 style 上"会失败）。
+    教训：**任何交给 Tk 的图片，引用都要有明确的、比调用栈活得久的持有者**。同类陷阱还有 `root.iconphoto`、`Label(image=...)`、`Canvas.create_image`。
+
+53. **ttk 的样式选项是"配了不生效、也不报错"，深色主题尤其容易撞上；clam 的选中标记是画出来的 ×，改颜色救不了**：`theme.py` 曾经给 `TCheckbutton` 配 `indicatorcolor` 并把选中态映射成蓝色 —— 而 clam 的指示器元素只认 `indicatorbackground/indicatorforeground/indicatorsize/indicatormargin/upperbordercolor/lowerbordercolor`（Tk 源码 `generic/ttk/ttkClamTheme.c::IndicatorElementOptions`），那行配置从写下那天起**一次都没生效过**，界面上也永远看不出来（就是 AGENTS 坑 35「开关不通电」的样式层版本）。
+    而真正决定"长什么样"的是元素本身：clam 的 `CheckIndicatorElementDraw()` 在选中态用两条对角线画叉（`XDrawLine` 各画 3 遍），**Tk 里根本没有对勾这个字形**，所以"把颜色改成绿色/蓝色"只会得到一个彩色的叉。要 ✔ 只能换元素：`element_create(..., "image", ...)` + `style.layout()` 重排（见坑 52 的引用问题）。
+    自查手段两个：`style.element_options(元素名)` 会列出该元素**真正支持**的选项（`theme.unsupported_options()` 就是拿它做差集）；`style.layout("TCheckbutton")` 能直接看出布局里挂的是哪个元素。
+
+54. **clam 滚动条的"粗细"是 `-arrowsize` 决定的，名字只在有箭头时才说实话**：想给深色界面做"细杆滚动条"（VS Code 那种），第一反应是找 `-width`/`-thickness` —— 没有这个选项。实测 `arrowsize` 就是横截面尺寸：把 `uparrow/downarrow` 从 `layout()` 里去掉之后，`arrowsize=8/10/12` 直接对应控件宽 8/10/12px（原来带箭头时是 15px）。
+    另外两处必须一起改，否则细杆会"糊成一团"：① `lightcolor`/`darkcolor` 要和 `background` 同色 —— clam 的滑块会画 1px 亮边 + 1px 暗边，10px 的杆上这两条棱线几乎占满宽度（旧样式看着"断成两截"就是这个）；② `gripcount=0` 关掉防滑横线，不然像个小梯子。
+    还有一条使用层面的取舍：去掉箭头后**滚轮 / 拖滑块 / 点槽翻页都还在**，而箭头在 10px 杆上本来也点不准 —— "少两个按钮"不等于"少两个能力"，改之前先想清楚真正被拿走的是什么。
+
+55. **"重置一个对象"只能有一份代码，手写清单一定会漏字段**：`guimodel.ProgressModel` 原先在 `job_start` 里手写了一份重置清单，只列了 `total/done/failed/restarts/crashes/error/phase`，漏了 `cancelled / elapsed / current_frame / stalled / eta_sec / ok / last_message`。后果不是报错，而是「停止 → 再开始」之后状态栏**整轮**都显示「已取消 · 完成 3/6 · 用时 1.9s」（1.9s 是上一轮的用时），因为 `status_text()` 里 `cancelled` 的判断排在 `running` 前面。单测全绿（没人测"第二次开始"）。
+    现在默认值收在 `ProgressModel.reset()`，`__init__` 与 `job_start` 都调它 —— 以后加字段不会再漏。同类信号：**只要看到"构造里赋一遍默认值、事件里再赋一遍"，就说明这份默认值迟早会漂**。
+     配套的两条：① GUI 点「开始渲染」时也要先 `reset()` —— `job_start` 要等后台线程跑起来才到（中间还有建目录、读写断点的 IO），而 `_refresh` 每 80ms 就用旧模型刷一次，不复位就会"进度条跳回上一轮的百分比再归零"；② **事件必须带足状态**：`job_start` 原先只报 `total`，界面无法知道"已完成 2/6"，只能从 0 画，于是续跑看起来像"断点没加载上"——补一个 `done` 字段就解决了。判断标准：**界面需要的每个数字，事件里都得有，不能靠猜或靠后续事件补齐**。
+
+56. **「上游算出来了、下游没人接」是本项目最常见的缺陷形态 —— 一个字段只命中生产侧就是死字段**：`driver.activate_scene()` 做了回读校验并给出 `scene_ok`（docstring 还写着"外层还能据此把实际场景名写进日志"），而 `core._handle_json` 的 `start` 分支只转了 `scene / scene_requested`，`scene_ok` 到此终止 —— `grep -rn scene_ok brconsole/` 只命中 `driver.py` 两处。后面那条链一路滑到底：Blender 遇到不存在的场景照常渲默认场景、**退出码 0** → 界面报「全部完成」→ `settle_task_action` 把 `pending.json` 删掉。用户拿到一整套错图，连"那批图是错的"都无从知道（那行 `warn` 混在默认开启的原生输出里）。**433 条测试全绿照不到它**，因为 `test_scene_survives_to_event_stream` 只断言 `scene` 透传、不断言 `scene_ok`。
+    现在的处理：`scene_ok is False` → 先 `self.cancel()`（杀子进程，别留一个还在渲错场景的 Blender 在后台）再 `raise`，由 `run()` 收成 `job_error`，存档走 `stop` 分支保留。
+    自查两条：① 新加一个字段/布尔，就 grep 一遍它的**消费者**，只命中生产侧等于没做（坑 35「开关不通电」的同族）；② 测试要断言**结论**（`scene_ok=False` 会导致什么），不能只断言**标识**（`scene` 传过去了）—— 只测"数据流过"的测试会给假绿灯。
+
+57. **「用户主动停止」和「真的失败」必须分开记账**：`frame_start` 时就 `note_attempt(+1)` 并落盘，是"崩溃必续"的前提（进程被强杀时根本没机会补记）。但**取消不是崩溃** —— 用户点停止时那一帧往往一秒都没渲完，额度却扣掉了。不退的话，单帧尝试=3 时在同一帧上连停 3 次，该帧直接 `exhausted`，续跑**跳过它**，末尾报「有帧一直失败 · 放弃 1」：少渲一帧，还把原因归到工程/显存身上（最难查的那种错误归因）。
+    修法：`JobState.rollback_attempt()` + `RenderJob._inflight_frame`（`frame_start` 置、`frame_done`/`frame_error` 清、每轮 `_run_once` 开头清），**只在 `_cancel` 已置位时**回收（Ctrl+C 同样算）。
+    ⚠️ 真崩溃那条路必须**保留**这次尝试，否则一个每次必崩的帧会被无限重试 —— 判断标准就一句：**这次尝试是被我们的取消杀掉的，还是它自己崩的**。给"回收额度"这类宽容逻辑加条件时，永远先问"它会不会把死循环重新打开"。
+
+58. **一个结果载荷被多处各自解释，迟早会有出口说反话 —— 「谁优先」必须写下来**：`job_done` 同时带 `ok`（帧全在 `done` 里）和 `cancelled`（收到过取消请求），两个值在 `core` 里分别算、互不约束。最后一帧渲完的**同一瞬间**点停止，两者同时为真，于是四处下游各解释一遍：存档按 `ok` 删了、状态栏按 `cancelled` 说「已取消 · 完成 6/6」、通知标题说「渲染已取消」、`aftermath_plan` 因 `cancelled` 让用户选好的「渲完关机」**不执行**（图全渲完了，机器开了一夜）。
+    统一口径是「**`ok` 优先**：渲完了就是完成了」，`status_text` / 通知标题 / CLI 结语 / `aftermath_plan` 一处不落（`settle_task_action` 本来就按 `ok` 判，别去改它）。
+    判断标准：**同一个状态被 ≥2 个出口读，就必须有一句"谁优先"写在代码里**（注释 + 单测双向），不能靠"反正平常不会同时为真"。同类信号：`if A: ... elif B: ...` 里的 A/B 若可能同时成立，就要问一句"这种时候该走哪支"。
+
 ## 约定
 
 - 命令一律用**绝对路径**调 `blender.exe`，不依赖 PATH
@@ -95,7 +124,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（405 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（447 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 7 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景

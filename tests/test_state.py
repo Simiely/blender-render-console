@@ -56,6 +56,40 @@ class TestState(_Base):
         self.assertEqual(st.remaining(1), [])   # 用掉唯一一次尝试
         self.assertEqual(st.exhausted(1), [1])
 
+    def test_rollback_attempt_gives_the_quota_back(self):
+        """用户主动停止 ≠ 失败：被杀那一帧的尝试名额必须退回去（P-W2）。
+
+        不退的话，同一帧上停 3 次（单帧尝试=3）就会被判「放弃」，
+        续跑直接跳过它 —— 少渲一帧，还报「有帧一直失败」，归因完全错误。
+        """
+        st = JobState(self.path, frames=[5])
+        for _ in range(3):
+            st.note_attempt(5)
+        self.assertEqual(st.remaining(3), [])
+        self.assertEqual(st.exhausted(3), [5])
+
+        st.rollback_attempt(5)                  # 用户点了一次停止
+        self.assertEqual(st.remaining(3), [5], "退回一次就该重新排队")
+        self.assertEqual(st.exhausted(3), [])
+
+    def test_rollback_attempt_never_goes_negative(self):
+        st = JobState(self.path, frames=[5])
+        st.rollback_attempt(5)                  # 没记过也能调（收尾路径不做前置判断）
+        self.assertEqual(st.attempts.get(5, 0), 0)
+        st.note_attempt(5)
+        st.rollback_attempt(5)
+        self.assertNotIn(5, st.attempts, "退到 0 就该删掉这条，别留 attempts[5]=0")
+        self.assertEqual(st.remaining(1), [5])
+
+    def test_rollback_attempt_survives_save_reload(self):
+        st = JobState(self.path, frames=[5])
+        st.note_attempt(5)
+        st.note_attempt(5)
+        st.rollback_attempt(5)
+        st.save()
+        back = JobState.load(self.path)
+        self.assertEqual(back.attempts[5], 1)
+
     def test_done_overrides_failed(self):
         """重试成功：把之前记的失败抹掉，否则界面会同时显示完成和失败。"""
         st = JobState(self.path, frames=[1])

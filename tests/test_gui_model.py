@@ -15,14 +15,15 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from brconsole import tkboot  # noqa: E402
-from brconsole.core import parse_restart_limit  # noqa: E402
+from brconsole.core import UNLIMITED, parse_restart_limit  # noqa: E402
 from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: E402
                                 AFTERMATH_SLEEP, DEFAULT_ATTEMPTS,
                                 DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                                 RESTART_OPTIONS,
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
                                 UNLIMITED_LIMITS, UNLIMITED_RESTART_LABEL, FormModel,
-                                LogModel, ProgressModel, aftermath_plan, event_line,
+                                LogModel, NativeLineFilter, ProgressModel,
+                                aftermath_plan, event_line,
                                 fields_from_detail, frames_preview, frames_to_text,
                                 frames_to_segments, guess_state_path, new_segment,
                                 segment_label, segments_to_frames,
@@ -40,8 +41,8 @@ class TestRestartOptions(unittest.TestCase):
     `unlimited`，而配套的中文文案从没被用上。
     """
 
-    EXPECTED = {"1 次": 1, "3 次": 3, "5 次（默认）": 5, "10 次": 10,
-                "一直重启，直到全部渲完": -1}
+    EXPECTED = {"1 次": 1, "3 次": 3, "5 次": 5, "10 次": 10,
+                "一直重启，直到全部渲完（默认）": -1}
 
     def test_options_are_all_chinese_labels(self):
         self.assertEqual(set(RESTART_OPTIONS), set(self.EXPECTED))
@@ -52,9 +53,13 @@ class TestRestartOptions(unittest.TestCase):
         for label, want in self.EXPECTED.items():
             self.assertEqual(parse_restart_limit(label), want, label)
 
-    def test_default_option_is_the_five_times_one(self):
-        self.assertEqual(DEFAULT_RESTART_OPTION, "5 次（默认）")
-        self.assertEqual(parse_restart_limit(DEFAULT_RESTART_OPTION), 5)
+    def test_default_option_is_unlimited(self):
+        """v0.8.1 起默认「一直重启」：崩溃续跑是本程序的卖点，
+        有限次数会让长任务在"其实还能接着跑"的时候提前放弃。"""
+        self.assertEqual(DEFAULT_RESTART_OPTION, "一直重启，直到全部渲完（默认）")
+        self.assertEqual(parse_restart_limit(DEFAULT_RESTART_OPTION), UNLIMITED)
+        # 默认项必须排在候选里（readonly 下拉只会显示候选里的文案）
+        self.assertIn(DEFAULT_RESTART_OPTION, RESTART_OPTIONS)
 
 
 class TestSceneHelpers(unittest.TestCase):
@@ -178,6 +183,33 @@ class TestFormValidation(unittest.TestCase):
         self.assertEqual(cfg.frames, [1, 2, 3, 4])
         self.assertEqual(cfg.output_template, self.out)
         self.assertIsNone(cfg.engine)          # KEEP 要翻译成 None（保持工程设置）
+
+    # ---- 三个「不限」同时成立 = 没有任何终止条件（P-W4，走查捞出）----
+    def _triple_unlimited(self, **kw):
+        base = dict(max_restarts=UNLIMITED_RESTART_LABEL,
+                    max_frame_attempts="0", max_no_progress="0")
+        base.update(kw)
+        return self._form(**base).to_config()
+
+    def test_triple_unlimited_warns(self):
+        cfg, errors, warns = self._triple_unlimited()
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(cfg)              # 不硬拦：用户确实可能想"跑到通为止"
+        self.assertTrue(any("三个都设成了不限" in w for w in warns), warns)
+        self.assertEqual((cfg.max_frame_attempts, cfg.max_no_progress_rounds), (0, 0))
+
+    def test_unlimited_restarts_alone_keeps_the_guard_quiet(self):
+        """只选「一直重启」时不该报警 —— 默认填充本来就是 0/3，兜底还在。"""
+        cfg, errors, warns = self._form(
+            max_restarts=UNLIMITED_RESTART_LABEL,
+            max_frame_attempts="0", max_no_progress="3").to_config()
+        self.assertEqual(errors, [])
+        self.assertFalse([w for w in warns if "三个都设成了不限" in w], warns)
+
+    def test_finite_restarts_never_warn_about_unlimited(self):
+        cfg, _errors, warns = self._form(
+            max_restarts="5 次", max_frame_attempts="0", max_no_progress="0").to_config()
+        self.assertFalse([w for w in warns if "三个都设成了不限" in w], warns)
 
     def test_missing_blend(self):
         cfg, errors, _ = self._form(blend="").to_config()
@@ -354,6 +386,117 @@ class TestProgressModel(unittest.TestCase):
         self.assertEqual(p.fraction, 0.0)
 
 
+class TestSecondStartIsClean(unittest.TestCase):
+    """「停止 → 再开始」之后，界面不能还挂着上一轮的结论。
+
+    实测过的现象（取消一轮再点开始）：状态栏**整轮**都显示
+    「已取消 · 完成 3/6 · 用时 1.9s」——「1.9s」还是上一轮的用时；进度条也会先
+    跳回上一轮的百分比再归零（`on_start` 只把 `pb` 设 0，而 `_refresh` 每 80ms
+    就用旧模型刷一次）。根因是 `job_start` 里手写了一份"重置清单"，漏掉了
+    `cancelled / elapsed / current_frame / stalled / eta_sec / ok`，而
+    `status_text()` 里 `cancelled` 判断在 `running` 之前，一路盖住了"正在渲染帧 N"。
+    """
+
+    @staticmethod
+    def _cancelled_run(p):
+        p.on_event("job_start", {"total": 6})
+        p.on_event("frame_start", {"frame": 1})
+        p.on_event("frame_done", {"frame": 1, "done": 1, "total": 6,
+                                  "per_frame": 0.4, "eta_sec": 2.0, "eta_mode": "EMA"})
+        p.on_event("frame_start", {"frame": 2})
+        p.on_event("stall", {"phase": "Synchronizing object"})
+        p.on_event("job_done", {"done": [1], "failed": {}, "exhausted": [], "total": 6,
+                                "elapsed": 1.9, "restarts": 0, "cancelled": True,
+                                "ok": False})
+
+    def test_job_start_wipes_the_previous_verdict(self):
+        p = ProgressModel()
+        self._cancelled_run(p)
+        self.assertTrue(p.cancelled)                 # 上一轮确实停在"已取消"
+
+        p.on_event("job_start", {"total": 6, "done": 1})
+        self.assertFalse(p.cancelled, "新一轮还在跑，状态栏不能写「已取消」")
+        self.assertEqual(p.elapsed, 0.0, "上一轮的用时不能留在这一轮")
+        self.assertIsNone(p.current_frame, "上一轮被砍断的那帧不能继续显示")
+        self.assertIsNone(p.eta_sec)
+        self.assertFalse(p.stalled)
+        self.assertNotIn("已取消", p.status_text())
+
+    def test_resume_position_shows_up_immediately(self):
+        """续跑要在 job_start 那一刻就落在真实进度上 —— 否则看着像"断点没加载"。"""
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 6, "done": 2})
+        self.assertAlmostEqual(p.fraction, 2 / 6.0)
+        self.assertIn("已完成 2/6", p.status_text())
+
+    def test_job_start_without_done_starts_at_zero(self):
+        """老版本 core 不带 `done` 时按 0 处理（别把 total 当成已完成）。"""
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 6})
+        self.assertEqual(p.done, 0)
+        self.assertEqual(p.fraction, 0.0)
+
+    def test_reset_clears_after_a_finished_run(self):
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 4, "done": 0})
+        p.on_event("frame_done", {"frame": 1, "done": 4, "total": 4})
+        p.on_event("job_done", {"done": [1, 2, 3, 4], "failed": {}, "exhausted": [],
+                                "total": 4, "elapsed": 3.0, "restarts": 0,
+                                "cancelled": False, "ok": True})
+        self.assertTrue(p.ok)
+        p.reset()
+        self.assertEqual((p.done, p.total, p.ok, p.finished, p.running), (0, 0, False, False, False))
+        self.assertEqual(p.elapsed, 0.0)
+        self.assertIsNone(p.finished_at)
+        self.assertEqual(p.status_text(), "就绪")
+
+
+
+class TestDoneButCancelled(unittest.TestCase):
+    """最后一帧渲完的**同一瞬间**点了停止 → `ok` 与 `cancelled` 同时为真（P-W3）。
+
+    `core` 里这两个值分别算、互不约束：`cancelled` 是"收到过取消请求"，
+    `ok` 是"帧全在 done 里"。撞上时四处下游各自解释一遍，就会自相矛盾 ——
+    存档按 ok 删了，界面却说「已取消 · 完成 6/6」，通知标题说「渲染已取消」，
+    用户选的「渲完关机」也不执行（`aftermath_plan` 被 cancelled 一票否决）。
+    统一口径：**ok 优先**，一个任务渲完了就是完成了。
+    """
+
+    @staticmethod
+    def _done_and_cancelled(p, ok=True):
+        p.on_event("job_start", {"total": 6})
+        for i in range(1, 7):
+            p.on_event("frame_done", {"frame": i, "done": i, "total": 6})
+        p.on_event("job_done", {"done": [1, 2, 3, 4, 5, 6], "failed": {}, "exhausted": [],
+                                "total": 6, "elapsed": 9.5, "restarts": 0,
+                                "cancelled": True, "ok": ok})
+
+    def test_status_says_complete_not_cancelled(self):
+        p = ProgressModel()
+        self._done_and_cancelled(p)
+        text = p.status_text()
+        self.assertNotIn("已取消", text)
+        self.assertIn("全部完成 6/6", text)
+
+    def test_status_still_says_cancelled_when_incomplete(self):
+        """真取消（还有帧没渲）仍要说「已取消」—— 别把这条口径改坏。"""
+        p = ProgressModel()
+        p.on_event("job_start", {"total": 6})
+        p.on_event("frame_done", {"frame": 1, "done": 1, "total": 6})
+        p.on_event("job_done", {"done": [1], "failed": {}, "exhausted": [], "total": 6,
+                                "elapsed": 1.9, "restarts": 0, "cancelled": True,
+                                "ok": False})
+        self.assertIn("已取消", p.status_text())
+
+    def test_settle_clears_when_ok_wins(self):
+        """存档那一侧本来就用 ok 判 —— 确认它和新的界面口径一致。"""
+        self.assertEqual(settle_task_action(
+            "job_done", {"ok": True, "cancelled": True}), ("clear", ""))
+
+    def test_aftermath_runs_when_ok_wins(self):
+        self.assertEqual(aftermath_plan(AFTERMATH_SHUTDOWN, True, True), "shutdown")
+
+
 class TestCompletionClock(unittest.TestCase):
     """实际完成时刻：任务跑完，状态行必须写明「已于 x 完成」（与预估时间分开）。
 
@@ -458,6 +601,95 @@ class TestLogModel(unittest.TestCase):
             m.add(str(i))
         self.assertEqual(len(m.drain(limit=5)), 5)
         self.assertEqual(len(m), 15)
+
+    def test_memory_cap_drops_oldest_and_counts(self):
+        """界面来不及取时不能无限涨内存；**丢了多少必须记着** —— 要显示给人看。"""
+        m = LogModel(maxlen=20)
+        for i in range(30):
+            m.add(str(i))
+        self.assertEqual(len(m), 20)
+        self.assertEqual(m.dropped, 10)
+        self.assertEqual(m.total, 30)
+        self.assertEqual(m.drain()[0], "10")     # 丢的是最早那批，不是最新的
+
+    def test_clear_resets_dropped(self):
+        m = LogModel(maxlen=2)
+        for i in range(5):
+            m.add(str(i))
+        m.clear()
+        self.assertEqual((len(m), m.dropped), (0, 0))
+
+
+class TestNativeLineFilter(unittest.TestCase):
+    """原生输出折叠器：既不刷屏，又**不能把 traceback 折掉**。
+
+    原生输出默认开启（v0.8.1）之后，这条是"日志还能不能看"的开关：
+    Blender 的采样进度是 `\\r` 原地刷新，一帧 64 采样能推几十行。
+    """
+
+    def setUp(self):
+        self.now = [1000.0]
+        self.f = NativeLineFilter(interval=1.0, clock=lambda: self.now[0])
+
+    def _sample(self, frame=1, n=1):
+        return "00:01.000  render | Fra: %d | Sample %d/64" % (frame, n)
+
+    def test_first_sample_line_is_shown(self):
+        self.assertEqual(self.f.feed(self._sample(1, 1)), [self._sample(1, 1)])
+
+    def test_same_frame_samples_are_collapsed_within_interval(self):
+        self.f.feed(self._sample(1, 1))
+        self.assertEqual(self.f.feed(self._sample(1, 2)), [])
+        self.assertEqual(self.f.feed(self._sample(1, 3)), [])
+
+    def test_collapsed_count_is_reported_before_the_next_line(self):
+        self.f.feed(self._sample(1, 1))
+        self.f.feed(self._sample(1, 2))
+        self.f.feed(self._sample(1, 3))
+        self.now[0] += 2.0                      # 间隔够了，可以再放一条
+        out = self.f.feed(self._sample(1, 4))
+        self.assertEqual(len(out), 2)
+        self.assertIn("已折叠 2 行", out[0])     # 先交代折了多少
+        self.assertIn("Sample 4/64", out[1])
+
+    def test_frame_change_is_shown_immediately(self):
+        self.f.feed(self._sample(1, 1))
+        out = self.f.feed(self._sample(2, 1))
+        self.assertEqual(len(out), 1)
+        self.assertIn("Fra: 2", out[0])
+
+    def test_errors_are_never_collapsed(self):
+        """错误行哪怕一模一样也要放行 —— 重复的 traceback 也是证据。"""
+        for line in ("Error: Texture not found",
+                     "Error: Texture not found",
+                     "Traceback (most recent call last):",
+                     "Warning: Cannot read file"):
+            self.assertEqual(self.f.feed(line), [line], line)
+
+    def test_plain_lines_are_not_collapsed(self):
+        for line in ("正在构建 BVH", "Saved: 'C:/out/f_0001.png'",
+                     "Loading render kernels (may take a few minutes)"):
+            self.assertTrue(self.f.feed(line), line)
+
+    def test_flush_reports_the_tail_once(self):
+        self.f.feed(self._sample(1, 1))
+        self.f.feed(self._sample(1, 2))
+        tail = self.f.flush()
+        self.assertEqual(len(tail), 1)
+        self.assertIn("已折叠 1 行", tail[0])
+        self.assertEqual(self.f.flush(), [])    # 只交代一次，不重复刷
+
+    def test_reset_clears_pending(self):
+        self.f.feed(self._sample(1, 1))
+        self.f.feed(self._sample(1, 2))
+        self.f.reset()
+        self.assertEqual(self.f.flush(), [])
+        self.assertEqual(len(self.f.feed(self._sample(1, 3))), 1)
+
+    def test_blank_input_is_ignored(self):
+        self.assertEqual(self.f.feed(""), [])
+        self.assertEqual(self.f.feed(None), [])
+        self.assertEqual(self.f.feed("   \r\n"), [])
 
 
 class TestEventLine(unittest.TestCase):
@@ -673,8 +905,11 @@ class TestRestartLabelFor(unittest.TestCase):
             n = parse_restart_limit(label)
             self.assertEqual(restart_label_for(n), label)
 
-    def test_default_option_is_used_when_missing(self):
-        self.assertEqual(restart_label_for(5), DEFAULT_RESTART_OPTION)
+    def test_old_five_maps_to_the_plain_label(self):
+        """老存档里的 5 次要显示成「5 次」，**不能**显示成默认项 ——
+        界面默认值改成"一直重启"之后，把 5 也映射到默认项就等于改写了存档语义。"""
+        self.assertEqual(restart_label_for(5), "5 次")
+        self.assertNotEqual(restart_label_for(5), DEFAULT_RESTART_OPTION)
 
 
 class TestFormFromConfig(unittest.TestCase):
@@ -755,7 +990,9 @@ class TestFormFromConfig(unittest.TestCase):
     def test_tolerates_empty_dict(self):
         fm = FormModel.from_config({}, "")
         self.assertEqual(fm.blend, "")
-        self.assertEqual(fm.max_restarts, DEFAULT_RESTART_OPTION)
+        # 存档里缺 `max_restarts` = 老存档/坏存档 → 按**有界**的 5 次兜（不是新任务的默认值）。
+        # 与 restore_limits_backup 同一条原则：分不出来的时候按有界那一侧。
+        self.assertEqual(fm.max_restarts, "5 次")
 
 
 class TestUnlimitedRestartDefaults(unittest.TestCase):
@@ -791,10 +1028,15 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
         self.assertFalse(is_unlimited_restart(""))
         self.assertFalse(is_unlimited_restart("瞎写"))
 
-    def test_unlimited_option_fills_both_limits_with_zero(self):
-        """界面拿这个返回值去填两个框。"""
-        self.assertEqual(unlimited_limit_fill(UNLIMITED_RESTART_LABEL), ("0", "0"))
-        self.assertEqual(UNLIMITED_LIMITS, ("0", "0"))
+    def test_unlimited_option_opens_attempts_but_keeps_the_guard(self):
+        """界面拿这个返回值去填两个框：单帧尝试放开，无进展兜底**不能**一起放开。
+
+        旧版返回 ("0", "0")，等于选完"一直重启"就再没有任何终止条件
+        （卡在同一处反复崩时会一直转到有人来停）—— 见 AGENTS 坑 39。
+        """
+        self.assertEqual(unlimited_limit_fill(UNLIMITED_RESTART_LABEL),
+                         ("0", DEFAULT_NO_PROGRESS))
+        self.assertEqual(UNLIMITED_LIMITS, ("0", DEFAULT_NO_PROGRESS))
 
     def test_finite_option_fills_nothing(self):
         """有限次数时不能动用户填的值 —— None = 别碰。"""
@@ -802,11 +1044,12 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
             self.assertIsNone(unlimited_limit_fill(label), label)
         self.assertIsNone(unlimited_limit_fill("瞎写"))
 
-    def test_filled_zeros_really_mean_unlimited_in_config(self):
+    def test_fill_turns_into_unlimited_attempts_with_guard_intact(self):
         cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, *UNLIMITED_LIMITS).to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_frame_attempts, 0)
-        self.assertEqual(cfg.max_no_progress_rounds, 0)
+        # ★ 这条是本次修订的核心：默认"一直重启"之后，防死循环闸门必须还在
+        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
         self.assertTrue(cfg.unlimited_restarts)
 
     def test_user_can_put_the_guard_back(self):
@@ -818,14 +1061,14 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
         self.assertTrue(cfg.unlimited_restarts)
 
     def test_finite_restart_keeps_the_typed_limits(self):
-        cfg, errors, _ = self._form("5 次（默认）", "9", "7").to_config()
+        cfg, errors, _ = self._form("5 次", "9", "7").to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_frame_attempts, 9)
         self.assertEqual(cfg.max_no_progress_rounds, 7)
         self.assertFalse(cfg.unlimited_restarts)
 
     def test_negative_no_progress_still_rejected(self):
-        _, errors, _ = self._form("5 次（默认）", "3", "-2").to_config()
+        _, errors, _ = self._form("5 次", "3", "-2").to_config()
         self.assertTrue(any("无进展" in e for e in errors))
 
     def test_unlimited_roundtrip_is_stable(self):
@@ -865,11 +1108,11 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
     def test_selecting_unlimited_twice_keeps_the_original_backup(self):
         """在「一直重启」态里再点一次，不能把 0/0 存成备份（否则回头"还原"出一对不限值）。"""
         a, n, backup = restart_limits_plan(UNLIMITED_RESTART_LABEL, "9", "7", None)
-        self.assertEqual((a, n), ("0", "0"))
+        self.assertEqual((a, n), ("0", DEFAULT_NO_PROGRESS))
         self.assertEqual(backup, ("9", "7"))
         a, n, backup = restart_limits_plan(UNLIMITED_RESTART_LABEL, a, n, backup)
         self.assertEqual(backup, ("9", "7"))        # 没被 0/0 覆盖
-        self.assertEqual(restart_limits_plan("5 次（默认）", a, n, backup)[:2],
+        self.assertEqual(restart_limits_plan("5 次", a, n, backup)[:2],
                          ("9", "7"))
 
     def test_leaving_unlimited_after_archive_restore_returns_to_bounded_defaults(self):
@@ -882,11 +1125,11 @@ class TestUnlimitedRestartDefaults(unittest.TestCase):
         """
         backup = restore_limits_backup(UNLIMITED_RESTART_LABEL, "0", "0")
         self.assertEqual(backup, (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
-        a, n, left = restart_limits_plan("5 次（默认）", "0", "0", backup)
+        a, n, left = restart_limits_plan("5 次", "0", "0", backup)
         self.assertEqual((a, n), (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
         self.assertIsNone(left)                     # 用完即弃
 
-        cfg, errors, _ = self._form("5 次（默认）", a, n).to_config()
+        cfg, errors, _ = self._form("5 次", a, n).to_config()
         self.assertEqual(errors, [])
         self.assertEqual(cfg.max_restarts, 5)
         self.assertEqual(cfg.max_frame_attempts, int(DEFAULT_ATTEMPTS))
@@ -963,11 +1206,13 @@ class TestSettleTaskAction(unittest.TestCase):
 
 
 class TestAftermathPlan(unittest.TestCase):
-    """任务结束后的关机/睡眠决策 —— 只认「全部渲完」，其他一律不动。
+    """任务结束后的关机/睡眠决策 —— 只认「全部渲完」（`ok`），其他一律不动。
 
-    为什么这么严：用户点停止 = 他还在机器前，替他关机是惊吓；
-    失败/放弃 = 正需要人来看原因，把机器睡了反而把问题藏到明天。
-    竞品的自动关机同样只在"100% 完成"时触发。
+    ⚠️ `cancelled` 曾经也有一票否决权，走查（P-W3）把它拿掉了：
+    最后一帧渲完的同一瞬间点停止，`ok` 与 `cancelled` 会同时为真
+    （`core` 里两个值分别算、互不约束）。这时按 cancelled 拦掉，用户选好的
+    「渲完关机」就不会执行 —— 早上起来图全渲完了、机器却开着。
+    真取消（还有帧没渲）时 `ok` 本来就是 False，自然不触发，不需要再判 cancelled。
     """
 
     def test_shutdown_only_on_full_success(self):
@@ -976,9 +1221,10 @@ class TestAftermathPlan(unittest.TestCase):
     def test_sleep_only_on_full_success(self):
         self.assertEqual(aftermath_plan(AFTERMATH_SLEEP, True, False), "sleep")
 
-    def test_cancelled_never_triggers(self):
-        self.assertIsNone(aftermath_plan(AFTERMATH_SHUTDOWN, True, True))
-        self.assertIsNone(aftermath_plan(AFTERMATH_SLEEP, True, True))
+    def test_cancelled_but_complete_still_triggers(self):
+        """最后一帧渲完与取消撞在一起：`ok` 说话，关掉 cancelled 的一票否决。"""
+        self.assertEqual(aftermath_plan(AFTERMATH_SHUTDOWN, True, True), "shutdown")
+        self.assertEqual(aftermath_plan(AFTERMATH_SLEEP, True, True), "sleep")
 
     def test_failure_and_give_up_never_trigger(self):
         self.assertIsNone(aftermath_plan(AFTERMATH_SHUTDOWN, False, False))

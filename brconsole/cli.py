@@ -57,10 +57,11 @@ def build_parser():
     p.add_argument("--deep-scan", action="store_true", help="自动探测时连便携版目录一起扫（慢）")
     p.add_argument("--state", help="断点状态文件路径（默认输出目录下 .render_state.json）")
     p.add_argument("--log", help="Blender 原始输出落盘路径")
-    p.add_argument("--max-restarts", default="5",
-                   help="最多重启几次；填 unlimited / -1 / 无限 = 一直重启直到全部渲染完（默认 5）")
+    p.add_argument("--max-restarts", default="unlimited",
+                   help="最多重启几次；默认 unlimited = 一直重启直到全部渲染完，也可填 1/5/10"
+                        " 这类具体次数或 -1")
     p.add_argument("--max-no-progress", type=_non_negative_int, default=3,
-                   help="连续这么多轮一帧都没推进就停（「一直重启」模式唯一的兜底，默认 3；0=不限制）")
+                   help="连续这么多轮一帧都没推进就停（唯一防死循环的兜底，默认 3；0=不限制）")
     p.add_argument("--max-frame-attempts", type=_non_negative_int, default=3,
                    help="单帧最多尝试几次（默认 3）")
     p.add_argument("--no-resume", action="store_true", help="忽略已有断点，从头渲染")
@@ -162,9 +163,13 @@ class ConsoleReporter(object):
                           len(ev.get("failed") or {}), len(ev.get("exhausted") or []),
                           ev.get("restarts", 0), fmt_duration(ev.get("elapsed")),
                           fmt_clock(time.time(), seconds=True)))
-            if ev.get("cancelled"):
+            # `ok` 优先：最后一帧渲完的同一瞬间按了 Ctrl+C 时两者同时为真，
+            # 这时报「已取消」与"全部完成 N/N"自相矛盾（与界面同一口径）
+            if ev.get("ok"):
+                pass
+            elif ev.get("cancelled"):
                 self._line("  已取消（进度已保存，下次同命令可续跑）")
-            elif not ev.get("ok"):
+            else:
                 self._line("  未完成 —— 再次执行同一条命令即可从断点继续")
             return
         if kind == "job_error":
@@ -260,6 +265,8 @@ def main(argv=None):
         resolution_percentage=args.pct, file_format=args.file_format,
         scene=args.scene,
         state_path=args.state, log_path=args.log,
+        # 解析不了（脚本里写错）时退回**有界**的 5 次：宁可少试几次，
+        # 也不要因为一个拼错的字符串就变成"无限重启"。默认值本身是 unlimited。
         max_restarts=parse_restart_limit(args.max_restarts, default=5),
         max_frame_attempts=args.max_frame_attempts,
         max_no_progress_rounds=args.max_no_progress,

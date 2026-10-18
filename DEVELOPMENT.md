@@ -11,6 +11,70 @@
 
 **要解决的痛点**：Blender GUI 渲染大工程时整个进程会崩（多为 Windows 显示驱动超时重置），且崩了之后要从头再来。
 
+v0.8.1 的阶段说明：**复选框 ✔ / 原生输出默认开 / 重启默认不封顶**（patch 版，但有一条有感知的
+行为变更）。三件事都不大，但两件差点做错、一件做完是"隐形"的，留了三条痕：
+
+① **复选框的 ✕ 换 ✔ 不是配色问题**。先按"clam 的指示器画的是叉"的猜测去查 Tk 源码
+（`generic/ttk/ttkClamTheme.c::CheckIndicatorElementDraw()`：选中态两条对角线各画 3 遍），
+确认成立；顺带发现 `theme.py` 那条 `indicatorcolor` 配置在 clam 下**从来没生效过**
+（元素只认 `indicatorbackground/foreground/size/margin/upper-lowerbordercolor`）——
+即坑 35 的样式层版本。最后走 `element_create("image") + layout()` 换元素，四处复选框零改动。
+
+② **换完元素，界面上一片空白**（截图为证）：尺寸、布局、图片像素全都对，就是不画。
+根因是 `PhotoImage` 只被 `ttk.Style` 实例上的一个属性引用着，而 `run_gui()` 写的是
+`theme.apply(root)` —— 返回值没人接，实例出函数即回收，Tcl 图像随之删除，
+image 元素"尺寸还在、什么都不画、不报错"。改成模块级引用池才稳（坑 52）。
+
+③ **默认值不是改个字面量**：「一直重启」原先等于把 `UNLIMITED_LIMITS` 设成 `("0","0")`，
+连带把内核**唯一**的防死循环闸门关掉（坑 39）。所以只把单帧尝试归 0，无进展轮数保持 3；
+并补了 `test_unlimited_option_opens_attempts_but_keeps_the_guard` 把这对语义锁在一起。
+原生输出默认开则必须同时给日志加上限（`LogModel(maxlen)` + 丢弃计数）和同类行折叠，
+否则一帧 64 采样就是几十行 `\r` 刷新，几小时任务能刷出几万行、把真错误冲走。
+
+④ **日志区滚动条改成细杆无箭头**：clam 默认布局是 `trough > (uparrow, downarrow, thumb)`，
+滑块还带 1px 亮/暗棱线和 5 道防滑横线 —— 深色底上像"断成两截的色块"，比正文还抢眼。
+重写 `layout()` 只留 `trough + thumb`，粗细走 `-arrowsize`（没有箭头时它就等于杆宽，
+实测 8/10/12 → 同宽），`lightcolor/darkcolor` 与滑块同色去棱线，`gripcount=0` 去防滑线。
+另外内容装得下时滑块会被拉满整条槽、变成一条常驻亮灰长条，所以按可见范围在
+「常态 / `Flat.`（滑块同槽色，看不见）」两套**等宽**样式间切 —— 换成"藏控件"的话，
+日志会宽 10px、`wrap="word"` 立刻重排，行数一变又反过来影响"要不要藏"，会闪。
+滚轮 / 拖滑块 / 点槽翻页都还在。
+
+⑤ **「停止 → 再开始」的进度复位**（用户反馈，实测复现）：断点一直是好的 ——
+停在第 2 帧后再开始，第 2 轮只渲 3–6 帧、不重渲也不跳帧。坏的是界面状态：
+`job_start` 里手写的重置清单漏了 `cancelled/elapsed/current_frame/stalled/eta_sec`，
+于是整轮状态栏都写着「已取消 · 用时 1.9s（上一轮的）」；`job_start` 又没带 `done`，
+进度条只能从 0 画，第一帧完成时突然跳到 2/6，看着像断点没加载。
+现在默认值收在 `ProgressModel.reset()`（`__init__` 与 `job_start` 共用），
+`job_start` 带上 `done`，界面 `on_start` 先 `reset()` 再起线程。
+
+真机核对：勾/未勾两态截图 + 新旧指示器 A/B 对照（旧版确认是"白底黑叉"）；`--demo` 跑完 6 帧、
+日志有界且折叠生效；滚动条改为细杆后截图确认无箭头无棱线，且空闲态（日志为空）右侧没有
+常驻亮条、跑起来后滑块才出现；`--help` 的 `--max-restarts` 默认 `unlimited`。
+「停止→再开始」用假 Blender 端到端复现：停止时 2/6 → 再开始收到 `job_start(done=2)`、
+状态栏「已完成 2/6」、进度条 33%，只渲第 3 帧起。
+单测 447 条全绿，`check_boundaries` 7 条规则全过。
+
+### v0.8.2 · 场景走查（33 条链路）修复节
+
+用 `scenario-walkthrough` 方法论（能力清单 → 素材剧本 → 分级走查 → 报告 → 修复闭环）
+把程序走了一遍，产出落在 `docs/walkthrough/`：`capabilities.md`（63 条能力 C-ID）、
+`scenarios.md`（33 条素材 S-ID + 覆盖矩阵）、`report-r1.md`（第 1 轮报告）。
+33 条通 27 条，捞出 2 个真缺陷 + 3 个 UX：
+
+- 🔴 **`scene_ok` 死字段**：driver 算出来了、core 丢了、界面和存档全无感 →
+  渲错场景还删存档。现在 `scene_ok is False` 立刻失败（先杀子进程再抛），失败信息列出真实场景名。
+- 🔴 **停止吃掉重试额度**：`rollback_attempt` + `_inflight_frame`，只在用户取消时退回；
+  崩溃路径不动（保住"崩溃必续"）。
+- 「渲完了」优先于「收到过取消」：`status_text` / 通知 / CLI / `aftermath_plan` 四处统一。
+- 三个「不限」同时成立时给警告（不硬拦）。
+- 撤关机倒计时的时机挪到所有校验之后。
+
+回归方式：新增 14 条单测把上面每一条钉住（`TestDoneButCancelled` / `TestStopDoesNotEatRetry` /
+`TestSceneSelection` 的两条新用例 / `rollback_attempt` 三条 / 三不限三条），
+`fake_blender.py` 加 `--missing-scene` 模拟真机"找不到场景但退出码 0"。
+单测 433 → 447 全绿，`check_boundaries` 7 条规则全过。
+
 **当前阶段**：**已交付**（v0.6.5）。这一版是**第二轮全量代码审核**：把上一轮没逐行读完的
 5 个大文件（core / gui / guimodel / inspect / taskstore）逐行读完，修掉两个真问题 ——
 「一直重启」的存档回填后切回有限次数，两个限次框停在 0（=不限，等于把唯一的死循环闸门
@@ -793,7 +857,7 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 | `tools/make_icon.py` | **生成应用图标**（纯标准库 + 4× 超采样，手写 ICO 容器，不需要 Pillow）；`--sheet` 出跨尺寸/跨明暗底对照图 |
 | `assets/app.ico` | 图标本体：16/24/32/48/64/128/256 七层，≤128 用 BMP、256 用 PNG 编码 |
 | `tools/build_exe.py` | PyInstaller 打包（spec + `Tree()`），写图标与版本资源，产出两个单文件 exe，并**默认跑一遍打包后自检** |
-| `tools/smoke_real_blender.py` | **真机冒烟 6 场景**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 → 「一直重启」A/B 对照 → 多场景 `-S` 选场景 |
+| `tools/smoke_real_blender.py` | **真机冒烟 7 场景**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 → 多场景 `-S` 选场景 → 多段不连续帧 → 「一直重启」A/B 对照 |
 | `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 采样像素；`--list` 列窗口标题 |
 | `tools/arch_metrics.py` | **架构度量**：解析 import 建依赖图，输出 Ca/Ce/I 耦合表、依赖环（文件级）、SDP 违规、扇入榜；运行时 / `TYPE_CHECKING` / 函数体惰性三类依赖分开统计。**改依赖后重跑** |
 | `tools/check_boundaries.py` | **边界检查**（5 条可执行规则）：GUI 边界 / 层方向 / 无环 / `driver.py` 隔离 / 裸 print。有违规则退出码 1；配套 `tests/test_boundaries.py` 是反向用例 |

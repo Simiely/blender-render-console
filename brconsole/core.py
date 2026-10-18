@@ -42,7 +42,9 @@ UNLIMITED = -1          # “一直重启，直到所有帧渲染完”
 
 # 「一直重启」的各种写法。界面的下拉直接给中文文案（"一直重启，直到全部渲完"），
 # 所以这里必须用**包含**判断，不能像早期那样精确匹配几个英文单词。
-UNLIMITED_WORDS = ("unlimited", "infinite", "inf", "none", "无限", "一直")
+# `不限` 是界面说明文字里的常用说法（"单帧尝试填 0 = 不限"），一并认下来 ——
+# 用户照着界面文字手打 `--max-restarts 不限` 不该退回默认的 5 次。
+UNLIMITED_WORDS = ("unlimited", "infinite", "inf", "none", "无限", "不限", "一直")
 
 
 def parse_restart_limit(value, default=5):
@@ -361,6 +363,20 @@ def read_driver_source(path=None):
             % (p, e))
 
 
+def scene_missing_error(ev):
+    """「想渲的场景在工程里不存在」的失败说明（driver 已经确认过，见 activate_scene）。
+
+    为什么不只是打一行警告就继续：Blender 遇到不存在的场景**照常渲默认场景、退出码 0**
+    （实测 5.2.2），继续跑会产出一整套错图；更糟的是跑完 `settle_task_action` 会把待办
+    存档删掉，用户连"那批图是错的"都无从知道。所以这里一律**当作失败停下**。
+    """
+    want = ev.get("scene_requested")
+    have = "、".join(ev.get("scenes") or []) or "（读不出来）"
+    return ("场景「%s」在工程里不存在（工程里有：%s）。\n"
+            "已停止，避免渲出一整套错图 —— 在界面「场景」里重新选一个，"
+            "或到 Blender 里确认场景名没被改过。" % (want, have))
+
+
 class RenderJob(object):
     """一个可运行、可取消、会自己续跑的渲染任务。"""
 
@@ -388,6 +404,9 @@ class RenderJob(object):
         self._stall_notified = False
         self._last_line_at = 0.0
         self._fed_first_frame = True      # 每个子进程的第一帧算预热
+        #: 已经在 driver 那边"开始渲染"、但还没有 frame_done/frame_error 的帧 ——
+        #: 用户主动停止时要把它的尝试名额退回去（见 rollback_attempt）
+        self._inflight_frame = None
         self.restarts = 0
 
     # ---------------- 对外 ----------------
@@ -487,9 +506,17 @@ class RenderJob(object):
         kind = ev.get("kind")
         state = self.state
         if kind == "start":
+            # 场景名对不上 = 这一次渲染从根上就是错的 → 立刻失败。
+            # 必须**先杀子进程再抛**：直接 raise 会把一个还在渲错场景的 Blender 留在后台。
+            # 抛出去由 run() 的 except 收成 job_error，存档走 settle 的 "stop" 分支
+            # （保留断点、撤自动续跑），用户改好场景名点开始就能接着跑。
+            if ev.get("scene_requested") and ev.get("scene_ok") is False:
+                self.cancel()
+                raise RuntimeError(scene_missing_error(ev))
             emit("engine_info", blend=ev.get("blend"), engine=ev.get("engine"),
                  scene=ev.get("scene"), frames=ev.get("frames"),
-                 scene_requested=ev.get("scene_requested"))
+                 scene_requested=ev.get("scene_requested"),
+                 scene_ok=ev.get("scene_ok"))
         elif kind == "engine_set":
             emit("engine_set", requested=ev.get("requested"), actual=ev.get("actual"))
         elif kind == "device_set":
@@ -506,10 +533,12 @@ class RenderJob(object):
             frame = int(ev["frame"])
             state.note_attempt(frame)
             state.save()
+            self._inflight_frame = frame
             emit("frame_start", frame=frame, index=ev.get("index"),
                  total=ev.get("total"), path=ev.get("path"))
         elif kind == "frame_done":
             frame = int(ev["frame"])
+            self._inflight_frame = None
             secs = ev.get("secs")
             warmup = self._fed_first_frame
             self._fed_first_frame = False
@@ -525,6 +554,7 @@ class RenderJob(object):
                  per_frame=snap["per_frame"])
         elif kind == "frame_error":
             frame = int(ev["frame"])
+            self._inflight_frame = None
             err = ev.get("err", "")
             state.mark_failed(frame, err)
             state.save()
@@ -602,7 +632,11 @@ class RenderJob(object):
                 f.write(read_driver_source(self.driver_path))
             job_json = os.path.join(self.workdir, "job.json")
 
-            emit("job_start", total=self.state.total, frames=list(self.state.frames),
+            # `done` 必须一起发出去：续跑时 total 是**整轮**的帧数，而 pending 只是剩下的，
+            # 界面若从 0 开始画，会先显示 0% 然后在第一帧完成时突然跳到"2/6"——看起来
+            # 就像"断点没加载上"。带上已完成数，进度条一开始就落在真实位置。
+            emit("job_start", total=self.state.total, done=self.state.done_count,
+                 frames=list(self.state.frames),
                  blend=cfg.blend, output=cfg.output_template, state_path=state_path,
                  scene=cfg.scene,
                  unlimited_restarts=cfg.unlimited_restarts,
@@ -673,6 +707,8 @@ class RenderJob(object):
                 pending = pending_after
 
             # ---- 收尾 ----
+            # 用户主动停止 → 把被杀那一帧的尝试名额退回去（崩溃路径不动，见方法说明）
+            self._drop_inflight_attempt()
             result["done"] = sorted(self.state.done)
             result["failed"] = dict(self.state.failed)
             result["exhausted"] = self.state.exhausted(cfg.max_frame_attempts)
@@ -687,6 +723,7 @@ class RenderJob(object):
         except KeyboardInterrupt:
             # Ctrl+C：先把子进程树杀干净，再按「已取消」收尾（每帧已落盘，进度不会丢）
             self.cancel()
+            self._drop_inflight_attempt()      # Ctrl+C 同样是"用户主动停止"
             result["cancelled"] = True
             result["error"] = "用户中断"
             emit("job_error", error="用户中断")
@@ -706,8 +743,23 @@ class RenderJob(object):
             self._cleanup()
         return result
 
+    def _drop_inflight_attempt(self):
+        """用户主动停止时，把「正在渲、却因为我们点停止而被杀」那一帧的尝试名额退回去。
+
+        只在 `_cancel` 已置位时动手：真崩溃（没点停止）恰恰**要**保留这次尝试，
+        否则一个每次必崩的帧会被无限重试 —— 那是整套续跑机制的立足点。
+        """
+        f, self._inflight_frame = self._inflight_frame, None
+        if f is None or not self._cancel.is_set() or self.state is None:
+            return
+        self.state.rollback_attempt(f)
+        self.state.save()
+
     def _run_once(self, cmd, emit, poll_interval, stall_after):
         """起一次子进程并消化它的输出，返回退出码。"""
+        # 上一轮结束时如果还有"在渲帧"，那一帧是真的崩了（额度该留着）；
+        # 新一轮从这里重新记，别让上一轮的帧号跟着一起被回滚
+        self._inflight_frame = None
         kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "bufsize": 0}
         if os.name == "nt":
             kwargs["creationflags"] = CREATE_NO_WINDOW

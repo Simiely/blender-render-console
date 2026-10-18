@@ -240,12 +240,12 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 341 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 447 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
 │   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（本机 Python 无 tkinter）
-│   ├── smoke_real_blender.py  # 真机冒烟 6 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 「一直重启」A/B → 多场景
+│   ├── smoke_real_blender.py  # 真机冒烟 7 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 多场景 → 多段不连续帧 → 「一直重启」A/B
 │   ├── capture_screen.py    # 抓窗口/全屏 PNG（验证界面用，纯 ctypes）；--list 列窗口标题
 │   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
 │   ├── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
@@ -261,7 +261,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（341 条，不依赖 Blender，约 60s）
+# 单测（447 条，不依赖 Blender，约 40s）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 架构度量：耦合（Ca/Ce/I）、依赖环、SDP 违规、扇入榜。**改依赖后重跑它**

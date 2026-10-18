@@ -302,8 +302,11 @@ def main():
     sc, scene_ok = activate_scene(requested)
     frames = [int(f) for f in job["frames"]]
 
+    # `scenes` 一起发出去：外层要在失败信息里告诉用户"工程里到底有哪几个场景"，
+    # 否则他只看到"场景 X 不存在"，还得自己开 Blender 去查（AGENTS 坑 56）
     emit("start", frames=frames, blend=bpy.data.filepath,
          scene=sc.name, scene_requested=requested, scene_ok=scene_ok,
+         scenes=[s.name for s in bpy.data.scenes],
          engine=sc.render.engine,
          frame_start=sc.frame_start, frame_end=sc.frame_end)
 

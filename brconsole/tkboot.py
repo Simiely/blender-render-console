@@ -41,8 +41,9 @@ def sidecar_env(root, base=None):
 
 def has_tkinter():
     try:
-        import tkinter  # noqa: F401
-        return True
+        import tkinter
+        # 引用一下，让静态检查看得出这个 import 不是白写的（pyflakes 不认 noqa）
+        return tkinter.TkVersion is not None
     except Exception:
         return False
 

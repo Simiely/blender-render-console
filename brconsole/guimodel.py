@@ -10,6 +10,7 @@
 """
 
 import os
+import re
 import time
 from collections import deque
 
@@ -31,8 +32,12 @@ SCENE_PLACEHOLDERS = (SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL)
 # 用的是 `RESTART_VALUES`（裸的 `1/3/5/10/unlimited`），于是下拉里直接显示出了
 # 英文 `unlimited`，而旁边那套中文文案（`RESTART_CHOICES`）从来没被任何控件用过。
 # 现在文案本身就是要解析的输入，翻译交给 `core.parse_restart_limit`（它认中文）。
-RESTART_OPTIONS = ["1 次", "3 次", "5 次（默认）", "10 次", "一直重启，直到全部渲完"]
-DEFAULT_RESTART_OPTION = RESTART_OPTIONS[2]
+#
+# ⚠️ 默认值是**「一直重启」**（v0.8.1 起）：崩溃续跑本来就是这个程序的卖点，
+#    而有限次数（旧的默认 5 次）会在长任务里过早放弃 —— 剩下任意一帧没渲完，
+#    整轮就得靠人回来点一次。次数仍然可以手动改成 1/3/5/10。
+RESTART_OPTIONS = ["1 次", "3 次", "5 次", "10 次", "一直重启，直到全部渲完（默认）"]
+DEFAULT_RESTART_OPTION = RESTART_OPTIONS[-1]
 UNLIMITED_RESTART_LABEL = RESTART_OPTIONS[-1]
 
 # 「限次类」两个字段的默认值。`FormModel` 与界面共用这一份，
@@ -43,7 +48,12 @@ DEFAULT_NO_PROGRESS = "3"
 # 「不限」的写法。0 是 core/state 里**既有**的约定：`JobState.remaining/exhausted` 用
 # `max_attempts <= 0` 表示不限，`RenderJob` 用 `max_no_progress_rounds > 0` 才启用兜底。
 # 所以"不限"根本不需要给内核加新语义，填 0 即可。
-UNLIMITED_LIMITS = ("0", "0")
+#
+# ⚠️ **只把「单帧最多尝试」放成 0，无进展轮数保持 3**（v0.8.1 起）。
+#    早先是 ("0", "0")，等于选中"一直重启"就顺手把**内核里唯一防死循环的闸门**关掉
+#    （AGENTS 坑 39）：卡在同一处反复崩、一帧都渲不出来时，没有任何条件能让它停下来。
+#    现在这两件事分开：重启次数不限（用户要的），但连续 3 轮毫无进展就停（兜底仍在）。
+UNLIMITED_LIMITS = ("0", DEFAULT_NO_PROGRESS)
 
 #: 第一段帧范围的默认起止（也是"没读到工程配置"时的兜底），界面与 FormModel 共用一份
 DEFAULT_SEGMENT_START = "1"
@@ -64,12 +74,14 @@ def is_unlimited_restart(value):
 def unlimited_limit_fill(restart_value):
     """选中某个重启选项时，「单帧最多尝试 / 连续无进展轮数」该**默认填**什么。
 
-    选「一直重启，直到全部渲完」→ 返回 `("0", "0")`（0 = 不限，内核既有约定）：
-    这才是用户选它的本意 —— 否则留下任意一个正数，任务都会在"其实还能接着重试"的时候
-    提前结束（帧被判 exhausted 踢出队列，或触发 no_progress 直接刹车）。
+    选「一直重启，直到全部渲完」→ 返回 `("0", "3")`：
+    - 单帧尝试填 `0`（=不限，内核既有约定）—— 否则帧会被判 exhausted 踢出队列，
+      重试额度比"重启次数不限"先用完，那个选项就形同虚设；
+    - 无进展轮数**保持 3** —— 它是内核里唯一防死循环的闸门。旧版把它也填 0，
+      等于选完"一直重启"就再也没有任何终止条件了（见 AGENTS 坑 39）。
 
     **只改默认值、不锁控件**：留一条退路 —— 万一卡在同一帧反复崩，
-    把无进展轮数填回去就是兜底（那也是内核里唯一防死循环的闸门）。
+    把无进展轮数改小就是更早刹车；改大/填 0 则是放开。
     不是这个选项就返回 None = 别动用户填的值。
     """
     return UNLIMITED_LIMITS if is_unlimited_restart(restart_value) else None
@@ -78,15 +90,15 @@ def unlimited_limit_fill(restart_value):
 def restart_limits_plan(restart_value, attempts, no_progress, backup):
     """换重启选项时，两个限次框该显示什么 → `(attempts, no_progress, backup)`。
 
-    界面上那三个值是紧耦合的：两个限次框的 0（=不限）**只该在「一直重启」底下出现**
-    （否则就得到"重启次数有限的 5 次 + 单帧不限次数 + 无进展不兜底"这种组合 ——
-    卡在同一帧时再也停不下来，`no_progress` 是内核里唯一防死循环的闸门）。
+    界面上那三个值是紧耦合的：`max_frame_attempts=0`（=不限）**只该在「一直重启」底下出现**
+    （否则就得到"重启次数有限的 5 次 + 单帧不限次数"这种组合 —— 一帧反复抛异常时
+    单帧额度永远耗不尽，而重启次数又在数）。`no_progress` 则任何模式下都保持一个正数兜底。
 
     所以这里是一条明确的状态机：
 
-    - 切到「一直重启」→ 填 `0/0`，并把**离开时的还原值**放进 `backup`。
-      已经在「一直重启」态里再点一次时**不覆盖**已有的 backup（否则备份会变成 0/0，
-      回头"还原"出一对不限值 —— 等于没备份）。
+    - 切到「一直重启」→ 填 `("0", "3")`，并把**离开时的还原值**放进 `backup`。
+      已经在「一直重启」态里再点一次时**不覆盖**已有的 backup（否则备份会变成 0/3，
+      回头"还原"出一对默认值 —— 等于没备份）。
     - 切回有限次数 → 有 backup 就还原它；没有 backup 就**原样不动**。
       "没有 backup" = 用户本来就在有限次数的选项之间切换（`1 次` → `5 次`），
       这时绝不能拿默认值去覆盖他填的 9/7。
@@ -399,10 +411,14 @@ AFTERMATH_VALUES = (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP)
 def aftermath_plan(choice, ok, cancelled):
     """任务结束后要不要执行善后动作 → 返回 `"shutdown"` / `"sleep"` / `None`。
 
-    **只有"全部渲完"才触发**，被取消或失败都不触发：
+    **只有"全部渲完"才触发**，这一点由 `ok` 单独决定：
 
-    - 用户点了停止 = 他还在机器前，替他关机是惊吓
     - 失败/放弃 = 正需要人来看原因，把机器睡了或关了反而把问题藏到明天
+    - `cancelled` **不再单独一票否决**：最后一帧渲完的同一瞬间点停止时
+      `ok` 和 `cancelled` 会同时为真（`core` 里两个值分别算）。此时用户要的
+      「渲完关机」已经成立，硬按 cancelled 拦掉，他会看到"图全渲完了、机器却开着"。
+      弹窗本身还带 60 秒可取消的倒计时，人在场也不会被惊到。
+    - 真取消（还有帧没渲）时 `ok` 本来就是 False，自然不触发 —— 无需再判 cancelled。
 
     竞品（BRQ / Render Manager）的自动关机同样只在"队列 100% 完成"时触发，
     并且都带取消倒计时 —— 执行侧的倒计时见 `power`（60 秒，`shutdown /a` 可撤）。
@@ -410,7 +426,7 @@ def aftermath_plan(choice, ok, cancelled):
     """
     if choice not in (AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP):
         return None
-    if cancelled or not ok:
+    if not ok:
         return None
     return choice
 
@@ -462,7 +478,9 @@ class FormModel(object):
         self.max_restarts = kw.get("max_restarts", DEFAULT_RESTART_OPTION)
         self.max_no_progress = kw.get("max_no_progress", DEFAULT_NO_PROGRESS)
         self.max_frame_attempts = kw.get("max_frame_attempts", DEFAULT_ATTEMPTS)
-        self.show_native = kw.get("show_native", False)
+        # ⚠️ 「显示原生输出」曾经在这里有个 `show_native` 字段：界面把它存进来，
+        #    但**全项目没有一处读它**（真正的开关是 gui 里的 `v_native`）。
+        #    这正是 AGENTS 坑 35「开关不通电」的同款 —— 已删除，别再把它加回来。
         # 界面上没有这两个控件（CLI 专有参数），但**必须原样透传**：
         # 从任务存档回填时如果丢掉它们，重建出来的任务会静默按默认值跑 ——
         # 「参数悄悄变了」比「报错」难查得多。
@@ -576,6 +594,17 @@ class FormModel(object):
         if errors:
             return None, errors, warns
 
+        eff_attempts = int(DEFAULT_ATTEMPTS) if attempts is None else attempts
+        eff_no_progress = int(DEFAULT_NO_PROGRESS) if no_progress is None else no_progress
+        max_restarts = parse_restart_limit(self.max_restarts, default=5)
+        # 三个「不限」同时成立 = 内核里**没有任何终止条件**：崩在一帧上就无限重启，
+        # 每 2 秒拉起一次 Blender，只能人肉点停止。界面把 0 宣传成"不限制"，
+        # 用户照着填很容易凑齐这三个（P-W4）。不硬拦（他可能真要跑通为止），但必须说清。
+        if max_restarts < 0 and eff_attempts <= 0 and eff_no_progress <= 0:
+            warns.append("重启次数、单帧最多尝试、连续无进展**三个都设成了不限** —— "
+                         "这次任务没有任何终止条件，渲不出来的帧会一直重启下去，"
+                         "只能手动点「停止」。建议把「连续无进展」改回 3。")
+
         cfg = JobConfig(
             blend=blend, frames=frames, output_template=output,
             engine=self.engine or None, samples=samples,
@@ -583,13 +612,12 @@ class FormModel(object):
             resolution_percentage=pct, file_format=self.file_format or None,
             scene=scene_to_config(self.scene),
             state_path=None, log_path=None,
-            max_restarts=parse_restart_limit(self.max_restarts, default=5),
-            max_frame_attempts=int(DEFAULT_ATTEMPTS) if attempts is None else attempts,
+            max_restarts=max_restarts,
+            max_frame_attempts=eff_attempts,
             resume=bool(self.resume),
             extra_args=self.extra_args,
             restart_delay=self.restart_delay,
-            max_no_progress_rounds=(int(DEFAULT_NO_PROGRESS) if no_progress is None
-                                    else no_progress))
+            max_no_progress_rounds=eff_no_progress)
         return cfg, errors, warns
 
     def as_dict(self):
@@ -600,6 +628,19 @@ class ProgressModel(object):
     """把 core 的事件流折算成界面字段。**不碰任何控件**。"""
 
     def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """把模型恢复成"还没开始跑"。
+
+        ⚠️ **同一个任务的第二次开始也必须调它**（界面的 `on_start` 会调）。
+        原先 `job_start` 里手写了一份"重置清单"，只列了一部分字段，漏掉
+        `cancelled / elapsed / current_frame / stalled / eta_sec / ok / last_message` ——
+        于是「停止 → 再开始」之后：状态栏整轮都显示「**已取消** · 完成 3/6 · 用时 1.9s」
+        （1.9s 还是上一轮的用时），而且 `status_text()` 里 `cancelled` 的判断在
+        `running` 之前，一路盖住了"正在渲染帧 N"。
+        现在默认值只有这一份，`job_start` 直接复用它，**加字段不会再漏**。
+        """
         self.running = False
         self.finished = False
         self.total = 0
@@ -627,17 +668,13 @@ class ProgressModel(object):
 
     def on_event(self, kind, ev):
         if kind == "job_start":
+            self.reset()                 # 上一轮的残留一律清掉（见 reset 的说明）
             self.running = True
-            self.finished = False
             self.started_at = time.time()
-            self.finished_at = None
             self.total = ev.get("total") or 0
-            self.done = 0
-            self.failed = 0
-            self.exhausted = 0
-            self.restarts = 0
-            self.crashes = 0
-            self.error = ""
+            # 续跑时 core 会带上**已完成帧数**：进度条要立刻落在真实位置，
+            # 而不是先显 0% 再在第一帧完成时跳到 "2/6"（那样看着像断点没加载上）
+            self.done = ev.get("done") or 0
             self.phase = ""
         elif kind == "frame_start":
             self.current_frame = ev.get("frame")
@@ -705,7 +742,10 @@ class ProgressModel(object):
     def status_text(self):
         if not self.running and not self.finished:
             return "就绪"
-        if self.cancelled:
+        # 「全部渲完」优先于「收到过取消」：最后一帧渲完的同一瞬间点停止时，
+        # `cancelled` 和 `ok` 会同时为真。此时说「已取消 · 完成 6/6」是自相矛盾的
+        # —— 存档那一侧已经按 ok 删了，界面不该反过来说没成。
+        if self.cancelled and not (self.finished and self.ok):
             text = "已取消 · 完成 %d/%d · 用时 %s" % (
                 self.done, self.total, fmt_duration(self.elapsed))
             if self.finished_at:
@@ -758,21 +798,110 @@ class ProgressModel(object):
                 "crashes": self.crashes, "elapsed": self.elapsed, "ok": self.ok}
 
 
+class NativeLineFilter(object):
+    """Blender 原生输出的**折叠器**（日志面板用，纯逻辑可单测）。
+
+    为什么需要它：`-b` 下 Blender 的采样进度是用 `\\r` 原地刷新的，`core._pump` 会把它切成
+    一行行推过来 —— 一帧 64 采样就是几十行，一个四小时的任务能吐几万行。
+    原生输出默认开启之后，这些行会瞬间刷爆日志面板，更要紧的是**把真正的 traceback 冲走**。
+
+    三条规则（都钉在单测里）：
+
+    1. **错误行永不折叠**：含 error / traceback / warning / can't find / failed 的行原样放行
+       —— 它们才是排错时要看的东西；
+    2. **同类进度行按「帧号」折叠**，且两次输出间隔不少于 `interval` 秒；
+       被折掉的行数累加，附在下一条输出的**前面**（`… 上一段进度已折叠 N 行`）；
+    3. **换类时先把账交代清楚**：不交代的话，"折叠了多少行"就永远看不见了。
+
+    只折叠采样进度（`Sample 12/64` / `Rendering 12 / 64 samples`）。别的原生行
+    （阶段、Saved、着色器编译）本来就不重复，逐行显示才有信息量。
+    """
+
+    IMPORTANT = re.compile(
+        r"error|traceback|warning|exception|failed|can't find|cannot|not found|"
+        r"no such file|invalid", re.I)
+    SAMPLE = re.compile(r"Sample\s+\d+\s*/\s*\d+|Rendering\s+\d+\s*/\s*\d+\s+samples",
+                        re.I)
+    FRAME = re.compile(r"Fra:\s*(-?\d+)")
+
+    def __init__(self, interval=1.0, clock=None):
+        self.interval = interval
+        # 注入时钟是为了能单测：不真的 sleep，直接把时间"往前拨"
+        self._clock = clock or time.time
+        self._key = None
+        self._last_emit = 0.0
+        self._suppressed = 0
+
+    def reset(self):
+        """新任务开始时清账（否则上一轮漏下的折叠数会算到这一轮头上）。"""
+        self._key = None
+        self._last_emit = 0.0
+        self._suppressed = 0
+
+    def _collapse_key(self, line):
+        """同类行的判据；返回 None = 这一行不参与折叠。"""
+        if not self.SAMPLE.search(line):
+            return None
+        m = self.FRAME.search(line)
+        return ("sample", m.group(1) if m else "?")
+
+    def _take_summary(self, lines):
+        """把待交代的折叠数拼到这批输出最前面。"""
+        if not self._suppressed:
+            return lines
+        n, self._suppressed = self._suppressed, 0
+        return ["… 上一段进度已折叠 %d 行（同类进度行只保留最新）" % n] + lines
+
+    def feed(self, line):
+        """消化一行原生输出 → 该显示的行（可能为空列表 = 被折掉了）。"""
+        line = (line or "").rstrip()
+        if not line:
+            return []
+        # ① 错误/警告：原样放行（即使和上一行一模一样也要放，重复的 traceback 也是证据）
+        if self.IMPORTANT.search(line):
+            return self._take_summary([line])
+        key = self._collapse_key(line)
+        # ② 非采样行：逐行放行
+        if key is None:
+            return self._take_summary([line])
+        # ③ 采样行：同帧且间隔不够 → 折掉，只累计
+        now = self._clock()
+        if key == self._key and (now - self._last_emit) < self.interval:
+            self._suppressed += 1
+            return []
+        out = self._take_summary([line])
+        self._key, self._last_emit = key, now
+        return out
+
+    def flush(self):
+        """任务结束时把最后一段的表达清楚（不然尾部折叠数就丢了）。"""
+        return self._take_summary([])
+
+
 class LogModel(object):
     """日志面板的**待消费队列**。
 
-    长任务会吐几万行，所以模型只攒"还没被界面取走的行"（界面按帧率批量取），
-    行数上限交给界面控件自己裁剪 —— 模型不替界面保存历史。
+    长任务会吐几万行，所以模型只攒"还没被界面取走的行"（界面按帧率批量取）。
+    行数上限有两道：
+    - 这里 `maxlen` 兜住**内存**（界面来不及取时不能无限涨）；
+    - 界面 Text 控件另有 `LOG_MAX_LINES` 兜住**渲染开销**。
+
+    丢掉的行数记在 `dropped` 里、由界面明说一句 —— 静默丢日志等于静默丢证据。
     """
 
-    def __init__(self, capacity=4000):
+    def __init__(self, capacity=4000, maxlen=20000):
         self.capacity = capacity
+        self.maxlen = maxlen
         self._pending = deque()
         self.total = 0                 # 累计收到的行数（界面对账用）
+        self.dropped = 0               # 因为 maxlen 上限被丢掉的最早行数
 
     def add(self, text):
         for line in str(text).replace("\r", "\n").split("\n"):
             if line.strip():
+                if self.maxlen and len(self._pending) >= self.maxlen:
+                    self._pending.popleft()
+                    self.dropped += 1
                 self._pending.append(line.rstrip())
                 self.total += 1
 
@@ -785,6 +914,7 @@ class LogModel(object):
 
     def clear(self):
         self._pending.clear()
+        self.dropped = 0               # 清空日志 = 重新开始记账
 
     def __len__(self):
         return len(self._pending)

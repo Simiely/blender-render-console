@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from . import applock, autostart, diskspace, locate, notify, power, taskstore, theme
 from .layout import FROZEN_SUBDIR
@@ -28,7 +28,8 @@ from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
                        DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
                        DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
                        SCENE_NEED_READ_LABEL,
-                       SCENE_PLACEHOLDERS, FormModel, LogModel, ProgressModel,
+                       SCENE_PLACEHOLDERS, FormModel, LogModel, NativeLineFilter,
+                       ProgressModel,
                        aftermath_plan, event_line, fields_from_detail,
                        frames_preview, guess_state_path,
                        is_unlimited_restart, new_segment, normalise_segment,
@@ -46,8 +47,9 @@ WINDOW_TITLE = "%s · 无头渲染控制台" % TITLE
 # 「重启次数」旁边那句说明。两种态各一句，由 _apply_restart_defaults 二选一 ——
 # 写死在控件上会和实际行为对不上（选中「一直重启」后两框已被填成 0=不限，
 # 提示却还在说"受上面无进展轮数兜底"）。
-NOTE_RESTART_LIMITED = "选「一直重启，直到全部渲完」= 重启次数不限；上面两个限次会自动填 0（不限）"
-NOTE_RESTART_UNLIMITED = "「一直重启」：上面两个限次已填 0（不限）；想留兜底可把数字改回去"
+NOTE_RESTART_LIMITED = "选「一直重启，直到全部渲完」= 重启次数不限；单帧尝试会自动填 0（不限），无进展兜底仍是 3 轮"
+NOTE_RESTART_UNLIMITED = ("「一直重启」：单帧尝试已填 0（不限）；连续 %s 轮无进展仍会停 —— "
+                          "那是唯一的防死循环兜底，别关掉" % DEFAULT_NO_PROGRESS)
 AUTOSTART_FLAG = autostart.AUTOSTART_FLAG
 
 # 「任务结束后」下拉：显示文案 ↔ 实际值（值就是 guimodel.AFTERMATH_*，别再写一份字面量）
@@ -86,6 +88,24 @@ def _apply_icon(root):
         pass
 
 
+def fit_combobox(cb, values=None, extra=1):
+    """按字体实测算下拉框的 `-width`（字符数），让最长的选项能完整显示。
+
+    为什么要算：ttk 的 `-width` 单位是**字符数**，而它的"字符宽"取自字体的平均
+    字符宽 —— 中文是双宽，所以 `width=22` 装不下 15 个汉字的「一直重启，直到全部
+    渲完（默认）」，下拉框里显示成「一直重启，直到全部渲完（默」，尾部被硬切、
+    连省略号都没有（Tk 的 combobox 不做 ellipsis）。
+    按 `Font.measure()` 折算一次，换 DPI / 换字号都不会再截断。
+    """
+    try:
+        f = tkfont.Font(root=cb, font=cb.cget("font") or "TkDefaultFont")
+        unit = max(1, f.measure("0"))
+        widest = max(f.measure(str(v)) for v in (values or cb.cget("values")))
+        cb.configure(width=int(round(widest / float(unit))) + extra)
+    except Exception:
+        pass                                    # 字号/字体探测失败不该挡住建界面
+
+
 class App(object):
     """主窗口。"""
 
@@ -101,6 +121,10 @@ class App(object):
         self.form = FormModel()
         self.prog = ProgressModel()
         self.log = LogModel()
+        #: 原生输出折叠器（采样进度一秒最多留一条，其余只计数）
+        self.native_filter = NativeLineFilter()
+        #: 已经提示过多少"被丢弃的日志行"——只报增量，不刷屏
+        self._dropped_shown = 0
         self.q = queue.Queue()
         self.job = None
         self.worker = None
@@ -159,7 +183,10 @@ class App(object):
         self.v_pct = tk.StringVar()
         self.v_format = tk.StringVar(value=FORMATS[0][1])
         self.v_resume = tk.BooleanVar(value=True)
-        self.v_native = tk.BooleanVar(value=False)
+        # 原生输出**默认开启**（v0.8.1）：它才是排错时真正有用的东西（Python traceback、
+        # 着色器编译失败、纹理找不到都只出现在这里）。重复的采样进度行由
+        # `NativeLineFilter` 折叠，不会把面板刷爆。
+        self.v_native = tk.BooleanVar(value=True)
         self.v_restarts = tk.StringVar(value=DEFAULT_RESTART_OPTION)
         self.v_no_progress = tk.StringVar(value=DEFAULT_NO_PROGRESS)
         self.v_attempts = tk.StringVar(value=DEFAULT_ATTEMPTS)
@@ -279,11 +306,20 @@ class App(object):
         self.cb_restarts = ttk.Combobox(opts, textvariable=self.v_restarts, width=22,
                                         state="readonly", values=RESTART_OPTIONS)
         self.cb_restarts.pack(side="left")
+        # 宽度按字体实测重算：默认项有 15 个汉字，写死 width=22 会被截掉尾巴
+        fit_combobox(self.cb_restarts, RESTART_OPTIONS)
         self.cb_restarts.bind("<<ComboboxSelected>>", self.on_restart_change)
-        ttk.Label(opts, text="单帧最多尝试").pack(side="left", padx=(12, 2))
-        # 留句柄便于真机探测脚本读值/状态（界面逻辑本身不依赖它）
-        self.ent_attempts = ttk.Entry(opts, textvariable=self.v_attempts, width=4)
-        self.ent_attempts.pack(side="left")
+
+        # 这句说明**必须独占一行**：它有一个复选框加一个长下拉那么宽，塞在同一行里
+        # 一定被窗口右边裁掉（曾经就是这样，只看得见"选「一直重启，直到全部渲完」= 重"）。
+        r += 1
+        note = ttk.Frame(box)
+        note.grid(row=r, column=1, columnspan=3, sticky="w")
+        # 下拉里放的就是中文文案本身（不另设"显示值/实际值"两张表），
+        # 由 core.parse_restart_limit 认中文，这里补一句人话解释即可
+        self.lbl_restart_note = ttk.Label(note, text=NOTE_RESTART_LIMITED,
+                                          style="Muted.TLabel")
+        self.lbl_restart_note.pack(side="left")
 
         r += 1
         opts_b = ttk.Frame(box)
@@ -293,17 +329,18 @@ class App(object):
         self.ent_no_progress.pack(side="left", padx=3)
         ttk.Label(opts_b, text="轮（0 = 不限制）",
                   style="Muted.TLabel").pack(side="left", padx=(2, 0))
+        # 「单帧最多尝试」与上面这个无进展闸门是一对：都是防死循环的旋钮，
+        # 所以放同一行（也顺带把上面那行让出来给长下拉）。留句柄便于真机探测脚本读值。
+        ttk.Label(opts_b, text="单帧最多尝试").pack(side="left", padx=(16, 2))
+        self.ent_attempts = ttk.Entry(opts_b, textvariable=self.v_attempts, width=4)
+        self.ent_attempts.pack(side="left")
+        ttk.Label(opts_b, text="次", style="Muted.TLabel").pack(side="left", padx=(2, 0))
 
         r += 1
         opts2 = ttk.Frame(box)
         opts2.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Checkbutton(opts2, text="显示 Blender 原生输出（排错用，日志会长很多）",
+        ttk.Checkbutton(opts2, text="显示 Blender 原生输出（默认开，同类进度行自动折叠）",
                         variable=self.v_native).pack(side="left")
-        # 下拉里放的就是中文文案本身（不另设"显示值/实际值"两张表），
-        # 由 core.parse_restart_limit 认中文，这里补一句人话解释即可
-        self.lbl_restart_note = ttk.Label(opts2, text=NOTE_RESTART_LIMITED,
-                                          style="Muted.TLabel")
-        self.lbl_restart_note.pack(side="left", padx=(16, 0))
 
         # ---- 开机自启 / 自动续跑 ----
         r += 1
@@ -392,10 +429,11 @@ class App(object):
         self.txt = tk.Text(prog, height=12, wrap="word", state="disabled",
                            font=("Consolas", 9), relief="flat",
                            **theme.log_widget_colors())
-        vs = ttk.Scrollbar(prog, orient="vertical", command=self.txt.yview)
-        self.txt.configure(yscrollcommand=vs.set)
+        self.vs = ttk.Scrollbar(prog, orient="vertical", command=self.txt.yview)
+        self._sb_style = theme.SCROLL_STYLE
+        self.txt.configure(yscrollcommand=self._on_log_scroll)
         self.txt.grid(row=2, column=0, sticky="nsew", padx=(6, 0), pady=6)
-        vs.grid(row=2, column=1, sticky="ns", pady=6)
+        self.vs.grid(row=2, column=1, sticky="ns", pady=6)
 
         # ---- 底部说明 ----
         ttk.Label(root, text="渲染走 `blender -b` 无头模式，不改动你的 .blend；"
@@ -746,9 +784,27 @@ class App(object):
 
     def clear_log(self):
         self.log.clear()
+        self._dropped_shown = 0          # 清空后重新记账（log.clear 已把 dropped 归零）
         self.txt.configure(state="normal")
         self.txt.delete("1.0", "end")
         self.txt.configure(state="disabled")
+
+    def _on_log_scroll(self, first, last):
+        """日志滚动条的"看得见/看不见"切换（Text 的 `yscrollcommand` 回调）。
+
+        内容装得下时 ttk 会把滑块拉满整条槽 —— 一条 10px 的亮灰长条就会常驻在日志右边，
+        跟正文抢注意力。这里按可见范围在两套**杆宽一致**的样式之间切：
+        装得下 → `Flat.`（滑块与槽同色，等于看不见）；溢出了 → 正常样式（滑块回来）。
+
+        ⚠️ 不能改成"把滚动条控件藏起来"：一藏日志就宽出 10px，`wrap="word"` 立刻重新
+        折行，行数一变又会反过来改变"要不要藏"的判定 —— 会来回闪。换样式不动布局。
+        """
+        self.vs.set(first, last)
+        idle = float(first) <= 0.0 and float(last) >= 1.0
+        want = theme.SCROLL_FLAT_STYLE if idle else theme.SCROLL_STYLE
+        if want != self._sb_style:
+            self._sb_style = want
+            self.vs.configure(style=want)
 
     # ---------------- 启动 / 停止 ----------------
     # ---------------- 开机自启 / 任务存档 ----------------
@@ -809,10 +865,11 @@ class App(object):
         self._apply_restart_defaults(remember=True)
 
     def _apply_restart_defaults(self, remember):
-        """选「一直重启，直到全部渲完」→ 两个限次框**默认填 0（不限）**。
+        """选「一直重启，直到全部渲完」→ **单帧尝试**默认填 0（不限）、**无进展轮数**保持 3。
 
-        这才是选它的本意：留下任意一个正数，任务都会在"其实还能接着重试"的时候提前结束
-        （帧被判 exhausted 踢出队列 / 触发 no_progress 直接刹车），跟"崩溃后一直重试"相反。
+        老版本这里把两个框都填 0，等于选完"一直重启"就顺手把内核里唯一防死循环的闸门
+        关掉了（AGENTS 坑 39）。现在拆开：重启次数不限（用户要的），但连续 3 轮一帧都没
+        推进就停（兜底仍在）。两框都**不锁**，想改随时改。
 
         **只改默认值、不锁控件** —— 想留兜底就把数字填回去（那是内核里唯一防死循环的闸门）。
         切回带次数的选项时还原原来的值，避免把 0（=不限）带进"5 次"这种有限次数的模式。
@@ -941,7 +998,8 @@ class App(object):
         self.form.max_restarts = self.v_restarts.get()
         self.form.max_no_progress = self.v_no_progress.get()
         self.form.max_frame_attempts = self.v_attempts.get()
-        self.form.show_native = self.v_native.get()
+        # 「显示原生输出」只是界面偏好，不进 JobConfig（`FormModel.show_native` 已删除：
+        # 它当年存进来之后全项目没有一处读它 —— AGENTS 坑 35 的同款）
 
     def on_start(self):
         self._collect_form()
@@ -951,7 +1009,6 @@ class App(object):
         if errors:
             messagebox.showerror("配置有问题", "\n".join("· " + e for e in errors))
             return
-        self._cancel_pending_countdown()
         blender = (self.form.blender or "").strip()
         if not blender:
             messagebox.showerror("配置有问题", "还没指定 blender.exe（点「自动探测」或手填）")
@@ -975,6 +1032,10 @@ class App(object):
             for line in why.splitlines():
                 self._log("! %s" % line)
 
+        # 撤掉挂起的关机/睡眠倒计时 —— 但**要等所有校验都过了**再撤：
+        # 配置错误（缺 blender、场景冲突、空间不足）根本没开始新任务，
+        # 却把用户刚设的关机撤掉，等于让机器白开一夜（P-W6）。
+        self._cancel_pending_countdown()
         # 存档要**赶在起线程之前**：晚一步就意味着"已经开始跑但还没存档"这段窗口里
         # 被强杀会让这次任务无从续起
         self._save_task(cfg, blender)
@@ -984,7 +1045,14 @@ class App(object):
         self.stopping = False
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
+        # 模型必须在这里就复位：`job_start` 事件要等后台线程跑起来才到（中间还有
+        # 建目录、读/写断点这些磁盘 IO），而 `_refresh` 每 80ms 就用模型刷一次界面 ——
+        # 不复位的话，进度条会先跳回上一轮的百分比再归零，状态栏也会闪一下旧文案。
+        self.prog.reset()
         self.pb["value"] = 0
+        self._refresh()
+        # 这次从哪个断点开始，开始前就说清楚（否则"看着像从零开始"）
+        self._refresh_state_label()
         self.btn_clear_state.configure(state="disabled")
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
@@ -1059,10 +1127,14 @@ class App(object):
         if kind == "__inspect__":        # 后台读工程配置的结果，不进 ProgressModel
             self._apply_inspect(ev)
             return
+        if kind == "job_start":
+            self.native_filter.reset()   # 新任务重新记账，别把上一轮的折叠数带过来
         self.prog.on_event(kind, ev)
         if kind == "native":
             if self.v_native.get() and ev.get("line"):
-                self.log.add("  | %s" % ev["line"])
+                # 默认开启 + 折叠：采样进度一秒最多留一条，被折掉的数量会附在下一条前面
+                for text in self.native_filter.feed(ev["line"]):
+                    self.log.add("  | %s" % text)
             elif ev.get("phase"):
                 self.log.add("  · %s" % ev["phase"])
             return
@@ -1070,6 +1142,9 @@ class App(object):
         if line:
             self.log.add(line)
         if kind in ("job_done", "job_error"):
+            # 任务收尾：把最后一段的折叠数交代清楚，否则尾部那截等于被静默吞掉
+            for text in self.native_filter.flush():
+                self.log.add("  | %s" % text)
             self.btn_start.configure(state="normal")
             self.btn_stop.configure(state="disabled")
             self.btn_clear_state.configure(state="normal")
@@ -1100,8 +1175,12 @@ class App(object):
         if self.demo:
             return
         if kind == "job_done":
-            title = "渲染已取消" if ev.get("cancelled") else (
-                "渲染完成" if ev.get("ok") else "渲染未完成")
+            # `ok` 优先：「最后一帧渲完的同一瞬间点了停止」时 ok 和 cancelled 同时为真，
+            # 这时说「渲染已取消」与「存档已按完成删掉」互相打脸（见 P-W3）
+            if ev.get("ok"):
+                title = "渲染完成"
+            else:
+                title = "渲染已取消" if ev.get("cancelled") else "渲染未完成"
         else:
             title = "渲染出错"
         # 结果文案直接复用进度模型的口径，别再拼一份
@@ -1198,9 +1277,15 @@ class App(object):
 
     def _flush_log(self):
         lines = self.log.drain()
-        if not lines:
+        dropped = self.log.dropped
+        if not lines and dropped == self._dropped_shown:
             return
         self.txt.configure(state="normal")
+        # 丢过的日志必须**说出来**：静默丢日志等于静默丢证据（原生输出开满时会丢）
+        if dropped > self._dropped_shown:
+            self.txt.insert("end", "[%s] （日志过快，已丢弃最早的 %d 行）\n"
+                            % (_stamp(), dropped - self._dropped_shown))
+            self._dropped_shown = dropped
         for line in lines:
             self.txt.insert("end", "[%s] %s\n" % (_stamp(), line))
         # 别让日志无限长：超出上限就砍掉前面一半
@@ -1259,11 +1344,13 @@ def run_gui(demo=False, cmd_factory=None, preset_blend=None, autostart_mode=Fals
     # `--demo`（自检）旁路：它写自己的临时目录，要能与真实例并存。
     lock = None
     root = tk.Tk()
-    theme.apply(root)                           # 深色主题要在建控件之前套上
     try:
+        # DPI 校正要在套主题**之前**：主题里的复选框指示器是图片元素，
+        # 图片不会跟着缩放自动变大 —— 必须在建它的时候就知道当前 DPI。
         root.tk.call("tk", "scaling", 1.3)      # 高 DPI 下别糊
     except Exception:
         pass
+    theme.apply(root)                           # 深色主题要在建控件之前套上
     if not demo:
         ok, lock = applock.acquire()
         if not ok:
