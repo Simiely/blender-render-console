@@ -17,101 +17,127 @@ sys.path.insert(0, ROOT)
 from brconsole import tkboot  # noqa: E402
 from brconsole.core import UNLIMITED  # noqa: E402
 from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: E402
-                                AFTERMATH_SLEEP, DEFAULT_ATTEMPTS, DEFAULT_ENDEAVOR,
-                                DEFAULT_NO_PROGRESS, ENDEAVOR_LABEL, ENDEAVOR_NOTE_OFF,
-                                ENDEAVOR_NOTE_ON, ENDEAVOR_ON,
+                                AFTERMATH_SLEEP, DEFAULT_NO_PROGRESS, DEFAULT_RETRY,
+                                RETRY_CHOICES, RETRY_COUNTS, RETRY_UNLIMITED_LABEL,
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL, FormModel,
                                 LogModel, NativeLineFilter, ProgressModel,
-                                aftermath_plan, endeavor_from_config, event_line,
+                                aftermath_plan, event_line,
                                 fields_from_detail, frames_preview, frames_to_text,
                                 frames_to_segments, guess_state_path, new_segment,
-                                retry_plan, segment_label, segments_to_frames,
-                                scene_to_config, settle_task_action, state_summary)
+                                retry_count, retry_label_for, retry_label_from_config,
+                                retry_note, retry_plan, segment_label,
+                                segments_to_frames, scene_to_config,
+                                settle_task_action, state_summary)
 from brconsole.state import JobState  # noqa: E402
 
 
-class TestEndeavorSwitch(unittest.TestCase):
-    """「尽力渲完」总开关 —— 三个重试参数由**一个布尔**推出来（v0.8.3）。
+class TestRetryChoices(unittest.TestCase):
+    """失败重试：**一个下拉，一个次数**，次数同时管重启和单帧尝试。
 
-    原先界面上是「崩溃后重启」下拉（1/3/5/10/一直）+「连续无进展」+「单帧最多尝试」
-    两个数字框 + 两行长说明。四件东西其实只表达一件事，用户的原话是
-    "这些控制太细碎了，一个参数控制所有的就行"。
-    现在只剩一个勾选，勾选态 → `(max_restarts, max_frame_attempts, max_no_progress)`。
+    界面上原来是「崩溃后重启」下拉（1/3/5/10/一直）+「连续无进展」+「单帧最多尝试」
+    两个数字框 + 两行长说明。用户的口径是"如果选一直重复，就是所有的都一直重复；
+    如果选 3 次，那其他的尝试也是三次" —— 这三件东西本来就该是同一个数。
+    现在下拉的文案就是那个数：
+
+        一直重复，直到渲完  →  (UNLIMITED, 0, 3)
+        3 次               →  (3, 3, 3)
     """
 
-    def test_on_means_unlimited_restarts_and_attempts(self):
-        self.assertEqual(retry_plan(True),
-                         (UNLIMITED, 0, int(DEFAULT_NO_PROGRESS)))
+    def test_unlimited_means_everything_unlimited(self):
+        self.assertEqual(retry_plan(RETRY_UNLIMITED_LABEL),
+                         (UNLIMITED, 0, DEFAULT_NO_PROGRESS))
 
-    def test_off_means_bounded(self):
-        self.assertEqual(retry_plan(False),
-                         (5, int(DEFAULT_ATTEMPTS), int(DEFAULT_NO_PROGRESS)))
+    def test_a_number_means_the_same_number_for_every_knob(self):
+        """★ 用户的原话："如果选 3 次，那其他的尝试也是三次"。"""
+        for n in RETRY_COUNTS:
+            self.assertEqual(retry_plan("%d 次" % n), (n, n, DEFAULT_NO_PROGRESS),
+                             "%d 次" % n)
 
-    def test_default_is_on(self):
-        """默认必须是「尽力渲完」：崩溃续跑本来就是这个程序的卖点，
-        有限次数会让长任务在"其实还能接着跑"的时候提前放弃。"""
-        self.assertTrue(DEFAULT_ENDEAVOR)
-        self.assertEqual(retry_plan(DEFAULT_ENDEAVOR), ENDEAVOR_ON)
-        self.assertIs(FormModel().endeavor, True)
+    def test_choices_are_unlimited_plus_the_numbers(self):
+        self.assertEqual(RETRY_CHOICES[0], RETRY_UNLIMITED_LABEL)
+        self.assertEqual(len(RETRY_CHOICES), len(RETRY_COUNTS) + 1)
+        self.assertEqual(list(RETRY_CHOICES), list(dict.fromkeys(RETRY_CHOICES)))
 
-    def test_no_progress_guard_is_never_switched_off(self):
-        """⚠️ 两态下「连续无进展」都必须是正数 —— 它是内核里唯一的防死循环闸门。
+    def test_default_is_unlimited(self):
+        """默认「一直重复」：崩溃续跑就是这个程序的卖点，有限次数会让长任务
+        在"其实还能接着跑"的时候提前放弃。"""
+        self.assertEqual(DEFAULT_RETRY, RETRY_UNLIMITED_LABEL)
+        self.assertIn(DEFAULT_RETRY, RETRY_CHOICES)
+        self.assertEqual(FormModel().retry, DEFAULT_RETRY)
 
-        老版本把勾选"一直重启"时的两个参数都填 0，等于选完就没有任何终止条件
-        （AGENTS 坑 39）。这条断言就是防止哪天有人"顺手"把它也放开。
+    def test_no_progress_guard_never_follows_the_dropdown(self):
+        """⚠️ 兜底恒为 3 轮，**不跟这个下拉走** —— 它是内核里唯一的防死循环闸门。
+
+        它和"重试次数"不是一回事：管的是"再试也没意义"的判据（连续几轮一帧都没推进）。
+        跟着变成不限就等于把这个闸门关掉（AGENTS 坑 39）。
         """
-        for endeavor in (True, False):
-            _restarts, _attempts, no_progress = retry_plan(endeavor)
-            self.assertGreater(no_progress, 0, "endeavor=%s 把兜底关掉了" % endeavor)
+        for label in RETRY_CHOICES:
+            _r, _a, no_progress = retry_plan(label)
+            self.assertEqual(no_progress, DEFAULT_NO_PROGRESS, label)
+            self.assertGreater(no_progress, 0, label)
 
-    def test_label_and_notes_stay_short(self):
-        """说明文字只解释"这个开关改了什么"，不做参数教学（原来两行各 40+ 字）。"""
-        self.assertIn("尽力渲完", ENDEAVOR_LABEL)
-        for note in (ENDEAVOR_NOTE_ON, ENDEAVOR_NOTE_OFF):
+    def test_every_choice_round_trips(self):
+        """文案 ↔ 次数一一对应：文案改了但解析没跟上，回填时下拉就会漂。"""
+        for label in RETRY_CHOICES:
+            self.assertEqual(retry_label_for(retry_count(label)), label)
+        self.assertEqual(retry_count("7 次"), 7)          # 预设外的也要认
+
+    def test_unknown_label_falls_back_to_bounded(self):
+        """认不出来的文案按**有界**兜 —— 宁可少试几次，也别悄悄变成无限。"""
+        self.assertEqual(retry_plan("随便写的"), (5, 5, DEFAULT_NO_PROGRESS))
+        self.assertEqual(retry_plan(""), (5, 5, DEFAULT_NO_PROGRESS))
+
+    def test_note_only_says_what_changed(self):
+        """说明只回答"这一次放宽/收紧了什么"，不做参数教学（原来两行各 40+ 字）。"""
+        for label in RETRY_CHOICES:
+            note = retry_note(label)
             self.assertLessEqual(len(note), 40, note)
-        self.assertIn("3", ENDEAVOR_NOTE_ON)          # 兜底轮数要写出来
-        self.assertIn("5", ENDEAVOR_NOTE_OFF)         # 不勾时的重启上限
-        self.assertIn("3", ENDEAVOR_NOTE_OFF)         # 不勾时的单帧上限
+            self.assertNotIn("填 0", note)
+        self.assertIn("都不限", retry_note(RETRY_UNLIMITED_LABEL))
+        self.assertIn("3 次", retry_note("3 次"))
+        self.assertIn(str(DEFAULT_NO_PROGRESS), retry_note("3 次"))
 
-    def test_notes_do_not_leak_implement_ids_on(self):
-        """勾上时不该再出现"填 0""不限"这类从数字框时代留下来的说法。"""
-        self.assertNotIn("填 0", ENDEAVOR_NOTE_ON)
-        self.assertNotIn("填 0", ENDEAVOR_NOTE_OFF)
+    # ---- 存档往返：老存档里的数要如实回到下拉 ----
+    def test_archive_unlimited_maps_to_unlimited_label(self):
+        self.assertEqual(retry_label_from_config(
+            {"max_restarts": UNLIMITED, "max_frame_attempts": 0}),
+            RETRY_UNLIMITED_LABEL)
 
-    # ---- 存档往返：老存档里的三个参数要能读回一个布尔 ----
-    def test_archive_unlimited_maps_to_on(self):
-        self.assertTrue(endeavor_from_config(
-            {"max_restarts": UNLIMITED, "max_frame_attempts": 0,
-             "max_no_progress_rounds": 3}))
-
-    def test_archive_bounded_maps_to_off(self):
+    def test_archive_numbers_map_to_their_own_label(self):
         for n in (1, 3, 5, 10):
-            self.assertFalse(endeavor_from_config(
-                {"max_restarts": n, "max_frame_attempts": 3,
-                 "max_no_progress_rounds": 3}), n)
+            self.assertEqual(retry_label_from_config({"max_restarts": n}), "%d 次" % n)
+
+    def test_archive_with_a_number_outside_the_presets_is_kept(self):
+        """老存档里可能是 7 次（CLI 能填）—— 照样显示「7 次」，不折叠成 5 或 10。
+        折叠就等于"回填一下，行为变了"。"""
+        self.assertEqual(retry_label_from_config({"max_restarts": 7}), "7 次")
+        self.assertEqual(retry_plan("7 次"), (7, 7, DEFAULT_NO_PROGRESS))
 
     def test_archive_missing_fields_falls_back_to_bounded(self):
         """读不出来时按**有界**那一侧兜 —— 安全方向。"""
-        self.assertFalse(endeavor_from_config({}))
-        self.assertFalse(endeavor_from_config(None))
+        self.assertEqual(retry_label_from_config({}), "5 次")
+        self.assertEqual(retry_label_from_config(None), "5 次")
 
     def test_archive_roundtrip_preserves_behavior(self):
-        """存档 → 表单 → JobConfig，跑出来的策略要和存档当初一致。"""
-        d = tempfile.mkdtemp(prefix=".brc-endeavor-")
+        """存档 → 表单 → JobConfig：重启次数不变，单帧尝试跟着同一个数走。"""
+        d = tempfile.mkdtemp(prefix=".brc-retry-")
         try:
             blend = os.path.join(d, "a.blend")
             with open(blend, "wb") as f:
                 f.write(b"BLENDER-v5")
-            for cfg_dict, want_on in (
-                    ({"max_restarts": UNLIMITED, "max_frame_attempts": 0}, True),
-                    ({"max_restarts": 10, "max_frame_attempts": 3}, False)):
+            for cfg_dict, want_restarts, want_attempts in (
+                    ({"max_restarts": UNLIMITED, "max_frame_attempts": 0}, UNLIMITED, 0),
+                    ({"max_restarts": 10, "max_frame_attempts": 3}, 10, 10),
+                    ({"max_restarts": 7, "max_frame_attempts": 3}, 7, 7)):
                 fm = FormModel.from_config(dict(
                     cfg_dict, blend=blend,
                     output_template=os.path.join(d, "o", "f_####"), frames=[1]))
-                self.assertIs(fm.endeavor, want_on, cfg_dict)
                 cfg, errors, _w = fm.to_config()
                 self.assertEqual(errors, [], cfg_dict)
-                self.assertEqual(cfg.unlimited_restarts, want_on, cfg_dict)
+                self.assertEqual(cfg.unlimited_restarts, want_restarts < 0, cfg_dict)
+                if want_restarts >= 0:
+                    self.assertEqual(cfg.max_restarts, want_restarts, cfg_dict)
+                self.assertEqual(cfg.max_frame_attempts, want_attempts, cfg_dict)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -238,34 +264,34 @@ class TestFormValidation(unittest.TestCase):
         self.assertEqual(cfg.output_template, self.out)
         self.assertIsNone(cfg.engine)          # KEEP 要翻译成 None（保持工程设置）
 
-    # ---- 「尽力渲完」两档落到 JobConfig ----
+    # ---- 下拉的两档落到 JobConfig ----
     #
-    # 上一版这里是「三个『不限』同时成立就警告」（走查 P-W4）：界面当时把
-    # 重启次数 / 单帧尝试 / 无进展兜底拆成三个可填控件，用户照着自己的理解填 0
-    # 就能凑出一个**没有任何终止条件**的组合。现在两个数字框没了，那个组合
-    # 从界面上根本拼不出来（`retry_plan` 里兜底恒为 3），所以警告也一起删了 ——
-    # **修复杂度比警告复杂度更好**。
-    def test_endeavor_on_passes_unlimited_through(self):
-        cfg, errors, warns = self._form(endeavor=True).to_config()
+    # 走查 P-W4 当时是「三个『不限』同时成立就警告」：界面把重启次数 / 单帧尝试 /
+    # 无进展兜底拆成三个可填控件，用户照着理解填 0 就能凑出一个**没有任何终止条件**的
+    # 组合。现在两个数字框没了，那个组合从界面上拼不出来（`retry_plan` 里兜底恒为 3），
+    # 警告也一起删了 —— **修复杂度比警告复杂度更好**。
+    def test_unlimited_choice_passes_unlimited_through(self):
+        cfg, errors, warns = self._form(retry=RETRY_UNLIMITED_LABEL).to_config()
         self.assertEqual(errors, [])
         self.assertEqual(warns, [])
         self.assertTrue(cfg.unlimited_restarts)
         self.assertEqual(cfg.max_frame_attempts, 0)
-        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
+        self.assertEqual(cfg.max_no_progress_rounds, DEFAULT_NO_PROGRESS)
 
-    def test_endeavor_off_is_bounded(self):
-        cfg, errors, warns = self._form(endeavor=False).to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(warns, [])
-        self.assertFalse(cfg.unlimited_restarts)
-        self.assertEqual(cfg.max_restarts, 5)
-        self.assertEqual(cfg.max_frame_attempts, int(DEFAULT_ATTEMPTS))
+    def test_number_choice_bounds_both_knobs_to_that_number(self):
+        for n in RETRY_COUNTS:
+            cfg, errors, warns = self._form(retry="%d 次" % n).to_config()
+            self.assertEqual(errors, [], n)
+            self.assertEqual(warns, [], n)
+            self.assertFalse(cfg.unlimited_restarts, n)
+            self.assertEqual(cfg.max_restarts, n, n)
+            self.assertEqual(cfg.max_frame_attempts, n, n)   # ★ 不是各填各的
 
     def test_no_termination_free_config_is_reachable_from_the_form(self):
-        """★ 界面再也拼不出"三重不限" —— 这是删掉两个数字框换来的硬保证。"""
-        for endeavor in (True, False):
-            cfg, _e, _w = self._form(endeavor=endeavor).to_config()
-            self.assertGreater(cfg.max_no_progress_rounds, 0, endeavor)
+        """★ 界面拼不出"三重不限" —— 这是把两个数字框并进下拉换来的硬保证。"""
+        for label in RETRY_CHOICES:
+            cfg, _e, _w = self._form(retry=label).to_config()
+            self.assertGreater(cfg.max_no_progress_rounds, 0, label)
 
     def test_missing_blend(self):
         cfg, errors, _ = self._form(blend="").to_config()
@@ -333,7 +359,7 @@ class TestFormValidation(unittest.TestCase):
         self.assertTrue(any("采样" in e for e in errors))
 
     def test_retry_knobs_are_no_longer_form_fields(self):
-        """三个重试参数已经不是表单字段了：表单只认一个 `endeavor`。
+        """三个重试参数已经不是表单字段了：表单只认一个下拉文案 `retry`。
 
         这条同时是一道防腐断言 —— 如果哪天有人把 `max_restarts` 之类的字段加回
         `FormModel`，它会失败，提醒"先想清楚要不要把界面复杂度加回来"。
@@ -962,7 +988,7 @@ class TestFormFromConfig(unittest.TestCase):
         return JobConfig(**args).to_dict()
 
     def test_unrepresentable_guard_value_is_normalised_not_dropped(self):
-        """存档里把兜底写成 7 轮（CLI 能填，界面只有一个开关表达不了）→ 回填后按 3 轮跑。
+        """存档里把兜底写成 7 轮（CLI 能填，界面那个下拉表达不了）→ 回填后按 3 轮跑。
 
         ⚠️ 关键是**不能变成 0**：那等于把内核里唯一的防死循环闸门关掉（AGENTS 坑 39）。
         收窄可以（界面表达不了更细的值），但收窄的方向必须是"更安全"。
@@ -1027,8 +1053,8 @@ class TestFormFromConfig(unittest.TestCase):
         fm = FormModel.from_config({}, "")
         self.assertEqual(fm.blend, "")
         # 存档里缺 `max_restarts` = 老存档/坏存档 → 按**有界**那侧兜（不是新任务的默认值）。
-        # 与 `endeavor_from_config` 同一条原则：分不出来的时候按有界那一侧。
-        self.assertFalse(fm.endeavor)
+        # 与 `retry_label_from_config` 同一条原则：分不出来的时候按有界那一侧。
+        self.assertEqual(fm.retry, "5 次")
 
 
 

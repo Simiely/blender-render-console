@@ -25,9 +25,9 @@ from . import applock, autostart, diskspace, locate, notify, power, taskstore, t
 from .layout import FROZEN_SUBDIR
 from .core import RenderJob
 from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
-                       DEFAULT_ENDEAVOR, DEVICES, ENDEAVOR_LABEL,
-                       ENDEAVOR_NOTE_OFF, ENDEAVOR_NOTE_ON,
-                       ENGINES, FORMATS, SCENE_NEED_READ_LABEL,
+                       DEFAULT_RETRY, DEVICES, ENGINES, FORMATS,
+                       RETRY_CHOICES, SCENE_NEED_READ_LABEL,
+                       retry_note,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, NativeLineFilter,
                        ProgressModel,
                        aftermath_plan, event_line, fields_from_detail,
@@ -85,9 +85,9 @@ def fit_combobox(cb, values=None, extra=1):
     """按字体实测算下拉框的 `-width`（字符数），让最长的选项能完整显示。
 
     为什么要算：ttk 的 `-width` 单位是**字符数**，而它的"字符宽"取自字体的平均
-    字符宽 —— 中文是双宽，所以 `width=22` 装不下 15 个汉字的「一直重启，直到全部
-    渲完（默认）」，下拉框里显示成「一直重启，直到全部渲完（默」，尾部被硬切、
-    连省略号都没有（Tk 的 combobox 不做 ellipsis）。
+    字符宽 —— 中文是双宽，所以 `width=22` 装不下「一直重启，直到全部渲完（默认）」
+    这种 15 个汉字的文案，下拉框里显示成尾部被硬切的半句、连省略号都没有
+    （Tk 的 combobox 不做 ellipsis）。
     按 `Font.measure()` 折算一次，换 DPI / 换字号都不会再截断。
     """
     try:
@@ -180,10 +180,10 @@ class App(object):
         # 着色器编译失败、纹理找不到都只出现在这里）。重复的采样进度行由
         # `NativeLineFilter` 折叠，不会把面板刷爆。
         self.v_native = tk.BooleanVar(value=True)
-        # 重试策略**只有一个开关**（v0.8.3）：勾上=尽力渲完（不限重启/不限单帧/兜底 3 轮），
-        # 不勾=最多 5 次/单帧 3 次。原先是一个下拉 + 两个数字框 + 两行说明，
+        # 重试策略**只有一个下拉**（v0.8.4）：选中的次数同时作用于重启与单帧尝试，
+        # 选「一直重复」则两者都不限。原先一个下拉 + 两个数字框 + 两行说明，
         # 那四件东西其实只表达了一件事（见 guimodel.retry_plan）。
-        self.v_endeavor = tk.BooleanVar(value=DEFAULT_ENDEAVOR)
+        self.v_retry = tk.StringVar(value=DEFAULT_RETRY)
         # 开机自启勾选态**不从记忆读**，而是下面按注册表实际登记情况回填 ——
         # 界面必须反映"真的会自启吗"，不能显示一个自己记的、可能已经失效的状态
         self.v_autostart = tk.BooleanVar(value=False)
@@ -293,21 +293,24 @@ class App(object):
         opts.grid(row=r, column=1, columnspan=3, sticky="w")
         ttk.Checkbutton(opts, text="从断点续跑（未完成的帧接着渲染）",
                         variable=self.v_resume).pack(side="left")
-        # 重试策略只剩这一个勾选（v0.8.3）。原先的「崩溃后重启」下拉 + 「连续无进展」
-        # 「单帧最多尝试」两个数字框 + 两行长说明，表达的是同一件事，全删了。
-        self.chk_endeavor = ttk.Checkbutton(opts, text=ENDEAVOR_LABEL,
-                                            variable=self.v_endeavor,
-                                            command=self.on_endeavor_change)
-        self.chk_endeavor.pack(side="left", padx=(16, 0))
+        # 重试策略只剩这一个下拉（v0.8.4）：**选中的次数同时管重启和单帧尝试**。
+        # 原先的「连续无进展」「单帧最多尝试」两个数字框 + 两行长说明表达的是同一件事，
+        # 全删了（见 guimodel.retry_plan）。
+        ttk.Label(opts, text="失败重试").pack(side="left", padx=(16, 6))
+        self.cmb_retry = ttk.Combobox(opts, textvariable=self.v_retry, state="readonly",
+                                      values=list(RETRY_CHOICES))
+        self.cmb_retry.pack(side="left")
+        fit_combobox(self.cmb_retry, list(RETRY_CHOICES))
+        self.cmb_retry.bind("<<ComboboxSelected>>", lambda _e: self._sync_retry_note())
 
-        # 一句短说明解释「这个开关到底改了什么」—— 不是参数教学，只是让不勾的时候
-        # 也知道会变成"最多几次"。独占一行：和上面两个勾选挤在一起一定会被右边裁掉。
+        # 一句短说明：「这一次到底放宽/收紧了什么」。独占一行 —— 和上面的控件挤在一起
+        # 一定会被右边裁掉（这也是原来那两行说明必须独立成行的原因）。
         r += 1
         note = ttk.Frame(box)
         note.grid(row=r, column=1, columnspan=3, sticky="w")
-        self.lbl_endeavor_note = ttk.Label(note, text=ENDEAVOR_NOTE_ON,
-                                           style="Muted.TLabel")
-        self.lbl_endeavor_note.pack(side="left")
+        self.lbl_retry_note = ttk.Label(note, text=retry_note(DEFAULT_RETRY),
+                                        style="Muted.TLabel")
+        self.lbl_retry_note.pack(side="left")
 
         r += 1
         opts2 = ttk.Frame(box)
@@ -835,17 +838,15 @@ class App(object):
         if rec is not None:
             self.v_auto_resume.set(bool(rec.get("autoresume", True)))
 
-    # ---- 「尽力渲完」总开关 ----
-    def on_endeavor_change(self):
-        """用户勾/取消。**只改旁边那句说明**，不动别的控件 —— 三个重试参数
-        （重启次数 / 单帧尝试 / 无进展兜底）不再有各自的可填框，全由这个布尔
-        在 `guimodel.retry_plan()` 里推出，所以没有"切选项时要同步另一个框"这回事了。
-        """
-        self._sync_endeavor_note()
+    # ---- 失败重试（一个下拉） ----
+    def _sync_retry_note(self):
+        """切下拉时**只改旁边那句说明**，不动别的控件。
 
-    def _sync_endeavor_note(self):
-        self.lbl_endeavor_note.configure(
-            text=(ENDEAVOR_NOTE_ON if self.v_endeavor.get() else ENDEAVOR_NOTE_OFF))
+        三个重试参数（重启次数 / 单帧尝试 / 无进展兜底）已经由选中的次数在
+        `guimodel.retry_plan()` 里一次算出，所以没有"切选项时要同步另一个框"这回事 ——
+        那正是原来那套（下拉 + 两个数字框）最招人烦的地方。
+        """
+        self.lbl_retry_note.configure(text=retry_note(self.v_retry.get()))
 
     def _apply_form_model(self, fm):
         """把 `FormModel` 铺到控件上（开机续跑回填用）。"""
@@ -863,10 +864,17 @@ class App(object):
         self.v_format.set(fm.file_format)
         self.v_scene.set(fm.scene)
         self.v_resume.set(fm.resume)
-        # 存档里的三个重试参数已经由 `FormModel.from_config` 折成一个布尔，
-        # 这里只贴勾选态 + 那句说明（不再有"补下拉候选"那种坑）
-        self.v_endeavor.set(fm.endeavor)
-        self._sync_endeavor_note()
+        # 存档里的次数已经由 `FormModel.from_config` 变成下拉文案，这里贴上去 + 刷新说明。
+        # 预设里没有的次数（老存档里的"7 次"）要临时补进候选，否则 readonly 的下拉
+        # 显示不出这个值、看起来像"回填丢了"。
+        label = fm.retry
+        values = list(RETRY_CHOICES)
+        if label not in values:
+            values.append(label)
+        self.cmb_retry.configure(values=values)
+        fit_combobox(self.cmb_retry, values)
+        self.v_retry.set(label)
+        self._sync_retry_note()
 
     def _save_task(self, cfg, blender):
         """点击开始后**先存档再跑**：只有这样，进程被强杀时才有东西可供开机续跑。"""
@@ -939,7 +947,7 @@ class App(object):
         self.form.pct = self.v_pct.get()
         self.form.file_format = self.v_format.get()
         self.form.resume = self.v_resume.get()
-        self.form.endeavor = self.v_endeavor.get()
+        self.form.retry = self.v_retry.get()
         # 「显示原生输出」只是界面偏好，不进 JobConfig（`FormModel.show_native` 已删除：
         # 它当年存进来之后全项目没有一处读它 —— AGENTS 坑 35 的同款）
 

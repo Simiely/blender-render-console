@@ -26,55 +26,81 @@ SCENE_DEFAULT_LABEL = "（用工程默认场景）"
 SCENE_NEED_READ_LABEL = "（先读取工程配置）"
 SCENE_PLACEHOLDERS = (SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL)
 
-# ---------------- 「尽力渲完」总开关 ----------------
+# ---------------- 失败重试：一个下拉，一个次数 ----------------
 #
-# 界面上只留**一个**勾选，它背后是三个互相牵制的内核参数：
+# 界面上只有**一个下拉**，它同时决定三个互相牵制的内核参数：
 #     (最多重启次数, 单帧最多尝试, 连续无进展轮数)
 #
-# 为什么要合并成一个：这三个参数拆成「下拉 + 两个数字框」之后，用户从界面上
-# 根本看不出它们是一组的 —— "填 0 等于关掉哪道闸门"、"为什么选了无限重启
-# 单帧次数会自己变 0"，全靠两行长说明文字解释。那两行说明本身就是复杂度外溢的证据
-# （用户原话："这些控制太细碎了，一个参数控制所有的就行"）。
+# 规则只有一条 —— **选中的次数同时作用于重启和单帧尝试**（用户原话：
+# "如果选一直重复，就是所有的都一直重复；如果选 3 次，那其他的尝试也是三次"）：
+#
+#     一直重复，直到渲完  →  重启不限、单帧不限
+#     3 次               →  最多重启 3 次、单帧最多试 3 次
+#
+# 拆成「下拉 + 两个数字框」时，用户从界面上看不出它们是一组的：为什么要填两个数、
+# "填 0 等于关掉哪道闸门"，全靠两行长说明文字解释。那两行说明本身就是复杂度外溢。
 #
 # 「不限」沿用 core/state 里**既有**的约定（`JobState.remaining` 用
 # `max_attempts <= 0` 表示不限），不需要给内核加新语义。
 #
-# ⚠️ 勾上时**只把单帧尝试放开，无进展兜底仍是 3**：两个都填 0 等于把内核里唯一的
-#    防死循环闸门一起关掉（AGENTS 坑 39）—— 卡在同一处反复崩、一帧都渲不出来时，
+# ⚠️ 无进展兜底**永远**是 3 轮，不跟这个下拉走：它和"重试次数"不是一回事 ——
+#    它管的是"再试也没意义"的判据（连续几轮一帧都没推进）。跟着变成不限就等于把
+#    内核里唯一的防死循环闸门关掉（AGENTS 坑 39）：卡在同一处反复崩、一帧都渲不出来时，
 #    没有任何条件能让它停下来。
-DEFAULT_ATTEMPTS = "3"
-DEFAULT_NO_PROGRESS = "3"
+DEFAULT_NO_PROGRESS = 3
 
-ENDEAVOR_LABEL = "尽力渲完（崩溃后自动续渲，直到全部渲完）"
-ENDEAVOR_ON = (UNLIMITED, 0, int(DEFAULT_NO_PROGRESS))
-ENDEAVOR_OFF = (5, int(DEFAULT_ATTEMPTS), int(DEFAULT_NO_PROGRESS))
-DEFAULT_ENDEAVOR = True          # 与 v0.8.1 起的默认「一直重启」保持一致
-
-#: 勾选态旁边那一句短说明（只解释"这个开关到底改了什么"，不做参数教学）
-ENDEAVOR_NOTE_ON = ("不限重启次数与单帧次数 · 连续 %s 轮一帧都没推进仍会停"
-                    % DEFAULT_NO_PROGRESS)
-ENDEAVOR_NOTE_OFF = ("最多重启 %d 次 · 单帧最多试 %d 次"
-                     % (ENDEAVOR_OFF[0], ENDEAVOR_OFF[1]))
+RETRY_UNLIMITED_LABEL = "一直重复，直到渲完"
+#: 下拉里可选的有限次数（顺序即显示顺序）
+RETRY_COUNTS = (1, 3, 5, 10)
+RETRY_CHOICES = (RETRY_UNLIMITED_LABEL,) + tuple("%d 次" % n for n in RETRY_COUNTS)
+#: 默认「一直重复」——与 v0.8.1 起的默认行为一致
+DEFAULT_RETRY = RETRY_UNLIMITED_LABEL
 
 
-def retry_plan(endeavor):
-    """勾选态 → `(max_restarts, max_frame_attempts, max_no_progress_rounds)`。
+def retry_count(label):
+    """下拉文案 → 次数（`UNLIMITED` = 不限）。
+
+    解析交给 `core.parse_restart_limit`（它认 `"3 次"` → 3、`"一直重复…"` → -1），
+    认不出来时按**有界**那侧兜 —— 宁可少试几次，也别悄悄把次数变成无限。
+    """
+    return parse_restart_limit(str(label or "").strip(), default=5)
+
+
+def retry_label_for(count):
+    """次数 → 下拉文案。预设里没有的数值也如实显示（老存档里可能有"7 次"）。"""
+    n = int(count)
+    return RETRY_UNLIMITED_LABEL if n < 0 else "%d 次" % n
+
+
+def retry_note(label):
+    """下拉旁边那一句短说明：只说"这一次到底放宽/收紧了什么"。"""
+    n = retry_count(label)
+    head = "重启与单帧尝试都不限" if n < 0 else "重启与单帧都按 %d 次" % n
+    return "%s · 连续 %d 轮没推进仍会停" % (head, DEFAULT_NO_PROGRESS)
+
+
+def retry_plan(label):
+    """下拉文案 → `(max_restarts, max_frame_attempts, max_no_progress_rounds)`。
 
     这是**唯一**一份"三个重试参数从哪来"的规则：`FormModel.to_config` 调它，
-    界面只负责把勾选态读出来。别在别处再拼一遍 —— 拼两遍就一定会漂。
+    界面只负责把下拉的文案读出来。别在别处再拼一遍 —— 拼两遍就一定会漂。
     """
-    return ENDEAVOR_ON if endeavor else ENDEAVOR_OFF
+    n = retry_count(label)
+    if n < 0:
+        return (UNLIMITED, 0, DEFAULT_NO_PROGRESS)
+    return (n, n, DEFAULT_NO_PROGRESS)
 
 
-def endeavor_from_config(cfg_dict):
-    """存档里的参数 → 勾选态（开机续跑回填用）。
+def retry_label_from_config(cfg_dict):
+    """存档里的参数 → 下拉文案（开机续跑回填用）。
 
-    判据只用 `max_restarts` 的"无限"标志：老存档里「一直重启」一定伴随
-    `max_frame_attempts=0`，而"有限次数"那几种写的是正数。
-    读不出来时按**有界**那一侧兜（更安全的方向）。
+    只读 `max_restarts`：它就是这一版里"那个次数"，重启与单帧尝试都从它来。
+    老存档里可能是 7、20 这类预设里没有的数 —— 照样显示成"N 次"，不折叠成预设值，
+    否则"回填一下行为就变了"。
     """
-    return parse_restart_limit((cfg_dict or {}).get("max_restarts", 5),
-                               default=5) < 0
+    d = cfg_dict or {}
+    return retry_label_for(parse_restart_limit(d.get("max_restarts", 5), default=5))
+
 
 #: 第一段帧范围的默认起止（也是"没读到工程配置"时的兜底），界面与 FormModel 共用一份
 DEFAULT_SEGMENT_START = "1"
@@ -406,10 +432,10 @@ class FormModel(object):
         self.file_format = kw.get("file_format", KEEP)
         self.scene = kw.get("scene", SCENE_DEFAULT_LABEL)   # 场景名，或占位文案
         self.resume = kw.get("resume", True)
-        #: 重试策略**只有一个字段**：勾上 = 尽力渲完（不限重启、不限单帧、兜底 3 轮），
-        #: 不勾 = 最多 5 次 / 单帧 3 次。三个内核参数由 `retry_plan()` 从这一个布尔推出来，
+        #: 重试策略**只有一个字段**（下拉的文案）：选「一直重复」= 重启与单帧尝试都不限；
+        #: 选「3 次」= 两者都是 3 次。三个内核参数由 `retry_plan()` 从这一个文案推出来，
         #: 界面上不再有「单帧最多尝试 / 连续无进展」两个可填的框。
-        self.endeavor = kw.get("endeavor", DEFAULT_ENDEAVOR)
+        self.retry = kw.get("retry", DEFAULT_RETRY)
         # ⚠️ 「显示原生输出」曾经在这里有个 `show_native` 字段：界面把它存进来，
         #    但**全项目没有一处读它**（真正的开关是 gui 里的 `v_native`）。
         #    这正是 AGENTS 坑 35「开关不通电」的同款 —— 已删除，别再把它加回来。
@@ -461,9 +487,9 @@ class FormModel(object):
             file_format=d.get("file_format") or KEEP,
             scene=d.get("scene") or SCENE_DEFAULT_LABEL,
             resume=bool(d.get("resume", True)),
-            # 三个重试参数从存档推回一个布尔（判据在 endeavor_from_config），
-            # 界面上就只有一个勾选 —— 老存档读进来照样跑成原来那样
-            endeavor=endeavor_from_config(d),
+            # 存档里的次数回填到那个下拉（判据在 retry_label_from_config）：
+            # 老存档读进来照样跑成原来那样，预设里没有的数值也如实显示
+            retry=retry_label_from_config(d),
             extra_args=d.get("extra_args") or (),
             restart_delay=d.get("restart_delay", 2.0),
         )
@@ -518,7 +544,7 @@ class FormModel(object):
         if errors:
             return None, errors, warns
 
-        max_restarts, attempts, no_progress = retry_plan(self.endeavor)
+        max_restarts, attempts, no_progress = retry_plan(self.retry)
 
         cfg = JobConfig(
             blend=blend, frames=frames, output_template=output,
