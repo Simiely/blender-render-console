@@ -15,51 +15,105 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from brconsole import tkboot  # noqa: E402
-from brconsole.core import UNLIMITED, parse_restart_limit  # noqa: E402
+from brconsole.core import UNLIMITED  # noqa: E402
 from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: E402
-                                AFTERMATH_SLEEP, DEFAULT_ATTEMPTS,
-                                DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
-                                RESTART_OPTIONS,
-                                SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL,
-                                UNLIMITED_LIMITS, UNLIMITED_RESTART_LABEL, FormModel,
+                                AFTERMATH_SLEEP, DEFAULT_ATTEMPTS, DEFAULT_ENDEAVOR,
+                                DEFAULT_NO_PROGRESS, ENDEAVOR_LABEL, ENDEAVOR_NOTE_OFF,
+                                ENDEAVOR_NOTE_ON, ENDEAVOR_ON,
+                                SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL, FormModel,
                                 LogModel, NativeLineFilter, ProgressModel,
-                                aftermath_plan, event_line,
+                                aftermath_plan, endeavor_from_config, event_line,
                                 fields_from_detail, frames_preview, frames_to_text,
                                 frames_to_segments, guess_state_path, new_segment,
-                                segment_label, segments_to_frames,
-                                is_unlimited_restart, restart_label_for,
-                                restart_limits_plan, restore_limits_backup,
-                                scene_to_config, settle_task_action, state_summary,
-                                unlimited_limit_fill)
+                                retry_plan, segment_label, segments_to_frames,
+                                scene_to_config, settle_task_action, state_summary)
 from brconsole.state import JobState  # noqa: E402
 
 
-class TestRestartOptions(unittest.TestCase):
-    """「崩溃后重启」下拉：文案是中文，且解析器认这些文案。
+class TestEndeavorSwitch(unittest.TestCase):
+    """「尽力渲完」总开关 —— 三个重试参数由**一个布尔**推出来（v0.8.3）。
 
-    历史 bug：界面用的是裸值列表（`1/3/5/10/unlimited`），下拉里直接显示出英文
-    `unlimited`，而配套的中文文案从没被用上。
+    原先界面上是「崩溃后重启」下拉（1/3/5/10/一直）+「连续无进展」+「单帧最多尝试」
+    两个数字框 + 两行长说明。四件东西其实只表达一件事，用户的原话是
+    "这些控制太细碎了，一个参数控制所有的就行"。
+    现在只剩一个勾选，勾选态 → `(max_restarts, max_frame_attempts, max_no_progress)`。
     """
 
-    EXPECTED = {"1 次": 1, "3 次": 3, "5 次": 5, "10 次": 10,
-                "一直重启，直到全部渲完（默认）": -1}
+    def test_on_means_unlimited_restarts_and_attempts(self):
+        self.assertEqual(retry_plan(True),
+                         (UNLIMITED, 0, int(DEFAULT_NO_PROGRESS)))
 
-    def test_options_are_all_chinese_labels(self):
-        self.assertEqual(set(RESTART_OPTIONS), set(self.EXPECTED))
-        for label in RESTART_OPTIONS:
-            self.assertNotIn("unlimited", label.lower(), label)
+    def test_off_means_bounded(self):
+        self.assertEqual(retry_plan(False),
+                         (5, int(DEFAULT_ATTEMPTS), int(DEFAULT_NO_PROGRESS)))
 
-    def test_every_label_parses_to_expected_value(self):
-        for label, want in self.EXPECTED.items():
-            self.assertEqual(parse_restart_limit(label), want, label)
-
-    def test_default_option_is_unlimited(self):
-        """v0.8.1 起默认「一直重启」：崩溃续跑是本程序的卖点，
+    def test_default_is_on(self):
+        """默认必须是「尽力渲完」：崩溃续跑本来就是这个程序的卖点，
         有限次数会让长任务在"其实还能接着跑"的时候提前放弃。"""
-        self.assertEqual(DEFAULT_RESTART_OPTION, "一直重启，直到全部渲完（默认）")
-        self.assertEqual(parse_restart_limit(DEFAULT_RESTART_OPTION), UNLIMITED)
-        # 默认项必须排在候选里（readonly 下拉只会显示候选里的文案）
-        self.assertIn(DEFAULT_RESTART_OPTION, RESTART_OPTIONS)
+        self.assertTrue(DEFAULT_ENDEAVOR)
+        self.assertEqual(retry_plan(DEFAULT_ENDEAVOR), ENDEAVOR_ON)
+        self.assertIs(FormModel().endeavor, True)
+
+    def test_no_progress_guard_is_never_switched_off(self):
+        """⚠️ 两态下「连续无进展」都必须是正数 —— 它是内核里唯一的防死循环闸门。
+
+        老版本把勾选"一直重启"时的两个参数都填 0，等于选完就没有任何终止条件
+        （AGENTS 坑 39）。这条断言就是防止哪天有人"顺手"把它也放开。
+        """
+        for endeavor in (True, False):
+            _restarts, _attempts, no_progress = retry_plan(endeavor)
+            self.assertGreater(no_progress, 0, "endeavor=%s 把兜底关掉了" % endeavor)
+
+    def test_label_and_notes_stay_short(self):
+        """说明文字只解释"这个开关改了什么"，不做参数教学（原来两行各 40+ 字）。"""
+        self.assertIn("尽力渲完", ENDEAVOR_LABEL)
+        for note in (ENDEAVOR_NOTE_ON, ENDEAVOR_NOTE_OFF):
+            self.assertLessEqual(len(note), 40, note)
+        self.assertIn("3", ENDEAVOR_NOTE_ON)          # 兜底轮数要写出来
+        self.assertIn("5", ENDEAVOR_NOTE_OFF)         # 不勾时的重启上限
+        self.assertIn("3", ENDEAVOR_NOTE_OFF)         # 不勾时的单帧上限
+
+    def test_notes_do_not_leak_implement_ids_on(self):
+        """勾上时不该再出现"填 0""不限"这类从数字框时代留下来的说法。"""
+        self.assertNotIn("填 0", ENDEAVOR_NOTE_ON)
+        self.assertNotIn("填 0", ENDEAVOR_NOTE_OFF)
+
+    # ---- 存档往返：老存档里的三个参数要能读回一个布尔 ----
+    def test_archive_unlimited_maps_to_on(self):
+        self.assertTrue(endeavor_from_config(
+            {"max_restarts": UNLIMITED, "max_frame_attempts": 0,
+             "max_no_progress_rounds": 3}))
+
+    def test_archive_bounded_maps_to_off(self):
+        for n in (1, 3, 5, 10):
+            self.assertFalse(endeavor_from_config(
+                {"max_restarts": n, "max_frame_attempts": 3,
+                 "max_no_progress_rounds": 3}), n)
+
+    def test_archive_missing_fields_falls_back_to_bounded(self):
+        """读不出来时按**有界**那一侧兜 —— 安全方向。"""
+        self.assertFalse(endeavor_from_config({}))
+        self.assertFalse(endeavor_from_config(None))
+
+    def test_archive_roundtrip_preserves_behavior(self):
+        """存档 → 表单 → JobConfig，跑出来的策略要和存档当初一致。"""
+        d = tempfile.mkdtemp(prefix=".brc-endeavor-")
+        try:
+            blend = os.path.join(d, "a.blend")
+            with open(blend, "wb") as f:
+                f.write(b"BLENDER-v5")
+            for cfg_dict, want_on in (
+                    ({"max_restarts": UNLIMITED, "max_frame_attempts": 0}, True),
+                    ({"max_restarts": 10, "max_frame_attempts": 3}, False)):
+                fm = FormModel.from_config(dict(
+                    cfg_dict, blend=blend,
+                    output_template=os.path.join(d, "o", "f_####"), frames=[1]))
+                self.assertIs(fm.endeavor, want_on, cfg_dict)
+                cfg, errors, _w = fm.to_config()
+                self.assertEqual(errors, [], cfg_dict)
+                self.assertEqual(cfg.unlimited_restarts, want_on, cfg_dict)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class TestSceneHelpers(unittest.TestCase):
@@ -184,32 +238,34 @@ class TestFormValidation(unittest.TestCase):
         self.assertEqual(cfg.output_template, self.out)
         self.assertIsNone(cfg.engine)          # KEEP 要翻译成 None（保持工程设置）
 
-    # ---- 三个「不限」同时成立 = 没有任何终止条件（P-W4，走查捞出）----
-    def _triple_unlimited(self, **kw):
-        base = dict(max_restarts=UNLIMITED_RESTART_LABEL,
-                    max_frame_attempts="0", max_no_progress="0")
-        base.update(kw)
-        return self._form(**base).to_config()
-
-    def test_triple_unlimited_warns(self):
-        cfg, errors, warns = self._triple_unlimited()
+    # ---- 「尽力渲完」两档落到 JobConfig ----
+    #
+    # 上一版这里是「三个『不限』同时成立就警告」（走查 P-W4）：界面当时把
+    # 重启次数 / 单帧尝试 / 无进展兜底拆成三个可填控件，用户照着自己的理解填 0
+    # 就能凑出一个**没有任何终止条件**的组合。现在两个数字框没了，那个组合
+    # 从界面上根本拼不出来（`retry_plan` 里兜底恒为 3），所以警告也一起删了 ——
+    # **修复杂度比警告复杂度更好**。
+    def test_endeavor_on_passes_unlimited_through(self):
+        cfg, errors, warns = self._form(endeavor=True).to_config()
         self.assertEqual(errors, [])
-        self.assertIsNotNone(cfg)              # 不硬拦：用户确实可能想"跑到通为止"
-        self.assertTrue(any("三个都设成了不限" in w for w in warns), warns)
-        self.assertEqual((cfg.max_frame_attempts, cfg.max_no_progress_rounds), (0, 0))
+        self.assertEqual(warns, [])
+        self.assertTrue(cfg.unlimited_restarts)
+        self.assertEqual(cfg.max_frame_attempts, 0)
+        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
 
-    def test_unlimited_restarts_alone_keeps_the_guard_quiet(self):
-        """只选「一直重启」时不该报警 —— 默认填充本来就是 0/3，兜底还在。"""
-        cfg, errors, warns = self._form(
-            max_restarts=UNLIMITED_RESTART_LABEL,
-            max_frame_attempts="0", max_no_progress="3").to_config()
+    def test_endeavor_off_is_bounded(self):
+        cfg, errors, warns = self._form(endeavor=False).to_config()
         self.assertEqual(errors, [])
-        self.assertFalse([w for w in warns if "三个都设成了不限" in w], warns)
+        self.assertEqual(warns, [])
+        self.assertFalse(cfg.unlimited_restarts)
+        self.assertEqual(cfg.max_restarts, 5)
+        self.assertEqual(cfg.max_frame_attempts, int(DEFAULT_ATTEMPTS))
 
-    def test_finite_restarts_never_warn_about_unlimited(self):
-        cfg, _errors, warns = self._form(
-            max_restarts="5 次", max_frame_attempts="0", max_no_progress="0").to_config()
-        self.assertFalse([w for w in warns if "三个都设成了不限" in w], warns)
+    def test_no_termination_free_config_is_reachable_from_the_form(self):
+        """★ 界面再也拼不出"三重不限" —— 这是删掉两个数字框换来的硬保证。"""
+        for endeavor in (True, False):
+            cfg, _e, _w = self._form(endeavor=endeavor).to_config()
+            self.assertGreater(cfg.max_no_progress_rounds, 0, endeavor)
 
     def test_missing_blend(self):
         cfg, errors, _ = self._form(blend="").to_config()
@@ -276,26 +332,22 @@ class TestFormValidation(unittest.TestCase):
         self.assertIsNone(cfg)
         self.assertTrue(any("采样" in e for e in errors))
 
-    def test_negative_restarts_means_unlimited(self):
-        """-1 / unlimited 是合法输入，表示「一直重启直到渲完」，不该报错。"""
-        cfg, errors, _ = self._form(max_restarts="-1").to_config()
+    def test_retry_knobs_are_no_longer_form_fields(self):
+        """三个重试参数已经不是表单字段了：表单只认一个 `endeavor`。
+
+        这条同时是一道防腐断言 —— 如果哪天有人把 `max_restarts` 之类的字段加回
+        `FormModel`，它会失败，提醒"先想清楚要不要把界面复杂度加回来"。
+        `FormModel(**{"max_restarts": ...})` 里那些多余 kw 会被**静默忽略**
+        （构造器用 `kw.get`），所以这里直接查属性在不在，而不是查行为。
+        """
+        fm = self._form(max_restarts="-1", max_frame_attempts="0", max_no_progress="5")
+        for gone in ("max_restarts", "max_frame_attempts", "max_no_progress"):
+            self.assertFalse(hasattr(fm, gone), "%s 又回到 FormModel 了" % gone)
+        cfg, errors, _ = fm.to_config()
         self.assertEqual(errors, [])
+        # 多余 kw 被忽略后仍按默认档（尽力渲完）跑，不会因为"填了 5"就变 5
         self.assertTrue(cfg.unlimited_restarts)
-
-    def test_unlimited_word(self):
-        cfg, errors, _ = self._form(max_restarts="unlimited").to_config()
-        self.assertEqual(errors, [])
-        self.assertTrue(cfg.unlimited_restarts)
-
-    def test_no_progress_limit(self):
-        cfg, errors, _ = self._form(max_no_progress="5").to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.max_no_progress_rounds, 5)
-
-    def test_zero_frame_attempts_means_unlimited(self):
-        cfg, errors, _ = self._form(max_frame_attempts="0").to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.max_frame_attempts, 0)
+        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
 
     def test_numeric_options(self):
         cfg, errors, _ = self._form(samples="128", pct="50", width="1920",
@@ -882,35 +934,6 @@ class TestFramesPreview(unittest.TestCase):
         self.assertLess(len(text), 80)
 
 
-class TestRestartLabelFor(unittest.TestCase):
-    """存档里的整数 → 下拉文案。ROI 在于「填回去必须是能解析出同一个数」的文案。"""
-
-    def test_known_values_map_to_canonical_labels(self):
-        self.assertEqual(restart_label_for(1), RESTART_OPTIONS[0])
-        self.assertEqual(restart_label_for(3), RESTART_OPTIONS[1])
-        self.assertEqual(restart_label_for(5), RESTART_OPTIONS[2])
-        self.assertEqual(restart_label_for(10), RESTART_OPTIONS[3])
-
-    def test_unlimited(self):
-        self.assertEqual(restart_label_for(-1), RESTART_OPTIONS[-1])
-        self.assertEqual(restart_label_for(None), RESTART_OPTIONS[-1])
-
-    def test_unknown_number_is_still_parseable(self):
-        """不在候选里的次数（例如老存档写 7）不能静默退回 5 —— 必须原样带上。"""
-        self.assertEqual(restart_label_for(7), "7 次")
-        self.assertEqual(parse_restart_limit("7 次"), 7)
-
-    def test_every_label_round_trips(self):
-        for label in RESTART_OPTIONS:
-            n = parse_restart_limit(label)
-            self.assertEqual(restart_label_for(n), label)
-
-    def test_old_five_maps_to_the_plain_label(self):
-        """老存档里的 5 次要显示成「5 次」，**不能**显示成默认项 ——
-        界面默认值改成"一直重启"之后，把 5 也映射到默认项就等于改写了存档语义。"""
-        self.assertEqual(restart_label_for(5), "5 次")
-        self.assertNotEqual(restart_label_for(5), DEFAULT_RESTART_OPTION)
-
 
 class TestFormFromConfig(unittest.TestCase):
     """存档 → 表单 → 配置 的往返。这条链断了的表现是"开机续跑跑了另一个任务"。"""
@@ -926,16 +949,29 @@ class TestFormFromConfig(unittest.TestCase):
 
     def _dict(self, **kw):
         from brconsole.core import JobConfig
-        # 这里故意用 `max_restarts=-1`（一直重启）+ 有限的限次：那是 CLI 与内核都支持的
-        # 组合（`test_core.py` 的 no-progress 护栏用例就靠它），往返必须**逐字段恒等**。
+        # 用「尽力渲完」那一档（max_restarts=-1 + 单帧不限 + 兜底 3 轮）：界面能**无损**
+        # 表达的就是这一档和「有界」那一档，往返必须逐字段恒等。
         args = dict(blend=self.blend, frames=[1, 2, 3, 7, 8],
                     output_template=os.path.join(self.d, "out", "f_####"),
                     engine="CYCLES", samples=64, device="CPU", resolution=(1920, 1080),
                     resolution_percentage=50, file_format="PNG", scene="SceneB",
-                    max_restarts=-1, max_frame_attempts=0, max_no_progress_rounds=7,
+                    max_restarts=-1, max_frame_attempts=0,
+                    max_no_progress_rounds=int(DEFAULT_NO_PROGRESS),
                     resume=False, restart_delay=1.5, extra_args=["-x"])
         args.update(kw)
         return JobConfig(**args).to_dict()
+
+    def test_unrepresentable_guard_value_is_normalised_not_dropped(self):
+        """存档里把兜底写成 7 轮（CLI 能填，界面只有一个开关表达不了）→ 回填后按 3 轮跑。
+
+        ⚠️ 关键是**不能变成 0**：那等于把内核里唯一的防死循环闸门关掉（AGENTS 坑 39）。
+        收窄可以（界面表达不了更细的值），但收窄的方向必须是"更安全"。
+        """
+        d = self._dict(max_no_progress_rounds=7)
+        cfg, errors, _ = FormModel.from_config(d, "b.exe").to_config()
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
+        self.assertTrue(cfg.unlimited_restarts)     # 「尽力渲完」这一档没被改掉
 
     def test_full_roundtrip(self):
         d = self._dict()
@@ -990,179 +1026,11 @@ class TestFormFromConfig(unittest.TestCase):
     def test_tolerates_empty_dict(self):
         fm = FormModel.from_config({}, "")
         self.assertEqual(fm.blend, "")
-        # 存档里缺 `max_restarts` = 老存档/坏存档 → 按**有界**的 5 次兜（不是新任务的默认值）。
-        # 与 restore_limits_backup 同一条原则：分不出来的时候按有界那一侧。
-        self.assertEqual(fm.max_restarts, "5 次")
+        # 存档里缺 `max_restarts` = 老存档/坏存档 → 按**有界**那侧兜（不是新任务的默认值）。
+        # 与 `endeavor_from_config` 同一条原则：分不出来的时候按有界那一侧。
+        self.assertFalse(fm.endeavor)
 
 
-class TestUnlimitedRestartDefaults(unittest.TestCase):
-    """选「一直重启」⇒ 两个限次框**默认填 0（不限）**，但**不锁**、可改回去。
-
-    为什么仅仅是"默认"而不是"强制"：`max_no_progress_rounds` 是内核里**唯一**
-    防死循环的闸门（卡在同一帧反复崩时，光靠重启次数永远不会停）。填 0 是体贴的默认值，
-    但把用户改回去的路堵死就等于把这个闸门删了。所以这里的用例一半在盯"默认填 0"，
-    一半在盯"改回去必须真的生效"（防止有人把默认值实现成强制值）。
-    """
-
-    def setUp(self):
-        self.d = tempfile.mkdtemp(prefix=".brc-unlim-")
-        self.blend = os.path.join(self.d, "house.blend")
-        with open(self.blend, "wb") as f:
-            f.write(b"BLENDER-v5")
-
-    def tearDown(self):
-        shutil.rmtree(self.d, ignore_errors=True)
-
-    def _form(self, restart, attempts, no_progress):
-        return FormModel(blend=self.blend, output=os.path.join(self.d, "out", "f_####"),
-                         segments=[new_segment("1", "3")], max_restarts=restart,
-                         max_frame_attempts=attempts, max_no_progress=no_progress)
-
-    def test_only_the_unlimited_label_counts_as_unlimited(self):
-        self.assertTrue(is_unlimited_restart(UNLIMITED_RESTART_LABEL))
-        self.assertTrue(is_unlimited_restart("一直重启"))
-        self.assertTrue(is_unlimited_restart("-1"))
-        for label in RESTART_OPTIONS[:-1]:
-            self.assertFalse(is_unlimited_restart(label), label)
-        # 认不出来的值**不能**当成"一直重启"（否则会悄悄把限次全放开）
-        self.assertFalse(is_unlimited_restart(""))
-        self.assertFalse(is_unlimited_restart("瞎写"))
-
-    def test_unlimited_option_opens_attempts_but_keeps_the_guard(self):
-        """界面拿这个返回值去填两个框：单帧尝试放开，无进展兜底**不能**一起放开。
-
-        旧版返回 ("0", "0")，等于选完"一直重启"就再没有任何终止条件
-        （卡在同一处反复崩时会一直转到有人来停）—— 见 AGENTS 坑 39。
-        """
-        self.assertEqual(unlimited_limit_fill(UNLIMITED_RESTART_LABEL),
-                         ("0", DEFAULT_NO_PROGRESS))
-        self.assertEqual(UNLIMITED_LIMITS, ("0", DEFAULT_NO_PROGRESS))
-
-    def test_finite_option_fills_nothing(self):
-        """有限次数时不能动用户填的值 —— None = 别碰。"""
-        for label in RESTART_OPTIONS[:-1]:
-            self.assertIsNone(unlimited_limit_fill(label), label)
-        self.assertIsNone(unlimited_limit_fill("瞎写"))
-
-    def test_fill_turns_into_unlimited_attempts_with_guard_intact(self):
-        cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, *UNLIMITED_LIMITS).to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.max_frame_attempts, 0)
-        # ★ 这条是本次修订的核心：默认"一直重启"之后，防死循环闸门必须还在
-        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
-        self.assertTrue(cfg.unlimited_restarts)
-
-    def test_user_can_put_the_guard_back(self):
-        """护栏用例：把默认值实现成强制值的话，这条会红。"""
-        cfg, errors, _ = self._form(UNLIMITED_RESTART_LABEL, "9", "3").to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.max_frame_attempts, 9)
-        self.assertEqual(cfg.max_no_progress_rounds, 3)
-        self.assertTrue(cfg.unlimited_restarts)
-
-    def test_finite_restart_keeps_the_typed_limits(self):
-        cfg, errors, _ = self._form("5 次", "9", "7").to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.max_frame_attempts, 9)
-        self.assertEqual(cfg.max_no_progress_rounds, 7)
-        self.assertFalse(cfg.unlimited_restarts)
-
-    def test_negative_no_progress_still_rejected(self):
-        _, errors, _ = self._form("5 次", "3", "-2").to_config()
-        self.assertTrue(any("无进展" in e for e in errors))
-
-    def test_unlimited_roundtrip_is_stable(self):
-        """存档（一直重启 + 0/0）→ 表单 → 配置，必须还是同一份 —— 开机续跑靠这条。"""
-        from brconsole.core import JobConfig
-        d = JobConfig(blend=self.blend, frames=[1, 2, 3],
-                      output_template=os.path.join(self.d, "out", "f_####"),
-                      max_restarts=-1, max_frame_attempts=0,
-                      max_no_progress_rounds=0).to_dict()
-        cfg, errors, _ = FormModel.from_config(d, "b.exe").to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.to_dict(), d)
-
-    def test_restored_unlimited_form_reads_back_as_is(self):
-        """回填后界面上是两个 0（不残留 3）—— 否则"一直重启"底下写着"3"很迷惑。"""
-        fm = FormModel.from_config(
-            {"max_restarts": -1, "max_frame_attempts": 0, "max_no_progress_rounds": 0},
-            "b.exe")
-        self.assertEqual((fm.max_frame_attempts, fm.max_no_progress), ("0", "0"))
-        self.assertTrue(is_unlimited_restart(fm.max_restarts))
-
-    # ---- 离开「一直重启」时必须回到**有界**（实测抓到的漏网之鱼）----
-
-    def test_switching_between_finite_options_never_touches_typed_values(self):
-        """反向护栏：有限 → 有限 时**一个字都不能改**。
-
-        这是"离开一直重启就填 3/3"那种粗暴修法会砸掉的东西：用户手填 9/7 之后
-        只是想换个重启次数，值却被重置回默认。所以修复必须走 backup 这条路，
-        不能无条件复位。
-        """
-        for start in RESTART_OPTIONS[:-1]:
-            for target in RESTART_OPTIONS[:-1]:
-                self.assertEqual(
-                    restart_limits_plan(target, "9", "7", None), ("9", "7", None),
-                    "%s → %s" % (start, target))
-
-    def test_selecting_unlimited_twice_keeps_the_original_backup(self):
-        """在「一直重启」态里再点一次，不能把 0/0 存成备份（否则回头"还原"出一对不限值）。"""
-        a, n, backup = restart_limits_plan(UNLIMITED_RESTART_LABEL, "9", "7", None)
-        self.assertEqual((a, n), ("0", DEFAULT_NO_PROGRESS))
-        self.assertEqual(backup, ("9", "7"))
-        a, n, backup = restart_limits_plan(UNLIMITED_RESTART_LABEL, a, n, backup)
-        self.assertEqual(backup, ("9", "7"))        # 没被 0/0 覆盖
-        self.assertEqual(restart_limits_plan("5 次", a, n, backup)[:2],
-                         ("9", "7"))
-
-    def test_leaving_unlimited_after_archive_restore_returns_to_bounded_defaults(self):
-        """★ 存档回填 → 切回有限次数：必须是 3/3，**不能停在 0/0**。
-
-        实测抓到的：回填路径不留 backup，切回时无处可还原，两个框就停在 0（=不限），
-        于是用户选的"5 次（明确有限）"底下配着"单帧不限次数 + 无进展不兜底" ——
-        卡在同一帧会一直重试，`no_progress` 这个唯一的死循环闸门被静默关掉。
-        这条用例同时钉住"有界"这个结果本身（不只是钉两个控件变量的值）。
-        """
-        backup = restore_limits_backup(UNLIMITED_RESTART_LABEL, "0", "0")
-        self.assertEqual(backup, (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
-        a, n, left = restart_limits_plan("5 次", "0", "0", backup)
-        self.assertEqual((a, n), (DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS))
-        self.assertIsNone(left)                     # 用完即弃
-
-        cfg, errors, _ = self._form("5 次", a, n).to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual(cfg.max_restarts, 5)
-        self.assertEqual(cfg.max_frame_attempts, int(DEFAULT_ATTEMPTS))
-        self.assertEqual(cfg.max_no_progress_rounds, int(DEFAULT_NO_PROGRESS))
-        self.assertFalse(cfg.unlimited_restarts)
-
-    def test_restore_backup_keeps_deliberate_values_and_skips_finite(self):
-        """回填的备份：非 0（用户特意填的）保留，0 换成默认；有限次数时不预置。"""
-        self.assertEqual(restore_limits_backup(UNLIMITED_RESTART_LABEL, "9", "0"),
-                         ("9", DEFAULT_NO_PROGRESS))
-        self.assertEqual(restore_limits_backup(UNLIMITED_RESTART_LABEL, "0", "7"),
-                         (DEFAULT_ATTEMPTS, "7"))
-        for label in RESTART_OPTIONS[:-1]:
-            self.assertIsNone(restore_limits_backup(label, "0", "0"), label)
-        self.assertIsNone(restore_limits_backup("瞎写", "0", "0"))
-
-    def test_full_roundtrip_restore_then_leave_unlimited(self):
-        """把两条路串起来（回填 → 切选项 → 建档），断言最终配置是有界的。"""
-        d = {"max_restarts": -1, "max_frame_attempts": 0, "max_no_progress_rounds": 0}
-        fm = FormModel.from_config(d, "b.exe")
-        # from_config 是"按存档重填参数"，不含工程/输出（那两项在存档里另有字段）
-        fm.blend, fm.output = self.blend, os.path.join(self.d, "out", "f_####")
-        backup = restore_limits_backup(fm.max_restarts, fm.max_frame_attempts,
-                                       fm.max_no_progress)
-        a, n, _ = restart_limits_plan("10 次", fm.max_frame_attempts, fm.max_no_progress,
-                                      backup)
-        fm.max_frame_attempts, fm.max_no_progress = a, n
-        fm.max_restarts = "10 次"
-        cfg, errors, _ = fm.to_config()
-        self.assertEqual(errors, [])
-        self.assertEqual((cfg.max_restarts, cfg.max_frame_attempts,
-                          cfg.max_no_progress_rounds),
-                         (10, int(DEFAULT_ATTEMPTS), int(DEFAULT_NO_PROGRESS)))
 
 
 class TestSettleTaskAction(unittest.TestCase):

@@ -25,16 +25,15 @@ from . import applock, autostart, diskspace, locate, notify, power, taskstore, t
 from .layout import FROZEN_SUBDIR
 from .core import RenderJob
 from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
-                       DEFAULT_ATTEMPTS, DEFAULT_NO_PROGRESS, DEFAULT_RESTART_OPTION,
-                       DEVICES, ENGINES, FORMATS, RESTART_OPTIONS,
-                       SCENE_NEED_READ_LABEL,
+                       DEFAULT_ENDEAVOR, DEVICES, ENDEAVOR_LABEL,
+                       ENDEAVOR_NOTE_OFF, ENDEAVOR_NOTE_ON,
+                       ENGINES, FORMATS, SCENE_NEED_READ_LABEL,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, NativeLineFilter,
                        ProgressModel,
                        aftermath_plan, event_line, fields_from_detail,
                        frames_preview, guess_state_path,
-                       is_unlimited_restart, new_segment, normalise_segment,
-                       restart_limits_plan,
-                       restore_limits_backup, scene_to_config, settle_task_action,
+                       new_segment, normalise_segment,
+                       scene_to_config, settle_task_action,
                        state_summary)
 from .inspect import (read_blend_info, scene_detail, scene_names,
                       summarize as summarize_blend)
@@ -44,12 +43,6 @@ LOG_MAX_LINES = 4000
 TITLE = "blender-render-console"
 WINDOW_TITLE = "%s · 无头渲染控制台" % TITLE
 
-# 「重启次数」旁边那句说明。两种态各一句，由 _apply_restart_defaults 二选一 ——
-# 写死在控件上会和实际行为对不上（选中「一直重启」后两框已被填成 0=不限，
-# 提示却还在说"受上面无进展轮数兜底"）。
-NOTE_RESTART_LIMITED = "选「一直重启，直到全部渲完」= 重启次数不限；单帧尝试会自动填 0（不限），无进展兜底仍是 3 轮"
-NOTE_RESTART_UNLIMITED = ("「一直重启」：单帧尝试已填 0（不限）；连续 %s 轮无进展仍会停 —— "
-                          "那是唯一的防死循环兜底，别关掉" % DEFAULT_NO_PROGRESS)
 AUTOSTART_FLAG = autostart.AUTOSTART_FLAG
 
 # 「任务结束后」下拉：显示文案 ↔ 实际值（值就是 guimodel.AFTERMATH_*，别再写一份字面量）
@@ -187,12 +180,10 @@ class App(object):
         # 着色器编译失败、纹理找不到都只出现在这里）。重复的采样进度行由
         # `NativeLineFilter` 折叠，不会把面板刷爆。
         self.v_native = tk.BooleanVar(value=True)
-        self.v_restarts = tk.StringVar(value=DEFAULT_RESTART_OPTION)
-        self.v_no_progress = tk.StringVar(value=DEFAULT_NO_PROGRESS)
-        self.v_attempts = tk.StringVar(value=DEFAULT_ATTEMPTS)
-        # 选中「一直重启」时，把用户原来填的两个限次数值暂存在这里，切回去还原。
-        # None 表示"当前没有处于一直重启态"（回填存档时也会清成 None）。
-        self._limits_backup = None
+        # 重试策略**只有一个开关**（v0.8.3）：勾上=尽力渲完（不限重启/不限单帧/兜底 3 轮），
+        # 不勾=最多 5 次/单帧 3 次。原先是一个下拉 + 两个数字框 + 两行说明，
+        # 那四件东西其实只表达了一件事（见 guimodel.retry_plan）。
+        self.v_endeavor = tk.BooleanVar(value=DEFAULT_ENDEAVOR)
         # 开机自启勾选态**不从记忆读**，而是下面按注册表实际登记情况回填 ——
         # 界面必须反映"真的会自启吗"，不能显示一个自己记的、可能已经失效的状态
         self.v_autostart = tk.BooleanVar(value=False)
@@ -302,39 +293,21 @@ class App(object):
         opts.grid(row=r, column=1, columnspan=3, sticky="w")
         ttk.Checkbutton(opts, text="从断点续跑（未完成的帧接着渲染）",
                         variable=self.v_resume).pack(side="left")
-        ttk.Label(opts, text="崩溃后重启").pack(side="left", padx=(12, 2))
-        self.cb_restarts = ttk.Combobox(opts, textvariable=self.v_restarts, width=22,
-                                        state="readonly", values=RESTART_OPTIONS)
-        self.cb_restarts.pack(side="left")
-        # 宽度按字体实测重算：默认项有 15 个汉字，写死 width=22 会被截掉尾巴
-        fit_combobox(self.cb_restarts, RESTART_OPTIONS)
-        self.cb_restarts.bind("<<ComboboxSelected>>", self.on_restart_change)
+        # 重试策略只剩这一个勾选（v0.8.3）。原先的「崩溃后重启」下拉 + 「连续无进展」
+        # 「单帧最多尝试」两个数字框 + 两行长说明，表达的是同一件事，全删了。
+        self.chk_endeavor = ttk.Checkbutton(opts, text=ENDEAVOR_LABEL,
+                                            variable=self.v_endeavor,
+                                            command=self.on_endeavor_change)
+        self.chk_endeavor.pack(side="left", padx=(16, 0))
 
-        # 这句说明**必须独占一行**：它有一个复选框加一个长下拉那么宽，塞在同一行里
-        # 一定被窗口右边裁掉（曾经就是这样，只看得见"选「一直重启，直到全部渲完」= 重"）。
+        # 一句短说明解释「这个开关到底改了什么」—— 不是参数教学，只是让不勾的时候
+        # 也知道会变成"最多几次"。独占一行：和上面两个勾选挤在一起一定会被右边裁掉。
         r += 1
         note = ttk.Frame(box)
         note.grid(row=r, column=1, columnspan=3, sticky="w")
-        # 下拉里放的就是中文文案本身（不另设"显示值/实际值"两张表），
-        # 由 core.parse_restart_limit 认中文，这里补一句人话解释即可
-        self.lbl_restart_note = ttk.Label(note, text=NOTE_RESTART_LIMITED,
-                                          style="Muted.TLabel")
-        self.lbl_restart_note.pack(side="left")
-
-        r += 1
-        opts_b = ttk.Frame(box)
-        opts_b.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Label(opts_b, text="连续这么多轮一帧都没推进就停").pack(side="left")
-        self.ent_no_progress = ttk.Entry(opts_b, textvariable=self.v_no_progress, width=4)
-        self.ent_no_progress.pack(side="left", padx=3)
-        ttk.Label(opts_b, text="轮（0 = 不限制）",
-                  style="Muted.TLabel").pack(side="left", padx=(2, 0))
-        # 「单帧最多尝试」与上面这个无进展闸门是一对：都是防死循环的旋钮，
-        # 所以放同一行（也顺带把上面那行让出来给长下拉）。留句柄便于真机探测脚本读值。
-        ttk.Label(opts_b, text="单帧最多尝试").pack(side="left", padx=(16, 2))
-        self.ent_attempts = ttk.Entry(opts_b, textvariable=self.v_attempts, width=4)
-        self.ent_attempts.pack(side="left")
-        ttk.Label(opts_b, text="次", style="Muted.TLabel").pack(side="left", padx=(2, 0))
+        self.lbl_endeavor_note = ttk.Label(note, text=ENDEAVOR_NOTE_ON,
+                                           style="Muted.TLabel")
+        self.lbl_endeavor_note.pack(side="left")
 
         r += 1
         opts2 = ttk.Frame(box)
@@ -697,6 +670,9 @@ class App(object):
             self._reset_scene_combo()
             return
         self.cmb_scene.configure(values=names, state="readonly")
+        # 场景名长度由工程决定（"Scene.001" 还算短，中文场景名能到十几个字），
+        # 写死 width=26 会被截、ttk 的下拉也不做省略号 —— 按字体实测重算
+        fit_combobox(self.cmb_scene, names)
         self.v_scene.set(active if active in names else names[0])
         if len(names) == 1:
             self.lbl_scene.configure(text="工程里只有这一个场景", style="Muted.TLabel")
@@ -859,36 +835,17 @@ class App(object):
         if rec is not None:
             self.v_auto_resume.set(bool(rec.get("autoresume", True)))
 
-    # ---- 重启次数 ↔ 限次参数的默认值 ----
-    def on_restart_change(self, _event=None):
-        """下拉换选项（用户操作）。"""
-        self._apply_restart_defaults(remember=True)
-
-    def _apply_restart_defaults(self, remember):
-        """选「一直重启，直到全部渲完」→ **单帧尝试**默认填 0（不限）、**无进展轮数**保持 3。
-
-        老版本这里把两个框都填 0，等于选完"一直重启"就顺手把内核里唯一防死循环的闸门
-        关掉了（AGENTS 坑 39）。现在拆开：重启次数不限（用户要的），但连续 3 轮一帧都没
-        推进就停（兜底仍在）。两框都**不锁**，想改随时改。
-
-        **只改默认值、不锁控件** —— 想留兜底就把数字填回去（那是内核里唯一防死循环的闸门）。
-        切回带次数的选项时还原原来的值，避免把 0（=不限）带进"5 次"这种有限次数的模式。
-
-        状态机本身在 `guimodel.restart_limits_plan`（不碰控件，可单测）——
-        这里只负责把结果贴到控件上。
-
-        `remember=False` 用于从存档回填之后：那时两框的值以**存档**为准、
-        不该被动，只更新旁边那句提示文案。
+    # ---- 「尽力渲完」总开关 ----
+    def on_endeavor_change(self):
+        """用户勾/取消。**只改旁边那句说明**，不动别的控件 —— 三个重试参数
+        （重启次数 / 单帧尝试 / 无进展兜底）不再有各自的可填框，全由这个布尔
+        在 `guimodel.retry_plan()` 里推出，所以没有"切选项时要同步另一个框"这回事了。
         """
-        if remember:
-            attempts, no_progress, self._limits_backup = restart_limits_plan(
-                self.v_restarts.get(), self.v_attempts.get(),
-                self.v_no_progress.get(), self._limits_backup)
-            self.v_attempts.set(attempts)
-            self.v_no_progress.set(no_progress)
-        self.lbl_restart_note.configure(
-            text=(NOTE_RESTART_UNLIMITED if is_unlimited_restart(self.v_restarts.get())
-                  else NOTE_RESTART_LIMITED))
+        self._sync_endeavor_note()
+
+    def _sync_endeavor_note(self):
+        self.lbl_endeavor_note.configure(
+            text=(ENDEAVOR_NOTE_ON if self.v_endeavor.get() else ENDEAVOR_NOTE_OFF))
 
     def _apply_form_model(self, fm):
         """把 `FormModel` 铺到控件上（开机续跑回填用）。"""
@@ -906,23 +863,10 @@ class App(object):
         self.v_format.set(fm.file_format)
         self.v_scene.set(fm.scene)
         self.v_resume.set(fm.resume)
-        # 重启次数下拉是 readonly：候选里没有这个文案的话，set 会被控件**静默忽略**，
-        # 界面上留着上一个值 —— 所以先补候选再 set
-        values = list(self.cb_restarts["values"])
-        if fm.max_restarts not in values:
-            self.cb_restarts.configure(values=values + [fm.max_restarts])
-        self.v_restarts.set(fm.max_restarts)
-        self.v_no_progress.set(fm.max_no_progress)
-        self.v_attempts.set(fm.max_frame_attempts)
-        # 值填完再更新旁边那句提示：remember=False 表示**别动刚填进去的值**，
-        # 只把文案对齐到这次的重启选项（存档里若是一直重启，提示就该说"已填 0"）
-        #
-        # 回填**必须预置一份还原值**（见 restore_limits_backup 的说明）：回填不是"切换选项"，
-        # 走过这条路就没有 backup，用户随后切回"5 次"时两个框会停在 0（=不限）——
-        # 于是"有限次数"底下配着"单帧不限 + 无进展不兜底"，卡在同一帧就再也停不下来。
-        self._limits_backup = restore_limits_backup(
-            fm.max_restarts, fm.max_frame_attempts, fm.max_no_progress)
-        self._apply_restart_defaults(remember=False)
+        # 存档里的三个重试参数已经由 `FormModel.from_config` 折成一个布尔，
+        # 这里只贴勾选态 + 那句说明（不再有"补下拉候选"那种坑）
+        self.v_endeavor.set(fm.endeavor)
+        self._sync_endeavor_note()
 
     def _save_task(self, cfg, blender):
         """点击开始后**先存档再跑**：只有这样，进程被强杀时才有东西可供开机续跑。"""
@@ -995,9 +939,7 @@ class App(object):
         self.form.pct = self.v_pct.get()
         self.form.file_format = self.v_format.get()
         self.form.resume = self.v_resume.get()
-        self.form.max_restarts = self.v_restarts.get()
-        self.form.max_no_progress = self.v_no_progress.get()
-        self.form.max_frame_attempts = self.v_attempts.get()
+        self.form.endeavor = self.v_endeavor.get()
         # 「显示原生输出」只是界面偏好，不进 JobConfig（`FormModel.show_native` 已删除：
         # 它当年存进来之后全项目没有一处读它 —— AGENTS 坑 35 的同款）
 

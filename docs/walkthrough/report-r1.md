@@ -109,7 +109,7 @@ brconsole/driver.py:306:         scene=sc.name, scene_requested=requested, scene
 | ① | P-W1 | `core` 透传 `scene_ok`；`scene_ok is False` 时**立刻杀子进程并以明确原因失败**（存档走 `stop` 保留，可恢复）；`event_line` 增加醒目提示；补 3 条单测 | ✅ 已修 |
 | ② | P-W2 | 取消路径**回滚一次 attempt**（只在「用户取消 + 有在渲帧」时回滚，崩溃路径不动，保住"崩溃必续"）；补单测 | ✅ 已修 |
 | ③ | P-W3 | `ok` 优先于 `cancelled`：`settle`/状态栏/通知/善后统一按「渲完了就算完成」判定；补单测 | ✅ 已修 |
-| ④ | P-W4 | 三个「不限」同时成立时给**显式警告**（不硬拦，用户确实可能要） | ✅ 已修 |
+| ④ | P-W4 | 三个「不限」同时成立时给**显式警告**（不硬拦，用户确实可能要） | ✅ 已修（**v0.8.3 起改为不可达**，见下） |
 | ⑤ | P-W5 | `state_summary` 接收签名，不匹配时标签显示「断点：属于别的任务」 | ⏸ 本轮不做（风险分 6 = 可选，见残余风险） |
 | ⑥ | P-W6 | `_cancel_pending_countdown()` 挪到所有校验通过之后 | ✅ 已修 |
 
@@ -150,6 +150,12 @@ brconsole/driver.py:306:         scene=sc.name, scene_requested=requested, scene
 | 全量 | `unittest discover` | ✅ **447 条 OK（skipped=1）** |
 | 边界 | `tools/check_boundaries.py` | ✅ 7/7 通过 |
 | 静态 | `pyflakes` | ✅ exit 0 |
+
+> **P-W4 的后续（v0.8.3）**：用户反馈重试那一块的控件"太细碎"，要求"一个参数控制所有的"。
+> 三个参数（重启次数 / 单帧尝试 / 无进展兜底）收成一个「尽力渲完」勾选后，由
+> `guimodel.retry_plan(endeavor)` 统一给出，两态里兜底都是 3 轮 ——
+> **"三重不限"这个组合从界面上拼不出来**，比给警告更彻底。原警告与它的三条测试一并删除。
+> 全量测试随之从 447 条变为 433 条（合并掉 3 个针对已删控件的测试类）。
 
 ### 沉淀
 
