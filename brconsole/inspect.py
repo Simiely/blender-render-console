@@ -73,6 +73,7 @@ def detail_of(sc):
         "fps": float(r.fps) / float(getattr(r, "fps_base", 1) or 1),
         "file_format": r.image_settings.file_format,
         "color_mode": r.image_settings.color_mode,
+        "color_depth": r.image_settings.color_depth,
         "output_path": r.filepath,
         "use_file_extension": bool(r.use_file_extension),
         "camera": (sc.camera.name if sc.camera else None),

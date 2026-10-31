@@ -148,6 +148,22 @@ class TestEstimate(Base):
         self.assertEqual(diskspace.estimate_bytes([1], (10, 10), None, None),
                          100 * diskspace.DEFAULT_BYTES_PER_PIXEL)
 
+    def test_higher_bit_depth_scales_the_estimate(self):
+        """位数翻倍 = 每像素字节翻倍（16 位 PNG 与 half-float EXR 都是 8 B/px）。"""
+        self.assertEqual(diskspace.bytes_per_pixel("PNG", "8"), 4)
+        self.assertEqual(diskspace.bytes_per_pixel("PNG", "16"), 8)
+        self.assertEqual(diskspace.bytes_per_pixel("OPEN_EXR", "16"), 8)
+        self.assertEqual(diskspace.bytes_per_pixel("OPEN_EXR", "32"), 16)
+        # 认不出的格式仍然按基准值兜（只提醒不拦，宁可偏大）
+        self.assertEqual(diskspace.bytes_per_pixel(None, "16"),
+                         diskspace.DEFAULT_BYTES_PER_PIXEL)
+        self.assertEqual(diskspace.bytes_per_pixel("PNG", None), 4)
+        self.assertEqual(diskspace.bytes_per_pixel("PNG", "乱七八糟"), 4)
+
+    def test_estimate_bytes_takes_depth(self):
+        self.assertEqual(
+            diskspace.estimate_bytes([1, 2], (10, 10), None, "PNG", "16"), 2 * 100 * 8)
+
     def test_needs_both_frames_and_resolution(self):
         self.assertIsNone(diskspace.estimate_bytes([], (10, 10), None, "PNG"))
         self.assertIsNone(diskspace.estimate_bytes([1, 2], None, None, "PNG"))

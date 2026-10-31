@@ -25,8 +25,8 @@ GIB = 1024 ** 3
 MIN_FREE_SYSTEM = 10 * GIB
 MIN_FREE_OTHER = 2 * GIB
 
-# 每像素字节数 —— 全部按**未压缩上界**取，只用于估"最多可能写多少"：
-# 8 位 RGBA = 4；OpenEXR 是 half-float RGBA = 8。
+# 每像素字节数（8 位基准）—— 全部按**未压缩上界**取，只用于估"最多可能写多少"：
+# 8 位 RGBA = 4；OpenEXR half-float RGBA = 8。位数更高时由 `bytes_per_pixel()` 再放大。
 # 认不出的格式（含「保持工程设置」）按 8 走：不知道工程里是什么格式，宁可按大的估。
 BYTES_PER_PIXEL = {"PNG": 4, "JPEG": 4, "TIFF": 4, "OPEN_EXR": 8}
 DEFAULT_BYTES_PER_PIXEL = 8
@@ -123,7 +123,27 @@ def frame_pixels(resolution, percentage=None):
     return w * h
 
 
-def estimate_bytes(frames, resolution=None, percentage=None, file_format=None):
+def bytes_per_pixel(file_format=None, color_depth=None):
+    """每像素字节数（未压缩上界，RGBA），位数越大越占地方。
+
+    口径：8 位 RGBA = 4 B/px，位数翻倍体积翻倍（16 位 → 8、32 位 → 16）。
+    EXR 16 位 half-float 恰好也是 4 通道 × 2 字节 = 8，与同一个公式对得上。
+
+    位数没给时按格式的基准值走；认不出的格式（含「保持工程设置」）按 8 B/px 估 ——
+    不知道工程里到底是什么格式/位数，宁可按大的算（这一档只提醒不拦）。
+    """
+    base = BYTES_PER_PIXEL.get((file_format or "").upper(), DEFAULT_BYTES_PER_PIXEL)
+    try:
+        depth = int(color_depth)
+    except (TypeError, ValueError):
+        return base
+    if depth <= 0:
+        return base
+    return max(base, 4 * depth // 8)
+
+
+def estimate_bytes(frames, resolution=None, percentage=None, file_format=None,
+                   color_depth=None):
     """这次渲染**最多**可能写多少字节（未压缩上界）；算不出来返回 `None`。"""
     try:
         n = len(list(frames or ()))
@@ -132,7 +152,7 @@ def estimate_bytes(frames, resolution=None, percentage=None, file_format=None):
     px = frame_pixels(resolution, percentage)
     if not n or not px:
         return None
-    per_px = BYTES_PER_PIXEL.get((file_format or "").upper(), DEFAULT_BYTES_PER_PIXEL)
+    per_px = bytes_per_pixel(file_format, color_depth)
     return n * px * per_px
 
 
@@ -184,7 +204,8 @@ def check(cfg, free_fn=None):
     #    宁可不说，也不编一个数字出来 —— 水位那档仍然照常生效。
     need = estimate_bytes(frames, getattr(cfg, "resolution", None),
                           getattr(cfg, "resolution_percentage", None),
-                          getattr(cfg, "file_format", None))
+                          getattr(cfg, "file_format", None),
+                          getattr(cfg, "color_depth", None))
     if need is not None and free < need:
         return "warn", (
             "输出目录在%s，可用空间 %s；这次 %d 帧最多可能写到 %s"

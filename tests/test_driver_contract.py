@@ -39,8 +39,9 @@ class TestExtensionTableIsShared(unittest.TestCase):
     def test_fake_covers_every_format_the_gui_offers(self):
         """界面下拉里能选的格式，假 Blender 都得认识（不然测试会漏掉它们）。"""
         from brconsole.guimodel import FORMATS
-        for _label, value in FORMATS:
-            if not value:                      # 「保持工程设置」的值就是空串
+        for spec in FORMATS:
+            value = spec[0]                    # 表结构：(identifier, 位数, 默认, 扩展名)
+            if not value:                      # 「保持工程设置」的 identifier 就是空串
                 continue
             self.assertIn(value, fake_blender.FORMAT_EXT, value)
 

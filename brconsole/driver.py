@@ -227,6 +227,32 @@ def apply_overrides(sc):
         except Exception as e:
             warn("设置输出格式失败：%r" % (e,))
 
+    # ---- 图片位数 ----
+    # 为什么必须单独下发：**换格式本身就会改位数**。实测 PNG(8) → OPEN_EXR → PNG
+    # 之后，PNG 的 color_depth 变成了 16 —— 只设格式不设位数，用户选的就是"随缘位数"
+    # （AGENTS 坑 43「参数悄悄变」）。
+    #
+    # 为什么不用命令行 `-F/--render-format`：它只管格式，**没有位数参数**
+    # （`blender --help` 实测，5.2.2）。所以只能在这里注入。
+    #
+    # 为什么设完要回读：Blender 对不合法的位数是**静默忽略**（不抛异常、不改值），
+    # 只写不读的话，界面会一直显示"16 位"而磁盘上是 8 位。回读发现没吃进去就 warn，
+    # 用户能在日志里看到，而不是等出片才发现。
+    depth = job.get("color_depth")
+    if depth:
+        depth = str(depth)
+        try:
+            sc.render.image_settings.color_depth = depth
+            actual = sc.render.image_settings.color_depth
+            if actual != depth:
+                warn("图片位数没设上：要 %s 位，实际 %s 位（%s 可能不支持该位数）"
+                     % (depth, actual, sc.render.image_settings.file_format))
+            else:
+                emit("depth_set", depth=actual,
+                     file_format=sc.render.image_settings.file_format)
+        except Exception as e:
+            warn("设置图片位数失败：%r" % (e,))
+
     # ---- 输出路径 ----
     # 关掉自动扩展名，路径完全由我们决定（见 output_path_for 里的实测说明）
     sc.render.use_file_extension = False
@@ -249,7 +275,8 @@ KNOWN_EXT_ALIASES = {"jpeg", "tiff"}
 FORMAT_EXT = {
     "PNG": "png", "JPEG": "jpg", "JPEG2000": "jp2", "OPEN_EXR": "exr",
     "OPEN_EXR_MULTILAYER": "exr", "TIFF": "tif", "BMP": "bmp", "TARGA": "tga",
-    "HDR": "hdr", "DPX": "dpx", "CINEON": "cin", "IRIS": "rgb", "WEBP": "webp",
+    "TARGA_RAW": "tga", "HDR": "hdr", "DPX": "dpx", "CINEON": "cin",
+    "IRIS": "rgb", "WEBP": "webp", "AVIF": "avif",
 }
 
 

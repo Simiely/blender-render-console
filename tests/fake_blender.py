@@ -25,7 +25,8 @@ import time
 FORMAT_EXT = {
     "PNG": "png", "JPEG": "jpg", "JPEG2000": "jp2", "OPEN_EXR": "exr",
     "OPEN_EXR_MULTILAYER": "exr", "TIFF": "tif", "BMP": "bmp", "TARGA": "tga",
-    "HDR": "hdr", "DPX": "dpx", "CINEON": "cin", "IRIS": "rgb", "WEBP": "webp",
+    "TARGA_RAW": "tga", "HDR": "hdr", "DPX": "dpx", "CINEON": "cin",
+    "IRIS": "rgb", "WEBP": "webp", "AVIF": "avif",
 }
 
 

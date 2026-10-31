@@ -35,9 +35,10 @@
 | ETA 自算（剔除首帧预热 + EMA 平滑） | ✅ 真机实测 |
 | **崩溃 / 被杀后自动续跑** | ✅ 真机实测：中途 `taskkill` 掉 Blender，重启后只渲染剩余帧 |
 | **「失败重试」一个下拉**（次数同时管重启与单帧尝试；默认一直重复） | ✅ 真机 A/B 实测，见下 |
+| **输出格式 14 种 + 图片位数可选**（PNG 8/16、OpenEXR 16/32、DPX 8/10/12/16 …） | ✅ 位数白名单按 Blender 5.2.2 运行时实测；PNG 16 位 / EXR 32 位真机出片核对文件头 |
 | 取消（停止按钮 / Ctrl+C）并保留进度 | ✅ 单测覆盖 |
 | 命令行模式 | ✅ |
-| **exe 图标与版本信息** | ✅ 图标逐像素比对；窗口图标核对；版本资源对齐 `__version__` |
+| **exe 图标与版本信息 + 窗口标题带版本** | ✅ 图标逐像素比对；窗口图标核对；版本资源与标题栏都对齐 `__version__` |
 
 ### 崩溃/关机后自动接着渲，是怎么做到的
 
@@ -198,6 +199,7 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_####
 | `--samples` | 采样数（Cycles 渲染采样 / EEVEE TAA） |
 | `--device` | Cycles 设备：`CPU` / `CUDA` / `OPTIX` / `HIP` / `ONEAPI` |
 | `--res / --pct / --format` | 分辨率 / 分辨率百分比 / 输出格式 |
+| `--color-depth` | 图片位数（合法值随 `--format` 而定：PNG 8/16、OPEN_EXR 16/32…；不给＝不覆盖工程设置） |
 | `--blender` | 手动指定 `blender.exe`（不给就自动扫描，扫不到会提示） |
 | `--max-restarts` | 最多重启几次（默认 `5`）；填 **`unlimited`** / `-1` / `无限` / `一直` = 一直重启直到全部渲完 |
 | `--max-no-progress` | 连续这么多轮一帧都没推进就停（默认 `3`，`0` = 不启用）；「不限次数」模式的唯一兜底 |
@@ -250,7 +252,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 436 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 450 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图

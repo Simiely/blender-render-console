@@ -519,6 +519,39 @@ class TestParseFrames(unittest.TestCase):
         self.assertEqual(parse_frames("1-11x5"), expand_segment(1, 11, 5))
 
 
+class TestOutputSettings(_Base):
+    """输出格式与图片位数要一路传到 job.json —— driver 靠它设 `image_settings`。
+
+    只测"配置里存住了"是不够的（AGENTS 坑 56）：真正决定出片的是 job.json，
+    漏了这一层等于界面选了半天、Blender 那边压根没收到。
+    """
+
+    def _job_json(self, **kw):
+        job, cfg, events = self.make_job(frames=(1,), **kw)
+        seen = {}
+        inner = job.cmd_factory
+
+        def spy(blender_exe, blend, driver_path, job_json, extra_args=()):
+            with open(job_json, "r", encoding="utf-8") as f:
+                seen.update(json.load(f))
+            return inner(blender_exe, blend, driver_path, job_json, extra_args)
+
+        job.cmd_factory = spy
+        r = self.run_job(job, events)
+        self.assertTrue(r["ok"], r)
+        return seen
+
+    def test_format_and_depth_reach_job_json(self):
+        seen = self._job_json(file_format="OPEN_EXR", color_depth="32")
+        self.assertEqual(seen.get("file_format"), "OPEN_EXR")
+        self.assertEqual(seen.get("color_depth"), "32")
+
+    def test_unspecified_depth_stays_none(self):
+        """「保持工程设置」时不能凭空塞一个位数进 job.json。"""
+        seen = self._job_json()
+        self.assertIsNone(seen.get("color_depth"))
+
+
 class TestSceneSelection(_Base):
     """多场景：场景名要一路传到 job.json（driver 靠它切场景），且换场景不能续跑。"""
 
@@ -627,6 +660,7 @@ class TestJobConfigArchive(unittest.TestCase):
                     output_template="C:/a/out/f_####", engine="CYCLES", samples=128,
                     device="OPTIX", resolution=(1920, 1080), resolution_percentage=50,
                     file_format="PNG", scene="SceneB", max_restarts=UNLIMITED,
+                    color_depth="16",
                     max_frame_attempts=0, max_no_progress_rounds=7, resume=False,
                     restart_delay=1.5, extra_args=["--cycles-device", "OPTIX"])
         args.update(kw)

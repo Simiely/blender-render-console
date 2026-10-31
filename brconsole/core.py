@@ -230,7 +230,8 @@ def complete_output_template(path, blend=""):
 # 漏了的话开机续跑重建出来的任务会缺这一项、静默按默认值跑（最难查的那种 bug）。
 JOB_CONFIG_FIELDS = (
     "blend", "frames", "output_template", "engine", "samples", "device", "scene",
-    "resolution", "resolution_percentage", "file_format", "state_path", "log_path",
+    "resolution", "resolution_percentage", "file_format", "color_depth",
+    "state_path", "log_path",
     "max_restarts", "max_frame_attempts", "extra_args", "resume", "restart_delay",
     "max_no_progress_rounds",
 )
@@ -241,7 +242,7 @@ class JobConfig(object):
 
     def __init__(self, blend, frames, output_template, engine=None, samples=None,
                  device=None, resolution=None, resolution_percentage=None,
-                 file_format=None, state_path=None, log_path=None,
+                 file_format=None, color_depth=None, state_path=None, log_path=None,
                  max_restarts=5, max_frame_attempts=3, extra_args=(),
                  resume=True, restart_delay=2.0, max_no_progress_rounds=3, scene=None):
         self.blend = os.path.abspath(blend)
@@ -257,6 +258,10 @@ class JobConfig(object):
         self.resolution = tuple(resolution) if resolution else None
         self.resolution_percentage = resolution_percentage
         self.file_format = file_format
+        # 图片位数（"8"/"16"/"32"）；None = 不覆盖工程的设置。
+        # 必须和 file_format 一起下发：换格式时 Blender 会自己改位数（实测），
+        # 只给格式不给位数 = 位数随格式漂移。
+        self.color_depth = color_depth
         self.state_path = state_path
         self.log_path = log_path
         self.max_restarts = max_restarts
@@ -317,6 +322,7 @@ class JobConfig(object):
             resolution=tuple(res) if res else None,
             resolution_percentage=d.get("resolution_percentage"),
             file_format=d.get("file_format"),
+            color_depth=d.get("color_depth"),
             state_path=d.get("state_path"),
             log_path=d.get("log_path"),
             max_restarts=d.get("max_restarts", 5),
@@ -521,6 +527,10 @@ class RenderJob(object):
             emit("engine_set", requested=ev.get("requested"), actual=ev.get("actual"))
         elif kind == "device_set":
             emit("device_set", type=ev.get("type"), devices=ev.get("devices"))
+        elif kind == "depth_set":
+            # 驱动脚本设完位数后回读确认过才发这条 —— 界面把它打进日志，
+            # 用户能对着它核对"我选的 16 位真的生效了"（不然只能等出片才知道）
+            emit("depth_set", depth=ev.get("depth"), file_format=ev.get("file_format"))
         elif kind == "info":
             emit("settings", engine=ev.get("engine"), res=ev.get("res"),
                  pct=ev.get("pct"), output=ev.get("output"), samples=ev.get("samples"))
@@ -663,6 +673,7 @@ class RenderJob(object):
                         "resolution": list(cfg.resolution) if cfg.resolution else None,
                         "resolution_percentage": cfg.resolution_percentage,
                         "file_format": cfg.file_format,
+                        "color_depth": cfg.color_depth,
                         "scene": cfg.scene,
                     }, f, ensure_ascii=False)
 

@@ -18,12 +18,16 @@ from brconsole import tkboot  # noqa: E402
 from brconsole.core import UNLIMITED  # noqa: E402
 from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: E402
                                 AFTERMATH_SLEEP, DEFAULT_NO_PROGRESS, DEFAULT_RETRY,
+                                DEPTH_KEEP_LABEL, FORMAT_KEEP_LABEL, FORMATS,
                                 RETRY_CHOICES, RETRY_COUNTS, RETRY_UNLIMITED_LABEL,
                                 SCENE_DEFAULT_LABEL, SCENE_NEED_READ_LABEL, FormModel,
                                 LogModel, NativeLineFilter, ProgressModel,
-                                aftermath_plan, event_line,
-                                fields_from_detail, frames_preview, frames_to_text,
+                                aftermath_plan, coerce_depth, default_depth_for,
+                                depth_choices, depth_value, depths_for, event_line,
+                                fields_from_detail, format_ext_for, format_from_label,
+                                format_label, frames_preview, frames_to_text,
                                 frames_to_segments, guess_state_path, new_segment,
+                                retarget_extension,
                                 retry_count, retry_label_for, retry_label_from_config,
                                 retry_note, retry_plan, segment_label,
                                 segments_to_frames, scene_to_config,
@@ -981,6 +985,7 @@ class TestFormFromConfig(unittest.TestCase):
                     output_template=os.path.join(self.d, "out", "f_####"),
                     engine="CYCLES", samples=64, device="CPU", resolution=(1920, 1080),
                     resolution_percentage=50, file_format="PNG", scene="SceneB",
+                    color_depth="8",
                     max_restarts=-1, max_frame_attempts=0,
                     max_no_progress_rounds=int(DEFAULT_NO_PROGRESS),
                     resume=False, restart_delay=1.5, extra_args=["-x"])
@@ -1006,6 +1011,18 @@ class TestFormFromConfig(unittest.TestCase):
         self.assertEqual(warns, [])
         self.assertIsNotNone(cfg)
         self.assertEqual(cfg.to_dict(), d)
+
+    def test_old_archive_without_depth_gets_the_format_default(self):
+        """0.8.4 的存档里没有 `color_depth`：回填后按格式的默认位数下发。
+
+        为什么要"补"而不是"留空"：**换格式本身就会改工程里的位数**
+        （实测 PNG → OPEN_EXR → PNG 后 PNG 变成 16 位），只下发格式不下发位数，
+        等于位数由上一次渲染留给工程的那个值决定（AGENTS 坑 43「参数悄悄变」）。
+        """
+        cfg, errors, _ = FormModel.from_config(self._dict(color_depth=None),
+                                               "b.exe").to_config()
+        self.assertEqual(errors, [])
+        self.assertEqual(cfg.color_depth, "8")          # PNG 的默认位数是 8
 
     def test_frames_are_restored_as_segments_that_expand_back(self):
         """区间展开要乘步长：回填走 `frames_to_segments`，展开必须逐项回到同一批帧
@@ -1097,6 +1114,102 @@ class TestSettleTaskAction(unittest.TestCase):
             action, reason = settle_task_action(kind, ev)
             self.assertEqual(action, "stop", (kind, ev))
             self.assertTrue(reason)
+
+
+class TestOutputFormatAndDepth(unittest.TestCase):
+    """输出格式 + 图片位数：一张表撑起下拉、校验、扩展名替换（v0.9.0）。"""
+
+    def test_every_format_has_a_sane_depth_whitelist(self):
+        """每个格式的位数非空，且"推荐默认"必须就在白名单里。
+
+        默认不在白名单里 = 一回填就撞上 `coerce_depth` 把值改掉，界面每次刷新都在跳。
+        """
+        for ident, depths, default, ext in FORMATS:
+            if not ident:                      # 「保持工程设置」没有位数
+                continue
+            self.assertTrue(depths, ident)
+            self.assertIn(default, depths, ident)
+            self.assertTrue(ext, ident)        # 都要有扩展名，否则落盘文件名没后缀
+
+    def test_depth_choices_are_disabled_for_keep(self):
+        self.assertEqual(depth_choices(""), [DEPTH_KEEP_LABEL])
+        self.assertEqual(depth_choices("PNG"), ["8", "16"])
+        self.assertEqual(depth_choices("OPEN_EXR"), ["16", "32"])
+
+    def test_keep_labels_travel_both_ways(self):
+        """下拉显示文案 ↔ 实际值必须能往返（否则"保持工程设置"会被当成格式名下发）。"""
+        self.assertEqual(format_label(""), FORMAT_KEEP_LABEL)
+        self.assertEqual(format_from_label(FORMAT_KEEP_LABEL), "")
+        self.assertEqual(format_label("png"), "PNG")       # 大写归一
+        self.assertEqual(format_from_label("OPEN_EXR"), "OPEN_EXR")
+        self.assertEqual(depth_value(DEPTH_KEEP_LABEL), "")
+        self.assertEqual(depth_value("16"), "16")
+
+    def test_coerce_depth_follows_the_whitelist(self):
+        self.assertEqual(coerce_depth("PNG", "16"), ("16", False))
+        self.assertEqual(coerce_depth("PNG", "32"), ("8", True))     # 不支持 → 回默认
+        self.assertEqual(coerce_depth("OPEN_EXR", ""), ("32", True))  # 空 → 用默认
+        self.assertEqual(coerce_depth("OPEN_EXR", "8"), ("32", True))
+        # 格式是「保持工程设置」：位数一律交还给工程
+        self.assertEqual(coerce_depth("", "16"), ("", True))
+        self.assertEqual(coerce_depth("", ""), ("", False))
+
+    def test_retarget_extension_only_touches_known_image_suffixes(self):
+        self.assertEqual(retarget_extension("out/f_####.png", "OPEN_EXR"), "out/f_####.exr")
+        self.assertEqual(retarget_extension("out/f_####.jpeg", "PNG"), "out/f_####.png")
+        self.assertEqual(retarget_extension("out/f_####.exr", "OPEN_EXR"), "out/f_####.exr")
+        # 没有扩展名 / 认不出的后缀：原样返回，不猜用户的命名
+        self.assertEqual(retarget_extension("out/f_####", "OPEN_EXR"), "out/f_####")
+        self.assertEqual(retarget_extension("out/f_####.tmp", "PNG"), "out/f_####.tmp")
+        # 「保持工程设置」不带扩展名信息，什么都不能改
+        self.assertEqual(retarget_extension("out/f_####.png", ""), "out/f_####.png")
+
+    def test_to_config_rejects_depth_the_format_does_not_accept(self):
+        """选了格式就必须位数合法 —— 不合法的位数 Blender 会**静默忽略**。"""
+        def cfg(**kw):
+            base = dict(blend=self.blend, output=os.path.join(self.d, "o_####"),
+                        segments=[new_segment("1", "2")])
+            base.update(kw)
+            return FormModel(**base).to_config()
+
+        _cfg, errors, _ = cfg(file_format="PNG", color_depth="32")
+        self.assertTrue([e for e in errors if "32" in e], errors)
+        _cfg, errors, _ = cfg(file_format="PNG", color_depth="16")
+        self.assertEqual(errors, [])
+
+    def test_keep_format_never_sends_a_depth(self):
+        """说了不碰工程，就一点都不碰：格式 KEEP 时位数必须不下发。"""
+        cfg, errors, _ = FormModel(blend=self.blend,
+                                   output=os.path.join(self.d, "o_####"),
+                                   segments=[new_segment("1", "2")],
+                                   color_depth="16").to_config()
+        self.assertEqual(errors, [])
+        self.assertIsNone(cfg.color_depth)
+        self.assertIsNone(cfg.file_format)
+
+    def setUp(self):
+        import tempfile
+        self.d = tempfile.mkdtemp(prefix=".brc-fmt-")
+        self.blend = os.path.join(self.d, "a.blend")
+        with open(self.blend, "wb") as fh:
+            fh.write(b"BLENDER")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def test_fields_from_detail_backfills_depth_only_when_supported(self):
+        """工程里的位数只在白名单内才回填 —— 下拉里没有的项填上去就是界面说谎。"""
+        self.assertEqual(fields_from_detail(
+            {"file_format": "PNG", "color_depth": "16"})["color_depth"], "16")
+        self.assertNotIn("color_depth", fields_from_detail(
+            {"file_format": "JPEG", "color_depth": "16"}))   # JPEG 只认 8
+        self.assertNotIn("color_depth", fields_from_detail(
+            {"file_format": "AVI", "color_depth": "8"}))     # 格式我们不认识
+
+    def test_depth_event_reaches_the_log(self):
+        """driver 发的 `depth_set` 要有下游消费（只生产不消费 = 死字段，AGENTS 坑 56）。"""
+        self.assertIn("16", event_line("depth_set", {"depth": "16", "file_format": "PNG"}))
 
 
 class TestAftermathPlan(unittest.TestCase):

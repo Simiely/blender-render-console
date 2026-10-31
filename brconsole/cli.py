@@ -53,6 +53,9 @@ def build_parser():
     p.add_argument("--res", help="分辨率，如 1920x1080")
     p.add_argument("--pct", type=int, help="分辨率百分比，如 50")
     p.add_argument("--format", dest="file_format", help="输出格式：PNG / JPEG / OPEN_EXR ...")
+    p.add_argument("--color-depth", dest="color_depth",
+                   help="图片位数：8 / 16 / 32（合法值随 --format 而定，"
+                        "如 PNG 只认 8/16、OPEN_EXR 只认 16/32；不给＝不覆盖工程设置）")
     p.add_argument("--blender", help="blender.exe 路径（不给就自动探测）")
     p.add_argument("--deep-scan", action="store_true", help="自动探测时连便携版目录一起扫（慢）")
     p.add_argument("--state", help="断点状态文件路径（默认输出目录下 .render_state.json）")
@@ -187,6 +190,9 @@ class ConsoleReporter(object):
         if kind == "device_set":
             self._line("  渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or [])))
             return
+        if kind == "depth_set":
+            self._line("  输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format")))
+            return
         if kind == "engine_set":
             if ev.get("requested") != ev.get("actual"):
                 self._line("  引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual")))
@@ -263,6 +269,7 @@ def main(argv=None):
         blend=blend, frames=frames, output_template=out, engine=args.engine,
         samples=args.samples, device=args.device, resolution=resolution,
         resolution_percentage=args.pct, file_format=args.file_format,
+        color_depth=args.color_depth,
         scene=args.scene,
         state_path=args.state, log_path=args.log,
         # 解析不了（脚本里写错）时退回**有界**的 5 次：宁可少试几次，

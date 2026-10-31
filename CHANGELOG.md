@@ -2,6 +2,44 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.0] - 2026-11-01
+
+**输出格式与图片位数可选 + 窗口标题带版本号**。内核多一个下发字段 `color_depth`，
+老存档与老命令行照常工作（不给就不覆盖工程设置）。
+
+```
+格式 [OPEN_EXR ▾]  位数 [32 ▾]
+```
+
+- 格式下拉从 4 项扩到 **14 种**：PNG / OPEN_EXR / JPEG / TIFF / WEBP / AVIF / BMP /
+  TARGA / TARGA_RAW / DPX / JPEG2000 / CINEON / HDR / IRIS，另加「保持工程设置」。
+- 新增**图片位数**下拉，候选随格式变（PNG 8/16、OpenEXR 16/32、DPX 8/10/12/16 …）。
+  白名单是 **Blender 5.2.2 运行时逐个实测**的结果：官方手册在 Cineon（写 8/10/12/16）
+  与 Iris（写 8/16）两处与实测不符 —— 5.2.2 里 Cineon 只认 10、Iris 只认 8。
+  写错的位数 Blender 会**静默忽略**，所以驱动脚本设完还要回读比对，对不上就告警。
+- **换格式时位数自动归位、输出模板的扩展名跟着改**：实测 PNG(8) → OPEN_EXR → PNG
+  之后位数会变成 16 位，"只下发格式不下发位数"就是位数悄悄变；而模板写 `.png` 却选了
+  EXR，会写出一个扩展名名不副实的文件。
+- 窗口标题栏显示版本：`blender-render-console 0.9.0 · 无头渲染控制台`。版本号只取自
+  `brconsole/__init__.py`；单实例的「唤醒已运行窗口」改成**精确匹配 + 标题前缀兜底**，
+  跨版本升级时也能找到旧实例（否则新版本会以为没人在跑，直接双开互踩输出文件）。
+- CLI 新增 `--color-depth`（合法值随 `--format` 而定；不给 = 不覆盖工程设置）。
+- 磁盘空间估算按位数放大（8 位 RGBA 4 B/px、16 位 8、32 位 16），仍只提醒不拦。
+- 「格式 / 位数」独占一行，下拉宽度按字体**实测**（`fit_combobox`）：挤在「设备 / 分辨率」
+  那行时格式下拉只显示小半句（ttk 的 `-width` 是字符数、中文双宽，且 Tk 的下拉框
+  不做省略号）—— 真窗口截图里当场看到「保持工程设置（用」被硬切。
+
+### 内部
+
+- `guimodel.FORMAT_SPECS` 一张表 `(identifier, 可用位数, 推荐默认, 扩展名)` 撑起
+  下拉、校验与扩展名替换；`coerce_depth` / `retarget_extension` / `format_label` /
+  `format_from_label` / `depth_choices` / `depth_value` 是唯一出口，界面不再自写白名单
+- `JobConfig.color_depth` + `JOB_CONFIG_FIELDS` + `job.json` + `driver` 全链路打通；
+  `inspect.detail_of()` 读回 `color_depth`，界面据此回填（不在白名单里的不回填）
+- 驱动脚本新增 `depth_set` 事件（设完回读确认才发），core / 日志面板 / 终端都消费它
+- 测试 436 → 450：格式表自洽、位数收敛、扩展名替换、JobConfig 往返与 job.json 下发、
+  `fields_from_detail` 回填边界、位数事件有下游
+
 ## [0.8.4] - 2026-10-18
 
 **「尽力渲完」勾选改回下拉：一个次数，管所有重试**。纯界面调整，内核与存档格式未变。

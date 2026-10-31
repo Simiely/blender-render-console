@@ -59,13 +59,57 @@ def release(handle):
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
+def _window_title(hwnd, user32):
+    n = user32.GetWindowTextLengthW(hwnd)
+    if n <= 0:
+        return ""
+    import ctypes
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(hwnd, buf, n + 1)
+    return buf.value
+
+
+def _find_window_by_prefix(prefix, user32):
+    """按标题前缀找窗口，返回 HWND（找不到是 0）。
+
+    为什么需要它：标题栏带版本号之后（`blender-render-console 0.9.0 · …`），
+    用户升级到新版本时**旧实例**的标题还是上个版本 —— 精确匹配 `FindWindowW`
+    会找不到它，于是双开检查形同虚设（第二个实例照样启动，两个进程互相覆盖
+    同名输出图与断点）。按前缀兜底就能把"任意版本的本程序窗口"都认出来。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    found = []
+
+    def _cb(hwnd, _lparam):
+        title = _window_title(hwnd, user32)
+        if title and title.startswith(prefix):
+            found.append(hwnd)
+            return False                      # 找到就停
+        return True
+
+    proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(_cb)
+    user32.EnumWindows(proc, 0)
+    return found[0] if found else 0
+
+
 def focus_window(title):
     """把已运行的实例窗口调到前台（最小化先还原）。找到并成功返回 True。"""
     if not supported():
         return False
     import ctypes
+    from ctypes import wintypes
     user32 = ctypes.windll.user32
+    # AGENTS 坑 21：ctypes 调 Win32 必须先声明签名，64 位下句柄才不会被截断
+    user32.FindWindowW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
     hwnd = user32.FindWindowW(None, title)
+    if not hwnd:
+        # 精确匹配没中 —— 大概率是**另一个版本**的实例（标题里的版本号不同）
+        prefix = str(title or "").split(" ", 1)[0].strip()
+        if prefix:
+            hwnd = _find_window_by_prefix(prefix, user32)
     if not hwnd:
         return False
     SW_RESTORE = 9

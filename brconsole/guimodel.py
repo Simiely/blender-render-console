@@ -111,8 +111,136 @@ ENGINES = [("保持工程设置（用 .blend 里的）", KEEP), ("Cycles", "CYCL
            ("EEVEE", "BLENDER_EEVEE"), ("Workbench", "BLENDER_WORKBENCH")]
 DEVICES = [("保持工程设置", KEEP), ("CPU", "CPU"), ("CUDA", "CUDA"),
            ("OptiX", "OPTIX"), ("HIP", "HIP"), ("oneAPI", "ONEAPI")]
-FORMATS = [("保持工程设置", KEEP), ("PNG", "PNG"), ("JPEG", "JPEG"),
-           ("OpenEXR", "OPEN_EXR"), ("TIFF", "TIFF")]
+# ---------------- 输出格式与图片位数 ----------------
+#
+# 表结构：`(identifier, 可用位数, 推荐默认位数, 扩展名)`，**一张表撑起下拉、校验、
+# 扩展名替换**三件事 —— 别再另开一张"显示值 → 实际值"的映射表（那种两表一定漂，
+# 见 AGENTS 坑 31）。
+#
+# ⚠️ 这里每一位都是 **Blender 5.2.2 运行时逐个实测**得到的（`file_format = f` 之后
+#    逐个试 `color_depth = d` 并读回确认），不是照抄文档：官方手册在 Cineon
+#    （写 8/10/12/16）与 Iris（写 8/16）两处与实测不符 —— 5.2.2 里 Cineon 只认 10、
+#    Iris 只认 8。写错了不会报错，只会被 Blender 静默拒绝（"选了 16 位还是 8 位"）。
+#    复现命令见 AGENTS「常用命令」里的 `tools/probe_depth.py`。
+FORMAT_SPECS = [
+    ("PNG", ("8", "16"), "8", "png"),
+    ("OPEN_EXR", ("16", "32"), "32", "exr"),
+    ("JPEG", ("8",), "8", "jpg"),
+    ("TIFF", ("8", "16"), "8", "tif"),
+    ("WEBP", ("8",), "8", "webp"),
+    ("AVIF", ("8", "10", "12"), "8", "avif"),
+    ("BMP", ("8",), "8", "bmp"),
+    ("TARGA", ("8",), "8", "tga"),
+    ("TARGA_RAW", ("8",), "8", "tga"),
+    ("DPX", ("8", "10", "12", "16"), "10", "dpx"),
+    ("JPEG2000", ("8", "12", "16"), "8", "jp2"),
+    ("CINEON", ("10",), "10", "cin"),
+    ("HDR", ("32",), "32", "hdr"),
+    ("IRIS", ("8",), "8", "rgb"),
+]
+
+#: 下拉候选：第一项是「保持工程设置」（identifier 为空 = 不碰工程）
+FORMATS = [(KEEP, (), None, "")] + FORMAT_SPECS
+
+#: 模板里"已经算扩展名"的后缀（规范后缀 + 常见另一种写法，与 driver 的
+#: `KNOWN_EXT_ALIASES` 同一口径；两边由 `test_driver_contract` 锁在一起）
+KNOWN_EXT_ALIASES = ("jpeg", "tiff")
+
+#: 格式下拉里「保持工程设置」的显示文案（实际值仍是空串 `KEEP`）
+FORMAT_KEEP_LABEL = "保持工程设置（用 .blend 里的）"
+#: 位数下拉在「保持工程设置」时的显示文案（没有可选位数，控件同时会被禁用）
+DEPTH_KEEP_LABEL = "随工程"
+
+
+def format_label(ident):
+    """格式 identifier → 下拉显示文案（空值显示成「保持工程设置…」）。
+
+    为什么只做一个 `format_label` / `format_from_label` 的小函数对，而不是再抄一张
+    「文案 → 值」的表：下拉里显示的**其余项就是 identifier 本身**（PNG / OPEN_EXR …），
+    它既是显示值又是下发值，永远不会漂（AGENTS 坑 31）。
+    """
+    ident = str(ident or "").strip()
+    return ident.upper() if ident else FORMAT_KEEP_LABEL
+
+
+def format_from_label(label):
+    """下拉显示文案 → identifier（「保持工程设置…」→ 空串 = 不碰工程）。"""
+    s = str(label or "").strip()
+    return "" if (not s or s == FORMAT_KEEP_LABEL) else s.upper()
+
+
+def depth_choices(fmt):
+    """位数下拉的候选：格式是「保持工程设置」时只有一个占位文案。"""
+    depths = depths_for(fmt)
+    return list(depths) if depths else [DEPTH_KEEP_LABEL]
+
+
+def depth_value(label):
+    """位数下拉的显示值 → 实际下发值（占位文案 → 空串 = 不碰工程）。"""
+    s = str(label or "").strip()
+    return "" if s == DEPTH_KEEP_LABEL else s
+
+
+def format_spec(fmt):
+    """格式 identifier → `(可用位数, 推荐默认, 扩展名)`；未知/空返回 `((), None, "")`。"""
+    want = str(fmt or "").strip().upper()
+    for ident, depths, default, ext in FORMATS:
+        if ident == want:
+            return depths, default, ext
+    return (), None, ""
+
+
+def depths_for(fmt):
+    """这个格式**实际接受**的位数（白名单，按实测值）。"""
+    return format_spec(fmt)[0]
+
+
+def default_depth_for(fmt):
+    """这个格式的推荐默认位数（空/未知格式返回 None）。"""
+    return format_spec(fmt)[1]
+
+
+def format_ext_for(fmt):
+    """这个格式落盘用的扩展名（空/未知返回空串）。"""
+    return format_spec(fmt)[2]
+
+
+def coerce_depth(fmt, depth):
+    """把一个位数取值收敛到 `fmt` 的白名单里，返回 `(实际位数, 是否被改过)`。
+
+    为什么"空"也要落到推荐默认：实测**换格式本身就会改位数**
+    （PNG 从 EXR 切过去会变成 16 位），只下发格式不下发位数就是"位数悄悄变了"；
+    界面把收敛后的值显示出来，用户看得见。
+    格式是「保持工程设置」时位数一律置空 —— 说了不碰，就一点都不碰。
+    """
+    want = str(fmt or "").strip().upper()
+    if not want:
+        return "", bool(depth)
+    depths, default, _ext = format_spec(want)
+    d = str(depth or "").strip()
+    if d in depths:
+        return d, False
+    return (default or ""), True
+
+
+def retarget_extension(template, fmt):
+    """把输出模板末尾的**已知图像扩展名**换成新格式的扩展名。
+
+    只动认得出的图像后缀（`f_####.png` → `f_####.exr`）：`driver.output_path_for()`
+    的规则是「模板自带扩展名优先」，模板写 `.png` 却选了 EXR 时，会写出一个叫
+    `.png` 的 EXR 文件 —— 不报错、只是事后谁都不敢认。模板没有扩展名、或后缀不是
+    已知图像格式时**原样返回**，不去猜用户的自定义命名。
+    """
+    ext = format_ext_for(fmt)
+    if not ext:
+        return template
+    root, cur = os.path.splitext(template or "")
+    known = {e for _i, _d, _def, e in FORMATS if e} | set(KNOWN_EXT_ALIASES)
+    if not cur or cur.lstrip(".").lower() not in known:
+        return template
+    if cur.lstrip(".").lower() == ext:
+        return template
+    return root + "." + ext
 
 
 def scene_to_config(label):
@@ -163,8 +291,13 @@ def fields_from_detail(detail, blend=""):
     if detail.get("resolution_percentage"):
         out["pct"] = str(detail["resolution_percentage"])
     fmt = (detail.get("file_format") or "").upper()
-    if fmt in [v for _, v in FORMATS]:
+    if fmt in [f[0] for f in FORMATS]:
         out["file_format"] = fmt
+        # 位数只在"该格式确实支持"时才回填 —— 工程里存着一个这个格式不认的值时，
+        # 填进下拉会让界面说谎（下拉里根本没有那一项）
+        depth = str(detail.get("color_depth") or "").strip()
+        if depth in depths_for(fmt):
+            out["color_depth"] = depth
     tpl = output_template_from(detail.get("output_path"), blend)
     if tpl:
         out["output"] = tpl
@@ -430,6 +563,9 @@ class FormModel(object):
         self.height = kw.get("height", "")
         self.pct = kw.get("pct", "")
         self.file_format = kw.get("file_format", KEEP)
+        #: 图片位数（"8"/"16"/"32"…）；空 = 不碰工程设置。
+        #: 与 `file_format` 联动：格式是 KEEP 时这里恒为空，由 `to_config` 保证。
+        self.color_depth = kw.get("color_depth", KEEP)
         self.scene = kw.get("scene", SCENE_DEFAULT_LABEL)   # 场景名，或占位文案
         self.resume = kw.get("resume", True)
         #: 重试策略**只有一个字段**（下拉的文案）：选「一直重复」= 重启与单帧尝试都不限；
@@ -485,6 +621,8 @@ class FormModel(object):
             pct=("" if d.get("resolution_percentage") is None
                  else str(d["resolution_percentage"])),
             file_format=d.get("file_format") or KEEP,
+            color_depth=("" if d.get("color_depth") is None
+                         else str(d["color_depth"])),
             scene=d.get("scene") or SCENE_DEFAULT_LABEL,
             resume=bool(d.get("resume", True)),
             # 存档里的次数回填到那个下拉（判据在 retry_label_from_config）：
@@ -541,6 +679,22 @@ class FormModel(object):
         if bool(width) != bool(height):
             errors.append("分辨率要填就宽高都填")
 
+        # ---- 输出格式 / 图片位数 ----
+        # 两条都只在"用户确实指定了格式"时才下发：格式=「保持工程设置」时位数一律
+        # 置空，绝不偷偷改工程的位数（说了不碰就一点都不碰）。
+        fmt = str(self.file_format or "").strip().upper()
+        depth = str(self.color_depth or "").strip()
+        if not fmt:
+            depth = ""
+        else:
+            depths, _default, _ext = format_spec(fmt)
+            if not depths:
+                errors.append("未知的输出格式：%s" % fmt)
+            elif not depth:
+                depth, _changed = coerce_depth(fmt, "")
+            elif depth not in depths:
+                errors.append("%s 不支持 %s 位（可选：%s）"
+                              % (fmt, depth, " / ".join(depths)))
         if errors:
             return None, errors, warns
 
@@ -550,7 +704,8 @@ class FormModel(object):
             blend=blend, frames=frames, output_template=output,
             engine=self.engine or None, samples=samples,
             device=self.device or None, resolution=resolution,
-            resolution_percentage=pct, file_format=self.file_format or None,
+            resolution_percentage=pct, file_format=fmt or None,
+            color_depth=depth or None,
             scene=scene_to_config(self.scene),
             state_path=None, log_path=None,
             max_restarts=max_restarts,
@@ -903,6 +1058,8 @@ def event_line(kind, ev):
             ev.get("pct"), "-" if ev.get("samples") is None else ev.get("samples"))
     if kind == "device_set":
         return "渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or []))
+    if kind == "depth_set":
+        return "输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format"))
     if kind == "engine_set" and ev.get("requested") != ev.get("actual"):
         return "引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual"))
     if kind == "job_done":

@@ -1,8 +1,9 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-10-18 · v0.8.4 · 重试合并成**一个下拉**（次数同时管重启与单帧尝试，默认「一直重复」）
-> （commit `18a8642`；远端 REST 孪生提交 `42cd9b68`，tree 相同。上一基线：v0.8.3 收成一个「尽力渲完」勾选 —— **那一版读偏了用户意思，已被本版取代**；
-> 再上：v0.8.2 场景名对不上→立刻失败 + 停止不再吃重试额度；v0.8.1 自绘 ✔ + 原生输出默认开）
+> 📌 **文档基线**：2026-11-01 · v0.9.0 · 输出格式 14 种 + 图片位数可选（位数白名单按 Blender 5.2.2 运行时实测），窗口标题带版本号
+> （本机无 git，未产生 commit hash。上一基线：v0.8.4 重试合并成**一个下拉**（次数同时管重启与单帧尝试，默认「一直重复」）；
+> 再上：v0.8.3 收成一个「尽力渲完」勾选 —— **那一版读偏了用户意思，已被 v0.8.4 取代**；
+> v0.8.2 场景名对不上→立刻失败 + 停止不再吃重试额度；v0.8.1 自绘 ✔ + 原生输出默认开）
 > v0.7.0（过夜挂机三件套 + 版本切换）、v0.6.6（单实例锁）、v0.6.5（第二轮全量审核）、
 > v0.6.4（替身分叉 / 双扩展名 / 真值判断）与更早版本见 CHANGELOG
 > v0.6.2（磁盘空间预检 + 架构度量/边界检查工具）、v0.6.1、v0.6.0 见 CHANGELOG
@@ -112,8 +113,28 @@
     统一口径是「**`ok` 优先**：渲完了就是完成了」，`status_text` / 通知标题 / CLI 结语 / `aftermath_plan` 一处不落（`settle_task_action` 本来就按 `ok` 判，别去改它）。
     判断标准：**同一个状态被 ≥2 个出口读，就必须有一句"谁优先"写在代码里**（注释 + 单测双向），不能靠"反正平常不会同时为真"。同类信号：`if A: ... elif B: ...` 里的 A/B 若可能同时成立，就要问一句"这种时候该走哪支"。
 
-## 约定
+59. **输出格式的"合法位数"只能靠运行时实测，而且换格式会顺手改位数**：界面给了 14 种格式
+     + 位数下拉，白名单写在 `guimodel.FORMAT_SPECS`。两条都是实测结论，不能照抄手册：
+     - Blender 5.2.2 里 **Cineon 只认 10 位、Iris 只认 8 位**，而官方手册写的是 Cineon
+       8/10/12/16、Iris 8/16。不合法的位数赋值**不抛异常、也不生效**（静默忽略），
+       所以 `driver.apply_overrides()` 设完必须**回读 `color_depth` 比对**，对不上就 warn。
+       复现：`tools/probe_depth.py`（对 14 种格式逐个试 8/10/12/16/32 并读回）。
+     - **只设格式不设位数 = 位数随缘**：实测 PNG(8 位) → OPEN_EXR → PNG 之后，PNG 的
+       `color_depth` 变成 16 位。所以只要下发了 `file_format`，就必须一起下发 `color_depth`
+       （`FormModel.to_config` 在位数留空时自动落该格式的推荐默认）。
+     - 命令行 `-F/--render-format` **没有位数参数**（`blender --help` 实测），只能走驱动脚本注入。
+     - 模板扩展名与格式要对齐：`output_path_for()` 的规则是"模板自带扩展名优先"，模板写
+       `.png` 却选 EXR 会写出一个名不副实的文件 —— 界面切格式时用 `retarget_extension()`
+       跟着改，但只认已知图像后缀，别去猜用户的自定义命名。
+     同族提醒：标题栏加了版本号之后，`applock.focus_window()` 的精确匹配会找不到**旧版本**
+     实例（标题里的版本号不同）→ 双开检查形同虚设，所以它改成"精确匹配失败后按标题前缀
+     枚举 `EnumWindows`"。凡是"按窗口标题找窗口"的地方，都要想到标题是会变的。
+     还有一条界面侧的：格式下拉的选项文案很长（「保持工程设置（用 .blend 里的）」= 15 个
+     汉字），**不能跟「设备 / 分辨率」挤在同一行** —— pack 会把宽度压到只显示小半句，
+     且 Tk 的 combobox 不做省略号、单测也照不到（只有真窗口截图能看见）。现在它独占
+     一行，宽度走 `fit_combobox()` 按字体实测。
 
+## 约定
 - 命令一律用**绝对路径**调 `blender.exe`，不依赖 PATH
 - 不改动用户的 `.blend` 工程文件——引擎/采样/分辨率/输出路径全部走命令行参数覆盖
 - 注释与文档用中文；文件名用英文
@@ -127,7 +148,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（436 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（450 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 7 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景
@@ -177,6 +198,9 @@ python main.py 工程.blend -s 1 -e 240 -o out/frame_#### --max-restarts unlimit
 
 # 复现 Blender 输出格式实测（生成 probes/*.log）
 python tools/probe_render.py
+
+# 复现"每种格式实际接受哪些位数"（跑在 Blender 里，输出一行 ##PROBE## JSON）
+"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" -b -P tools/probe_depth.py
 
 # 重建 tkinter sidecar（本机 Python 无 tkinter，GUI 阶段用）
 python tools/build_tkinter.py

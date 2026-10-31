@@ -22,11 +22,14 @@ import tkinter as tk
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from . import applock, autostart, diskspace, locate, notify, power, taskstore, theme
+from . import __version__
 from .layout import FROZEN_SUBDIR
 from .core import RenderJob
 from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
-                       DEFAULT_RETRY, DEVICES, ENGINES, FORMATS,
+                       DEFAULT_RETRY, DEPTH_KEEP_LABEL, DEVICES, ENGINES, FORMATS,
                        RETRY_CHOICES, SCENE_NEED_READ_LABEL,
+                       coerce_depth, depth_choices, depth_value, format_ext_for,
+                       format_from_label, format_label, retarget_extension,
                        retry_note,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, NativeLineFilter,
                        ProgressModel,
@@ -41,7 +44,10 @@ from .inspect import (read_blend_info, scene_detail, scene_names,
 POLL_MS = 80
 LOG_MAX_LINES = 4000
 TITLE = "blender-render-console"
-WINDOW_TITLE = "%s · 无头渲染控制台" % TITLE
+#: 标题栏带版本号：用户经常同时装着几个版本，"这是哪个版本"必须能一眼看到。
+#: ⚠️ 版本号**只从** `brconsole.__version__` 取，别在这里再写一份字面量。
+#: 标题变了就得同步 `applock.focus_window()` 的查找方式（它按前缀兜底，见那里）。
+WINDOW_TITLE = "%s %s · 无头渲染控制台" % (TITLE, __version__)
 
 AUTOSTART_FLAG = autostart.AUTOSTART_FLAG
 
@@ -174,7 +180,10 @@ class App(object):
         self.v_w = tk.StringVar()
         self.v_h = tk.StringVar()
         self.v_pct = tk.StringVar()
-        self.v_format = tk.StringVar(value=FORMATS[0][1])
+        self.v_format = tk.StringVar(value=format_label(FORMATS[0][0]))
+        # 图片位数：格式是「保持工程设置」时这里显示"随工程"且控件禁用 ——
+        # 说了不碰工程，就不该让人以为还能单独改位数
+        self.v_depth = tk.StringVar(value=DEPTH_KEEP_LABEL)
         self.v_resume = tk.BooleanVar(value=True)
         # 原生输出**默认开启**（v0.8.1）：它才是排错时真正有用的东西（Python traceback、
         # 着色器编译失败、纹理找不到都只出现在这里）。重复的采样进度行由
@@ -277,9 +286,25 @@ class App(object):
         ttk.Entry(h, textvariable=self.v_h, width=7).pack(side="left")
         ttk.Label(h, text="百分比%").pack(side="left", padx=(12, 2))
         ttk.Entry(h, textvariable=self.v_pct, width=5).pack(side="left")
-        ttk.Label(h, text="格式").pack(side="left", padx=(12, 2))
-        ttk.Combobox(h, textvariable=self.v_format, width=12, state="readonly",
-                     values=[v for _, v in FORMATS]).pack(side="left")
+
+        # 格式 / 位数单独一行：跟「设备 / 分辨率」同一行时，格式下拉会被挤到只显示
+        # 小半句（ttk 的 width 是字符数，中文双宽，且 Tk 的 combobox 不做省略号）
+        r += 1
+        ttk.Label(box, text="格式 / 位数").grid(row=r, column=0, sticky="w", **pad)
+        f = ttk.Frame(box)
+        f.grid(row=r, column=1, columnspan=3, sticky="w")
+        self.cmb_format = ttk.Combobox(f, textvariable=self.v_format, width=20,
+                                       state="readonly",
+                                       values=[format_label(s[0]) for s in FORMATS])
+        self.cmb_format.pack(side="left")
+        self.cmb_format.bind("<<ComboboxSelected>>", self._on_format_changed)
+        fit_combobox(self.cmb_format)       # 宽度按最长选项实测算，不靠手填字符数
+        ttk.Label(f, text="位数").pack(side="left", padx=(12, 2))
+        self.cmb_depth = ttk.Combobox(f, textvariable=self.v_depth, width=7,
+                                      state="disabled",
+                                      values=depth_choices(FORMATS[0][0]))
+        self.cmb_depth.pack(side="left")
+        fit_combobox(self.cmb_depth)
 
         r += 1
         ttk.Label(box, text="输出模板").grid(row=r, column=0, sticky="w", **pad)
@@ -661,10 +686,16 @@ class App(object):
         for key, var in (("engine", self.v_engine),
                          ("samples", self.v_samples), ("device", self.v_device),
                          ("width", self.v_w), ("height", self.v_h),
-                         ("pct", self.v_pct), ("file_format", self.v_format),
+                         ("pct", self.v_pct),
                          ("output", self.v_output)):
             if key in fields:
                 var.set(fields[key])
+        # 格式走显示文案（下拉里是"保持工程设置"这种中文，不是裸 identifier）
+        if "file_format" in fields:
+            self.v_format.set(format_label(fields["file_format"]))
+        # 格式定下来之后位数下拉才有候选；工程里读到的位数交给它回填
+        self._sync_depth_ui(format_from_label(self.v_format.get()),
+                            fields.get("color_depth"))
         return fields
 
     def _update_scene_combo(self, names, active):
@@ -838,6 +869,51 @@ class App(object):
         if rec is not None:
             self.v_auto_resume.set(bool(rec.get("autoresume", True)))
 
+    # ---- 输出格式 / 图片位数 ----
+    def _depth_value(self):
+        """位数下拉的当前实际取值（"随工程" → 空串）。"""
+        return depth_value(self.v_depth.get())
+
+    def _sync_depth_ui(self, fmt, depth=None):
+        """按格式刷新位数下拉的候选与取值，返回 `(实际位数, 是否被改过)`。
+
+        候选来自 `guimodel.depth_choices()`（同一张实测表），**不在这里再写一份**
+        "哪个格式认几位"—— 两张表一定会漂（AGENTS 坑 31/44）。
+        格式是「保持工程设置」时控件禁用：没有可选的位数，也不该让人以为能单独改。
+        """
+        fmt = str(fmt or "").strip().upper()
+        old = self._depth_value() if depth is None else str(depth or "").strip()
+        values = depth_choices(fmt)
+        self.cmb_depth.configure(values=values)
+        fit_combobox(self.cmb_depth, values=values)    # 候选变长（如 16 位）时别被截尾
+        if not fmt:
+            self.cmb_depth.configure(state="disabled")
+            self.v_depth.set(DEPTH_KEEP_LABEL)
+            return "", bool(old)
+        self.cmb_depth.configure(state="readonly")
+        d, changed = coerce_depth(fmt, old)
+        self.v_depth.set(d)
+        return d, changed
+
+    def _on_format_changed(self, _event=None):
+        """切格式：位数收敛到白名单 + 输出模板的扩展名跟着改。"""
+        fmt = format_from_label(self.v_format.get())
+        depth, changed = self._sync_depth_ui(fmt)
+        tpl = self.v_output.get().strip()
+        if tpl:
+            new_tpl = retarget_extension(tpl, fmt)
+            if new_tpl != tpl:
+                self.v_output.set(new_tpl)
+                self.log.add("输出模板的扩展名跟着格式改成 .%s"
+                             "（不改的话会写出一个扩展名名不副实的文件）"
+                             % format_ext_for(fmt))
+        if changed:
+            if fmt:
+                self.log.add("位数已改成 %s 位：%s 只支持 %s"
+                             % (depth, fmt, " / ".join(depth_choices(fmt))))
+            else:
+                self.log.add("格式回到「保持工程设置」，位数也一并交还给工程（不覆盖）")
+
     # ---- 失败重试（一个下拉） ----
     def _sync_retry_note(self):
         """切下拉时**只改旁边那句说明**，不动别的控件。
@@ -861,7 +937,8 @@ class App(object):
         self.v_w.set(fm.width)
         self.v_h.set(fm.height)
         self.v_pct.set(fm.pct)
-        self.v_format.set(fm.file_format)
+        self.v_format.set(format_label(fm.file_format))
+        self._sync_depth_ui(format_from_label(self.v_format.get()), fm.color_depth)
         self.v_scene.set(fm.scene)
         self.v_resume.set(fm.resume)
         # 存档里的次数已经由 `FormModel.from_config` 变成下拉文案，这里贴上去 + 刷新说明。
@@ -945,7 +1022,8 @@ class App(object):
         self.form.width = self.v_w.get()
         self.form.height = self.v_h.get()
         self.form.pct = self.v_pct.get()
-        self.form.file_format = self.v_format.get()
+        self.form.file_format = format_from_label(self.v_format.get())
+        self.form.color_depth = self._depth_value()
         self.form.resume = self.v_resume.get()
         self.form.retry = self.v_retry.get()
         # 「显示原生输出」只是界面偏好，不进 JobConfig（`FormModel.show_native` 已删除：
