@@ -166,19 +166,28 @@ def apply_overrides(sc):
             if dev == "CPU":
                 sc.cycles.device = "CPU"
             else:
-                # GPU 路线：先设后端类型，再刷新设备列表并把可用设备全部勾上
+                # GPU 路线：先设后端类型，再刷新设备列表，**只勾同后端的设备**
                 prefs.compute_device_type = dev
                 try:
                     prefs.get_devices()
                 except Exception:
                     pass
+                # ⚠️ 不能"全都勾上"：prefs.devices 里同时列着 CPU 和同一张卡的
+                # 其它后端条目（实测 CUDA 机器上是 CUDA/CPU/OPTIX 三条）。
+                # 把 CPU 一起勾上，Cycles 会走 CPU+GPU 混合渲染，
+                # 2560x1440 / 256 采样下直接 EXCEPTION_ACCESS_VIOLATION
+                # （0xC0000005，进程退出码 139）——用户侧表现为"某帧必崩、
+                # 重试多少次都一样"。只启用 type 等于所选后端的设备即可。
                 used = []
                 for d in getattr(prefs, "devices", []):
                     try:
-                        d.use = True
-                        used.append(d.name)
+                        d.use = (getattr(d, "type", "") == dev)
+                        if d.use:
+                            used.append(d.name)
                     except Exception:
                         pass
+                # 同一张卡在不同后端下可能出现同名条目，去重后回报
+                used = sorted(set(used))
                 if not used:
                     warn("未找到可用的 %s 设备，退回 CPU" % dev)
                     sc.cycles.device = "CPU"

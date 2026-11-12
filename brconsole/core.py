@@ -601,7 +601,9 @@ class RenderJob(object):
             keep_awake()
 
         def emit(kind, **kw):
-            kw["type"] = kind
+            # 用 setdefault：driver 的 device_set 事件自己带 type=CUDA，
+            # 直接赋值会把设备类型覆盖成事件名（日志里显示成 "device_set"）
+            kw.setdefault("type", kind)
             if callable(on_event):
                 try:
                     on_event(kind, kw)
