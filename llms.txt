@@ -1,0 +1,21 @@
+# blender-render-console
+
+> 文档索引与机器可读入口：内容契约、类型化关系、证据与新鲜度。
+> 生成文件，勿手改。
+
+## Core
+
+- [README](./README.md)
+- [文档索引](./docs/index.md)
+
+## By type
+
+### reference
+
+- [文档索引](./docs/index.md) — blender-render-console 的文档入口：项目规则、开发环境、变更记录与走查文档。
+- [能力清单（走查步骤 1 产出）](./docs/walkthrough/capabilities.md) — 按真实入口盘点的能力清单（C-ID），供走查场景覆盖矩阵引用。
+- [走查素材剧本 + 覆盖矩阵（走查步骤 2 产出）](./docs/walkthrough/scenarios.md) — 走查场景与能力覆盖矩阵，逐项列出预期与实际结果。
+
+## Reports
+
+- [33 条链路走查报告（第 1 轮）](./docs/walkthrough/report-r1.md) — 第一轮走查报告：发现、证据与修复结论。

@@ -1,13 +1,15 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-01 · v0.9.0 · 输出格式 14 种 + 图片位数可选（位数白名单按 Blender 5.2.2 运行时实测），窗口标题带版本号
-> （本机无 git，经 Git Data API 推送，commit `956b9d81`。上一基线：v0.8.4 重试合并成**一个下拉**（次数同时管重启与单帧尝试，默认「一直重复」）；
+> 📌 **文档基线**：2026-11-13 · v0.9.1 · 输出格式 14 种 + 图片位数可选（位数白名单按 Blender 5.2.2 运行时实测），窗口标题带版本号
+> （本机无 git，经 Git Data API 推送，commit `fc967c5`。上一基线：v0.8.4 重试合并成**一个下拉**（次数同时管重启与单帧尝试，默认「一直重复」）；
 > 再上：v0.8.3 收成一个「尽力渲完」勾选 —— **那一版读偏了用户意思，已被 v0.8.4 取代**；
 > v0.8.2 场景名对不上→立刻失败 + 停止不再吃重试额度；v0.8.1 自绘 ✔ + 原生输出默认开）
 > v0.7.0（过夜挂机三件套 + 版本切换）、v0.6.6（单实例锁）、v0.6.5（第二轮全量审核）、
 > v0.6.4（替身分叉 / 双扩展名 / 真值判断）与更早版本见 CHANGELOG
 > v0.6.2（磁盘空间预检 + 架构度量/边界检查工具）、v0.6.1、v0.6.0 见 CHANGELOG
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
+>
+> 生成文件，勿手改。改规则请改 `schema/agents.template.md`，再运行 `python tools/repo-kit/generate.py --root . --write`。
 
 ---
 
@@ -216,3 +218,9 @@ python tools/build_tkinter.py
 
 - 命令行的完整选项清单：`blender.exe --help`，其中 `--cycles-device`、`--python-exit-code`、`-E` 在渲染控制里最常用
 - 实测原始日志：`probes/probe_cycles.log`、`probes/probe_eevee.log`
+
+## 当前规模
+
+- 页面：4（critical=0）
+- 按 type：reference=4
+- 词表版本：2.4.0
