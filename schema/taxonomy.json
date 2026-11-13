@@ -1,0 +1,33 @@
+{
+  "version": "2.4.0",
+  "name": "blender-render-console",
+  "include": ["README.md", "AGENTS.md", "docs/**"],
+  "context_files": ["AGENTS.md"],
+  "exempt_basenames": ["README.md", "CHANGELOG.md"],
+  "slugger": "github",
+  "summary_policy": "warn",
+  "types": ["tutorial", "how-to", "reference", "explanation"],
+  "kinds": ["standard", "decision", "index", "note", "glossary", "report", "pitfall"],
+  "statuses": ["draft", "active", "resolved", "superseded", "archived"],
+  "tiers": ["normal", "critical"],
+  "confidences": ["low", "medium", "high"],
+  "topics": ["blender", "rendering", "quality"],
+  "relations": {
+    "depends-on": { "direction": "directed", "inverse": "depended-on-by", "transitive": false },
+    "extends": { "direction": "directed", "inverse": "extended-by", "transitive": true },
+    "spawned-from": { "direction": "directed", "inverse": "spawned", "transitive": false },
+    "supersedes": { "direction": "directed", "inverse": "superseded-by", "transitive": false },
+    "contradicts": { "direction": "symmetric", "inverse": null, "transitive": false },
+    "see-also": { "direction": "symmetric", "inverse": null, "transitive": false }
+  },
+  "review_days": { "normal": 365, "critical": 90 },
+  "entry_files": ["README.md"],
+  "generated_files": [
+    "AGENTS.md",
+    "llms.txt",
+    "docs/_generated/index.md",
+    "docs/_generated/backlinks.md",
+    "docs/_generated/pitfalls.md"
+  ],
+  "ignore": [".github/**", "brconsole/**", "tests/**", "tools/**", "probes/**", "assets/**", "**/__pycache__/**"]
+}
