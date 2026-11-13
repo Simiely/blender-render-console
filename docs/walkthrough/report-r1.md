@@ -1,3 +1,17 @@
+---
+id: docs.walkthrough.report-r1
+title: "33 条链路走查报告（第 1 轮）"
+summary: "第一轮走查报告：发现、证据与修复结论。"
+type: reference
+kind: report
+status: resolved
+owner: "@simiely"
+topics: [blender, quality]
+source_type: doc
+source: "docs/walkthrough/report-r1.md"
+last_reviewed: 2026-10-18
+related: []
+---
 # 33 条链路走查报告（第 1 轮）
 
 > 走查对象：`blender-render-console` v0.8.1（工作区未提交改动状态）

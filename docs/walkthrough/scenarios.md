@@ -1,3 +1,17 @@
+---
+id: docs.walkthrough.scenarios
+title: "走查素材剧本 + 覆盖矩阵（走查步骤 2 产出）"
+summary: "走查场景与能力覆盖矩阵，逐项列出预期与实际结果。"
+type: reference
+kind: note
+status: active
+owner: "@simiely"
+topics: [blender, quality]
+source_type: doc
+source: "docs/walkthrough/scenarios.md"
+last_reviewed: 2026-10-18
+related: []
+---
 # 走查素材剧本 + 覆盖矩阵（走查步骤 2 产出）
 
 > 素材全部基于 `capabilities.md` 的真实入口生成；覆盖的 C-ID 必须存在于该清单。

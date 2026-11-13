@@ -1,3 +1,17 @@
+---
+id: docs.walkthrough.capabilities
+title: "能力清单（走查步骤 1 产出）"
+summary: "按真实入口盘点的能力清单（C-ID），供走查场景覆盖矩阵引用。"
+type: reference
+kind: note
+status: active
+owner: "@simiely"
+topics: [blender, quality]
+source_type: doc
+source: "docs/walkthrough/capabilities.md"
+last_reviewed: 2026-10-18
+related: []
+---
 # 能力清单（走查步骤 1 产出）
 
 > 盘点方式：只认**程序里真实存在的入口**（GUI 控件、CLI 参数、模块函数），不认 README 里的说法。
