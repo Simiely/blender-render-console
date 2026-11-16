@@ -2,6 +2,15 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.2] - 2026-11-16
+
+文档维护：升级 repo-kit 2.5.3 / 单项目规范 2.1.2，不改产品代码。
+
+- 重装 kit，`schema/kit.lock.json` 写入 `v2.5.3 / spec 2.1.2`
+- `schema/taxonomy.json` 首次纳入 `DEVELOPMENT.md` 与 `CHANGELOG.md`（此前不在扫描范围）
+- CI 无需改动：无 `sources.json`，按规范 1.5 的 B 档（check + generate + lock）
+- 验收：`REPO CHECK: PASS`（ERROR=0、WARN=0、pages=4）、`GENERATE CHECK: PASS`
+
 ## [0.9.1] - 2026-11-12
 
 **修「满质量某帧必崩」：CPU 被一起勾进计算设备**。表现为定格在某一帧、

@@ -1,7 +1,7 @@
 {
-  "version": "2.4.0",
+  "version": "2.5.3",
   "name": "blender-render-console",
-  "include": ["README.md", "AGENTS.md", "docs/**"],
+  "include": ["README.md", "AGENTS.md", "docs/**", "DEVELOPMENT.md", "CHANGELOG.md"],
   "context_files": ["AGENTS.md"],
   "exempt_basenames": ["README.md", "CHANGELOG.md"],
   "slugger": "github",
@@ -21,7 +21,7 @@
     "see-also": { "direction": "symmetric", "inverse": null, "transitive": false }
   },
   "review_days": { "normal": 365, "critical": 90 },
-  "entry_files": ["README.md"],
+  "entry_files": ["README.md", "DEVELOPMENT.md"],
   "generated_files": [
     "AGENTS.md",
     "llms.txt",
