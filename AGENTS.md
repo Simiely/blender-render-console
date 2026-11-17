@@ -223,4 +223,4 @@ python tools/build_tkinter.py
 
 - 页面：4（critical=0）
 - 按 type：reference=4
-- 词表版本：2.5.3
+- 词表版本：2.7.0
