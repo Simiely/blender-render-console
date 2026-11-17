@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""repo-kit v2.5 仓库不变量校验器。
+"""repo-kit 仓库不变量校验器。
 
 设计目标：
 - 内容契约用 JSON Schema 表达，不用手写正则解析 YAML；
@@ -47,7 +47,8 @@ LINK_SCHEMES = ("http://", "https://", "mailto:", "tel:", "javascript:", "data:"
 ADR_RE = re.compile(r"ADR-(\d{4})-[a-z0-9-]+\.md$")
 ID_RE = re.compile(r"^[a-z0-9]+(\.[a-z0-9-]+)+$")
 PITFALL_FIELDS = ("summary", "symptom", "cause", "detect", "avoid", "recover", "applies_to", "severity")
-SPEC_VERSION = "2.1.2"
+KIT_VERSION = "2.7.0"
+SPEC_VERSION = "2.1.3"
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +409,62 @@ def matches_basename(rel: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in patterns)
 
 
+LEGACY_EXEMPT_KEYS = ("context_files", "exempt_basenames", "entry_files", "link_only_files")
+CONST_KEYS = {"slugger": "github", "summary_policy": "warn"}
+
+
+def resolve_exempt(tax: dict, report: "Report | None" = None) -> tuple[list[str], list[str]]:
+    """把「豁免 frontmatter」的四种历史写法归一化为 (names, paths)。
+
+    - names：任意层级按文件名匹配（原 context_files / exempt_basenames，以及 entry_files 的裸名）
+    - paths：按相对路径 glob 匹配（原 link_only_files，以及 entry_files 里带 / 的项）
+
+    新写法：`frontmatter_exempt: {"names": [...], "paths": [...]}`（也接受扁平列表）。
+    旧键继续生效，但会报一条 TAXONOMY_LEGACY_KEY，提示迁移。
+    """
+    names: list[str] = []
+    paths: list[str] = []
+    legacy: list[str] = []
+
+    cfg = tax.get("frontmatter_exempt")
+    if isinstance(cfg, dict):
+        names += [str(x) for x in (cfg.get("names") or [])]
+        paths += [str(x) for x in (cfg.get("paths") or [])]
+    elif isinstance(cfg, list):
+        for item in cfg:
+            text = str(item)
+            (paths if "/" in text else names).append(text)
+
+    for key in ("context_files", "exempt_basenames"):
+        vals = tax.get(key) or []
+        if vals:
+            legacy.append(key)
+            names += [str(x) for x in vals]
+
+    entry = tax.get("entry_files") or []
+    if entry:
+        legacy.append("entry_files")
+        for item in entry:
+            text = str(item)
+            (paths if "/" in text else names).append(text)
+
+    link_only = tax.get("link_only_files") or []
+    if link_only:
+        legacy.append("link_only_files")
+        paths += [str(x) for x in link_only]
+
+    for key in CONST_KEYS:
+        if key in tax:
+            legacy.append(key)
+
+    if legacy and report is not None:
+        report.add(
+            "TAXONOMY_LEGACY_KEY", "WARN", "schema/taxonomy.json",
+            f"使用已废弃的键：{', '.join(sorted(set(legacy)))}；请迁移到 frontmatter_exempt",
+        )
+    return sorted(set(names)), sorted(set(paths))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -471,7 +528,7 @@ def check_spec(root: Path, report: Report) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="repo-kit v2.5.3 不变量校验器")
+    ap = argparse.ArgumentParser(description=f"repo-kit v{KIT_VERSION} 不变量校验器")
     ap.add_argument("--root", default=".", help="仓库根目录")
     ap.add_argument("--json", action="store_true", help="JSON 输出（等价于 --format json）")
     ap.add_argument("--format", choices=["text", "json", "sarif", "github"], default="text", help="输出格式")
@@ -512,12 +569,11 @@ def main() -> int:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     sources_cfg = json.loads(sources_path.read_text(encoding="utf-8")) if sources_path.exists() else {}
     today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
-    slugger_mode = tax.get("slugger", "legacy")
-    context_files = tax.get("context_files") or []
-    exempt_basenames = tax.get("exempt_basenames") or []
-    summary_policy = tax.get("summary_policy", "off")
+    # 这两个键实测 12/12 仓库取值相同（github / warn），不再是配置项。
+    # 旧键仍被读取但值被忽略，并由 resolve_exempt 报 TAXONOMY_LEGACY_KEY。
+    slugger_mode = CONST_KEYS["slugger"]
+    summary_policy = CONST_KEYS["summary_policy"]
     skills_cfg = tax.get("skills") or {}
-    link_only_files = tax.get("link_only_files") or []
     skill_schema = None
     if skills_cfg.get("schema"):
         skill_schema_path = root / str(skills_cfg["schema"])
@@ -531,7 +587,7 @@ def main() -> int:
     ignored = tax.get("ignore", [])
     included = tax.get("include") or []
     generated = set(tax.get("generated_files", []))
-    entry_files = set(tax.get("entry_files", []))
+    exempt_names, exempt_paths = resolve_exempt(tax, report)
 
     docs: dict[str, Doc] = {}
     context_or_exempt: set[str] = set()
@@ -543,9 +599,9 @@ def main() -> int:
             continue
         if p.name.startswith("_") or p.name.endswith(".template.md"):
             continue
-        if matches_basename(rel, context_files) or matches_basename(rel, exempt_basenames):
-            context_or_exempt.add(rel)
-        if any(fnmatch.fnmatch(rel, pat) for pat in link_only_files):
+        if matches_basename(rel, exempt_names) or any(
+            fnmatch.fnmatch(rel, pat) for pat in exempt_paths
+        ):
             context_or_exempt.add(rel)
         text = p.read_text(encoding="utf-8", errors="replace")
         headings, links, code_tokens = parse_markdown(text)
@@ -588,7 +644,7 @@ def main() -> int:
     pitfalls: list[tuple[str, dict]] = []
 
     for rel, doc in docs.items():
-        if is_generated(rel, generated) or rel in entry_files or rel in context_or_exempt:
+        if is_generated(rel, generated) or rel in context_or_exempt:
             continue
         fm, _body, fm_error = split_frontmatter(doc.text)
         if fm_error:

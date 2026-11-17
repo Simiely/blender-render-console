@@ -1,12 +1,12 @@
 {
     "kit":  "repo-kit",
-    "version":  "2.5.3",
-    "spec_version":  "2.1.2",
+    "version":  "2.7.0",
+    "spec_version":  "2.1.3",
     "profile":  "monorepo",
     "installed":  "2026-11-16",
     "files":  {
-                  "tools/repo-kit/check_repo.py":  "sha256:a53d88644c6d52bba8b3c6480a561cb99f4c314211936debd8c9cff3499ed185",
-                  "tools/repo-kit/generate.py":  "sha256:b64d84fd1eb5e7edbd1fc25738dbb360ef51a1e5fbfb64e794ddcee3aeda8d64",
+                  "tools/repo-kit/check_repo.py":  "sha256:fcfe6889955fcf88547ca659fcea6782246e652b2a13f7e01f91f81766e351d0",
+                  "tools/repo-kit/generate.py":  "sha256:84db68b66fec52b3408885a781d2b153de4c46406a5e4fb866f5f7d963f6a990",
                   "schema/frontmatter.schema.json":  "sha256:3c94c9da7d862aea3a2d6719a3325eb984aceaba615c2917c2d1d2eb66c9fb51",
                   "tools/update-repo-kit.ps1":  "sha256:065e4744788af22d60ad018bd414621cbd295a57aeb5016ffc7480fe48e5006d"
               }
