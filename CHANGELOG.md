@@ -2,6 +2,16 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.3] - 2026-11-18
+
+文档维护：`AGENTS.md` 按规范 2.1.4（≤150 行）拆分，产品代码零改动。
+
+- 59 条关键坑**原样迁入** [`rules/关键坑.md`](rules/关键坑.md)（编号与正文未改），
+  `AGENTS.md` 只留 8 条最高频摘要 + `@rules/关键坑.md`
+- `schema/agents.template.md` 226 → 125 行（`AGENTS.md` 由它生成，同为 125 行）
+- `schema/taxonomy.json` 把 `rules/**` 纳入扫描并豁免 frontmatter（规则文件的链接照常检查）
+- 验收：`REPO CHECK: PASS`（ERROR=0、WARN=0、pages=4）、`GENERATE CHECK: PASS`
+
 ## [0.9.2] - 2026-11-16
 
 文档维护：升级 repo-kit 2.5.3 / 单项目规范 2.1.2，不改产品代码。
