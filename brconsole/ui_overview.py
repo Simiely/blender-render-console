@@ -34,8 +34,10 @@ class OverviewModule(uikit.ModuleCard):
 
         grid = tk.Frame(self.qd, bg=QD_BG)
         grid.pack(fill="x", padx=12, pady=(0, 10))
+        # 视口实测约 692px；4×178 + 3×12 = 748 会横向裁切。
+        # 150 是"4 列不挤、最窄窗口也能完整显示"的实测折中。
         for c in range(4):
-            grid.columnconfigure(c, weight=1, uniform="qd", minsize=178)
+            grid.columnconfigure(c, weight=1, uniform="qd", minsize=150)
         rows = [("工程", "blend"), ("帧范围", "range"), ("帧数", "count"),
                 ("引擎 / 采样", "engine"), ("输出", "output"),
                 ("分辨率", "res"), ("格式 / 位数", "format"),
@@ -50,7 +52,7 @@ class OverviewModule(uikit.ModuleCard):
             var = tk.StringVar(value="—")
             tk.Label(cell, textvariable=var, bg=QD_BG, fg=theme.BRIGHT,
                      font=("Microsoft YaHei", 9, "bold"), justify="left",
-                     wraplength=178, anchor="w").pack(anchor="w")
+                     wraplength=150, anchor="w").pack(anchor="w")
             self.fields[key] = var
 
     def set_head(self, name, status="pending"):

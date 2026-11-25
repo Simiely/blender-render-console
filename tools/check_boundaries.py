@@ -32,9 +32,9 @@ import arch_metrics as am                                            # noqa: E40
 
 # 允许碰 tkinter 的文件（界面层）
 UI_FILES = {"brconsole/gui.py", "brconsole/theme.py", "brconsole/uikit.py",
-            "brconsole/gui_view.py", "brconsole/ui_project.py",
+            "brconsole/ui_project.py",
             "brconsole/ui_frames.py", "brconsole/ui_render.py",
-            "brconsole/ui_overview.py", "brconsole/ui_topbar.py",
+            "brconsole/ui_overview.py",
             "brconsole/ui_leftqueue.py", "brconsole/ui_log.py",
             "brconsole/ui_program.py", "brconsole/gui_view_new.py",
             "brconsole/gui/__init__.py", "brconsole/gui/app.py",
@@ -48,9 +48,9 @@ UI_FILES = {"brconsole/gui.py", "brconsole/theme.py", "brconsole/uikit.py",
             "brconsole/gui/aftermath_controller.py",
             "brconsole/gui/refresh_controller.py"}
 UI_MODULES = {"brconsole/gui", "brconsole/theme", "brconsole/uikit",
-              "brconsole/gui_view", "brconsole/ui_project",
+              "brconsole/ui_project",
               "brconsole/ui_frames", "brconsole/ui_render",
-              "brconsole/ui_overview", "brconsole/ui_topbar",
+              "brconsole/ui_overview",
               "brconsole/ui_leftqueue", "brconsole/ui_log",
               "brconsole/ui_program", "brconsole/gui_view_new",
               "brconsole/gui/app", "brconsole/gui/app_state",

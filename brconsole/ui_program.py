@@ -45,6 +45,8 @@ class ProgramDialog(tk.Toplevel):
         self.version_combo = ttk.Combobox(
             body, textvariable=v["blender_ver"], state="readonly",
             values=list(owner.version_values))
+        if owner.version_width is not None:
+            self.version_combo.configure(width=owner.version_width)
         self.version_combo.grid(row=4, column=0, columnspan=2, sticky="ew")
         if owner.on_version:
             self.version_combo.bind("<<ComboboxSelected>>", owner.on_version)
@@ -53,13 +55,10 @@ class ProgramDialog(tk.Toplevel):
                                              pady=(3, 10))
 
         # 原生输出
-        self.native_check = tk.Checkbutton(
+        self.native_check = ttk.Checkbutton(
             body, text="显示 Blender 原生输出（同类进度行自动折叠）",
-            variable=v["native"], bg=theme.PANEL, fg="#d4d4d4",
-            activebackground=theme.PANEL, activeforeground="#ffffff",
-            selectcolor=theme.FIELD, highlightthickness=0, bd=0,
-            anchor="w", justify="left", wraplength=480,
-            font=("Microsoft YaHei", 9))
+            variable=v["native"], style="TCheckbutton",
+            anchor="w", justify="left", wraplength=480)
         self.native_check.grid(row=6, column=0, columnspan=2, sticky="w",
                                pady=(0, 10))
 
@@ -68,7 +67,9 @@ class ProgramDialog(tk.Toplevel):
             row=7, column=0, sticky="w", pady=(0, 4))
         self.retry_combo = ttk.Combobox(
             body, textvariable=v["retry"], state="readonly",
-            values=list(RETRY_CHOICES))
+            values=list(owner.retry_values))
+        if owner.retry_width is not None:
+            self.retry_combo.configure(width=owner.retry_width)
         self.retry_combo.grid(row=8, column=0, columnspan=2, sticky="ew")
         if owner.on_retry:
             self.retry_combo.bind("<<ComboboxSelected>>", owner.on_retry)
@@ -79,20 +80,14 @@ class ProgramDialog(tk.Toplevel):
                              pady=(4, 10))
 
         # 开机自启 / 自动续跑
-        self.autostart_check = tk.Checkbutton(
+        self.autostart_check = ttk.Checkbutton(
             body, text="开机自动启动", variable=v["autostart"],
-            command=owner.on_autostart, bg=theme.PANEL, fg="#d4d4d4",
-            activebackground=theme.PANEL, activeforeground="#ffffff",
-            selectcolor=theme.FIELD, highlightthickness=0, bd=0,
-            anchor="w", font=("Microsoft YaHei", 9))
+            command=owner.on_autostart, style="TCheckbutton", anchor="w")
         self.autostart_check.grid(row=10, column=0, columnspan=2, sticky="w")
-        self.auto_resume_check = tk.Checkbutton(
+        self.auto_resume_check = ttk.Checkbutton(
             body, text="启动时自动续跑未完成任务",
             variable=v["auto_resume"], command=owner.on_auto_resume,
-            bg=theme.PANEL, fg="#d4d4d4", activebackground=theme.PANEL,
-            activeforeground="#ffffff", selectcolor=theme.FIELD,
-            highlightthickness=0, bd=0, anchor="w",
-            font=("Microsoft YaHei", 9))
+            style="TCheckbutton", anchor="w")
         self.auto_resume_check.grid(row=11, column=0, columnspan=2,
                                     sticky="w", pady=(2, 0))
         self.autostart_note = ttk.Label(
@@ -130,6 +125,15 @@ class ProgramDialog(tk.Toplevel):
     def refresh_versions(self, versions):
         self.version_combo.configure(values=list(versions))
 
+    def refresh_version_width(self, width):
+        self.version_combo.configure(width=width)
+
+    def refresh_retry_values(self, values):
+        self.retry_combo.configure(values=list(values))
+
+    def refresh_retry_width(self, width):
+        self.retry_combo.configure(width=width)
+
     def refresh_retry_note(self, text):
         self.retry_note.configure(text=text)
 
@@ -165,6 +169,9 @@ class ProgramSettingsPanel(tk.Frame):
         self.on_auto_resume = on_auto_resume
         self.dialog = None
         self.version_values = []
+        self.version_width = None
+        self.retry_values = list(RETRY_CHOICES)
+        self.retry_width = None
         self.disabled = set()
         self.retry_note_text = retry_note(DEFAULT_RETRY)
         self.autostart_note_text = ""
@@ -200,6 +207,21 @@ class ProgramSettingsPanel(tk.Frame):
             self.vars["blender_ver"].set(current)
         if self.dialog is not None and self.dialog.winfo_exists():
             self.dialog.refresh_versions(versions)
+
+    def set_version_width(self, width):
+        self.version_width = width
+        if self.dialog is not None and self.dialog.winfo_exists():
+            self.dialog.refresh_version_width(width)
+
+    def set_retry_values(self, values):
+        self.retry_values = list(values)
+        if self.dialog is not None and self.dialog.winfo_exists():
+            self.dialog.refresh_retry_values(values)
+
+    def set_retry_width(self, width):
+        self.retry_width = width
+        if self.dialog is not None and self.dialog.winfo_exists():
+            self.dialog.refresh_retry_width(width)
 
     def set_retry_note(self, text=None):
         text = text or retry_note(self.vars["retry"].get())
