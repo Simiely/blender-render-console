@@ -86,19 +86,23 @@ def load():
     if q.get("version") != STORE_VERSION:
         return None
     q.setdefault("current", 0)
+    # 旧版本 queue.json 里可能还有这个字段；只为兼容读取，不再是写入源
     q.setdefault("autoresume", True)
     return q
 
 
 def save(items, current=0, autoresume=True):
-    """整份写入（原子）。返回队列文件路径。"""
+    """整份写入（原子）。返回队列文件路径。
+
+    `autoresume` 参数只为兼容旧调用方而保留，**不再写入也不再被读取**：
+    「启动时自动续跑」的唯一来源是 `taskstore.autoresume_preference()`。
+    """
     path = queue_path()
     _atomic_write({
         "version": STORE_VERSION,
         "created": round(time.time(), 3),
         "updated": round(time.time(), 3),
         "current": int(current),
-        "autoresume": bool(autoresume),
         "items": items,
     }, path)
     return path
@@ -190,20 +194,6 @@ def update_config(item_id, cfg, blender_exe=None):
     return False
 
 
-def set_autoresume(flag):
-    """整份队列的开机续跑旗标（与界面「启动时自动续跑」勾选同步）。
-
-    `set_current()` 写 pending.json 时直接取这个值 —— 只改 pending 不改队列的话，
-    下一项又会用回旧旗标，界面勾选等于只对当前项有效（坑 35 的同款）。
-    队列文件不存在时返回 False（没有队列可改，不算错误）。
-    """
-    q = load()
-    if not q:
-        return False
-    save(q["items"], q.get("current", 0), bool(flag))
-    return True
-
-
 def set_current(item_id):
     """把某项设为当前（current 索引），并把它的 config 写进 pending.json
     供现有开机续跑逻辑认领；返回写入的 pending 存档。"""
@@ -215,13 +205,15 @@ def set_current(item_id):
         return None
     q["current"] = idx
     q["items"][idx]["status"] = STATUS_RUNNING
-    save(q["items"], idx, q.get("autoresume", True))
+    save(q["items"], idx)
     item = q["items"][idx]
     from .core import JobConfig
     cfg = JobConfig.from_dict(item["config"])
+    # 旗标只从 taskstore 读：用户可能在还没有待办任务时就改了界面开关，
+    # 那份偏好存在 prefs.json 里（坑 35：界面开关必须真的通电）
+    want, why = taskstore.autoresume_snapshot()
     path = taskstore.save(cfg, item.get("blender_exe") or "",
-                          autoresume=q.get("autoresume", True),
-                          reason="队列任务")
+                          autoresume=want, reason=why or "队列任务")
     return path
 
 

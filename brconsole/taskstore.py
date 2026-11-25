@@ -31,6 +31,9 @@ from .state import JobState
 
 STORE_VERSION = 1
 FILENAME = "pending.json"
+#: 「启动时自动续跑」的唯一来源。pending.json 里那份只是任务落盘时的快照，
+#: 用户可能在还没有任何待办任务时就改了开关 —— 那份偏好必须存在这里。
+PREFS_FILENAME = "prefs.json"
 APP_DIRNAME = "blender-render-console"
 
 
@@ -56,6 +59,51 @@ def store_dir():
 
 def pending_path():
     return os.path.join(store_dir(), FILENAME)
+
+
+def prefs_path():
+    return os.path.join(store_dir(), PREFS_FILENAME)
+
+
+def autoresume_snapshot():
+    """「启动时自动续跑」的用户偏好 → `(旗标, 原因)`。
+
+    原因必须一起存：下次点开始写 pending 时若旗标是关的，`save()` 会把传进去的
+    reason 记成 auto_reason —— 不带上真正的原因，开机日志就会说成"队列任务"，
+    把"用户在界面上取消勾选"这件事抹掉。
+    """
+    try:
+        with open(prefs_path(), "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        return bool(rec.get("autoresume", True)), str(rec.get("auto_reason") or "")
+    except (OSError, ValueError, AttributeError):
+        return True, ""
+
+
+def autoresume_preference():
+    """只要旗标的便捷入口。读不到一律当 True（宁可续跑也别静默丢任务）。"""
+    return autoresume_snapshot()[0]
+
+
+def _save_preference(flag, reason=""):
+    path = prefs_path()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".brc-pref-", suffix=".tmp",
+                               dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"autoresume": bool(flag),
+                       "auto_reason": "" if flag else str(reason or "")},
+                      f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
 
 
 # ---------------- 存 / 取 ----------------
@@ -121,7 +169,11 @@ def clear():
 
 
 def set_autoresume(flag, reason=""):
-    """改存档里的自动续跑标记。返回是否真的改到了（没存档就返回 False）。
+    """改「启动时自动续跑」——**全项目唯一的写入口**。
+
+    先写 `prefs.json`（用户偏好，即使还没有待办任务也生效），再改 pending.json 里
+    任务快照上的那份并记下 `reason`。返回值仍表示"有没有真的改到存档"，没存档时
+    返回 False，但偏好已经记下 —— 下次点开始写 pending 时会带上它。
 
     只改这两个字段、**不整份重写 config**，是为了不碰任务定义 —— 万一用户改了界面上的
     参数但还没点开始，存档里的任务定义仍应是"上次真正跑的那个"。
@@ -131,6 +183,7 @@ def set_autoresume(flag, reason=""):
     ⚠️ 每次调用都**整条重写**这个字段（而不是"没传就保留旧值"）：留着上一条原因，
     下次因为别的原因关掉自动续跑时，日志会把旧原因当成新原因报出来 —— 那比没有原因更坏。
     """
+    _save_preference(flag, reason)
     rec = load()
     if rec is None:
         return False
