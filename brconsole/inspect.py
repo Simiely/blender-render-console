@@ -100,6 +100,13 @@ try:
         "scenes": [s.name for s in bpy.data.scenes],
         "scene_details": [detail_of(s) for s in bpy.data.scenes],
         "blender_version": bpy.app.version_string,
+        # 可隐藏的集合：给界面做勾选清单。只列激活场景 hierarchy 里的集合，
+        # 不带 Scene Collection 根（它不是可隐藏的对象容器，藏了等于整个场景空）。
+        # 对象数用 all_objects（含子集合），便于用户判断"藏掉会有多大影响"。
+        "collections": [
+            {"name": c.name, "objects": len(c.all_objects)}
+            for c in sc.collection.children
+        ],
     })
     emit(info)
 except Exception as e:

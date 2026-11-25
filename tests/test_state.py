@@ -173,7 +173,7 @@ class TestState(_Base):
         st = JobState(self.path, frames=[1])
         st.blend = None
         st.scene = None
-        self.assertEqual(st.signature(), ("", "", (1,), ""))
+        self.assertEqual(st.signature(), ("", "", (1,), "", ()))
 
     def test_missing_state(self):
         self.assertIsNone(JobState.load(os.path.join(self.dir, "nope.json")))

@@ -230,6 +230,7 @@ def complete_output_template(path, blend=""):
 # 漏了的话开机续跑重建出来的任务会缺这一项、静默按默认值跑（最难查的那种 bug）。
 JOB_CONFIG_FIELDS = (
     "blend", "frames", "output_template", "engine", "samples", "device", "scene",
+    "hidden_collections",
     "resolution", "resolution_percentage", "file_format", "color_depth",
     "state_path", "log_path",
     "max_restarts", "max_frame_attempts", "extra_args", "resume", "restart_delay",
@@ -244,7 +245,8 @@ class JobConfig(object):
                  device=None, resolution=None, resolution_percentage=None,
                  file_format=None, color_depth=None, state_path=None, log_path=None,
                  max_restarts=5, max_frame_attempts=3, extra_args=(),
-                 resume=True, restart_delay=2.0, max_no_progress_rounds=3, scene=None):
+                 resume=True, restart_delay=2.0, max_no_progress_rounds=3, scene=None,
+                 hidden_collections=()):
         self.blend = os.path.abspath(blend)
         self.frames = [int(f) for f in frames]
         # 绝对化：见 normalise_output_template 的说明（开机自启时工作目录会变）。
@@ -255,6 +257,9 @@ class JobConfig(object):
         self.device = device
         # 场景名；None/空 = 用工程里激活的那个（= Blender 打开工程时默认显示的场景）
         self.scene = (scene or "").strip() or None
+        # 渲染时要隐藏的集合名列表（只内存生效，绝不改 .blend）。
+        # 进任务签名：换了它出图内容就变了，不能续旧断点。
+        self.hidden_collections = [str(c) for c in (hidden_collections or ()) if str(c).strip()]
         self.resolution = tuple(resolution) if resolution else None
         self.resolution_percentage = resolution_percentage
         self.file_format = file_format
@@ -281,7 +286,8 @@ class JobConfig(object):
 
         规则本体在 `state.task_signature()` —— 运行时续跑与开机续跑必须用**同一份**判据。
         """
-        return task_signature(self.blend, self.output_template, self.frames, self.scene)
+        return task_signature(self.blend, self.output_template, self.frames, self.scene,
+                              self.hidden_collections)
 
     def state_file(self):
         """断点文件的最终路径。
@@ -331,7 +337,8 @@ class JobConfig(object):
             resume=d.get("resume", True),
             restart_delay=d.get("restart_delay", 2.0),
             max_no_progress_rounds=d.get("max_no_progress_rounds", 3),
-            scene=d.get("scene"))
+            scene=d.get("scene"),
+            hidden_collections=d.get("hidden_collections") or ())
 
 
 def default_cmd_factory(blender_exe, blend, driver_path, job_json, extra_args=()):
@@ -469,7 +476,8 @@ class RenderJob(object):
                 state_path, blend=cfg.blend, frames=cfg.frames,
                 output_template=cfg.output_template, engine=cfg.engine,
                 samples=cfg.samples, device=cfg.device, resolution=cfg.resolution,
-                file_format=cfg.file_format, scene=cfg.scene)
+                file_format=cfg.file_format, scene=cfg.scene,
+                hidden_collections=cfg.hidden_collections)
             self.state.save()
         return state_path
 
@@ -531,6 +539,10 @@ class RenderJob(object):
             # 驱动脚本设完位数后回读确认过才发这条 —— 界面把它打进日志，
             # 用户能对着它核对"我选的 16 位真的生效了"（不然只能等出片才知道）
             emit("depth_set", depth=ev.get("depth"), file_format=ev.get("file_format"))
+        elif kind == "collections_hidden":
+            # 隐藏集合回读结果：必须显示，否则用户不知道隐藏到底生效没有（坑 35）
+            emit("collections_hidden", applied=ev.get("applied") or [],
+                 missing=ev.get("missing") or [])
         elif kind == "info":
             emit("settings", engine=ev.get("engine"), res=ev.get("res"),
                  pct=ev.get("pct"), output=ev.get("output"), samples=ev.get("samples"))
@@ -677,6 +689,7 @@ class RenderJob(object):
                         "file_format": cfg.file_format,
                         "color_depth": cfg.color_depth,
                         "scene": cfg.scene,
+                        "hidden_collections": cfg.hidden_collections,
                     }, f, ensure_ascii=False)
 
                 cmd = self.cmd_factory(self.blender_exe, cfg.blend, driver_path,

@@ -47,6 +47,10 @@ def build_parser():
                         "（填了就只用它，忽略 -s/-e）")
     p.add_argument("-S", "--scene",
                    help="渲染哪个场景（工程里有多个场景时用）；不给就用工程里激活的那个")
+    p.add_argument("--hide-collection", dest="hidden_collections", action="append",
+                   default=[], metavar="NAME",
+                   help="渲染时隐藏的集合名（可重复多次）；只内存生效，不改 .blend 工程。"
+                        "集合名写错会在日志里警告并忽略")
     p.add_argument("-o", "--output", help="输出模板（含 ####，如 out/frame_####）或输出目录")
     p.add_argument("-E", "--engine", help="引擎：CYCLES / BLENDER_EEVEE / BLENDER_WORKBENCH")
     p.add_argument("--samples", type=int, help="采样数（Cycles 渲染采样 / EEVEE TAA）")
@@ -211,6 +215,14 @@ class ConsoleReporter(object):
         if kind == "depth_set":
             self._line("  输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format")))
             return
+        if kind == "collections_hidden":
+            applied = ev.get("applied") or []
+            missing = ev.get("missing") or []
+            msg = "  已隐藏集合：%s" % ("、".join(applied) if applied else "（无）")
+            if missing:
+                msg += " · 工程里找不到已忽略：%s" % "、".join(missing)
+            self._line(msg)
+            return
         if kind == "engine_set":
             if ev.get("requested") != ev.get("actual"):
                 self._line("  引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual")))
@@ -289,6 +301,7 @@ def main(argv=None):
         resolution_percentage=args.pct, file_format=args.file_format,
         color_depth=args.color_depth,
         scene=args.scene,
+        hidden_collections=args.hidden_collections,
         state_path=args.state, log_path=args.log,
         # 解析不了（脚本里写错）时退回**有界**的 5 次：宁可少试几次，
         # 也不要因为一个拼错的字符串就变成"无限重启"。默认值本身是 unlimited。

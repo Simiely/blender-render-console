@@ -567,6 +567,8 @@ class FormModel(object):
         #: 与 `file_format` 联动：格式是 KEEP 时这里恒为空，由 `to_config` 保证。
         self.color_depth = kw.get("color_depth", KEEP)
         self.scene = kw.get("scene", SCENE_DEFAULT_LABEL)   # 场景名，或占位文案
+        #: 要隐藏的集合名列表（每个工程各自一份，读工程配置后用户勾选）
+        self.hidden_collections = list(kw.get("hidden_collections") or ())
         self.resume = kw.get("resume", True)
         #: 重试策略**只有一个字段**（下拉的文案）：选「一直重复」= 重启与单帧尝试都不限；
         #: 选「3 次」= 两者都是 3 次。三个内核参数由 `retry_plan()` 从这一个文案推出来，
@@ -624,6 +626,7 @@ class FormModel(object):
             color_depth=("" if d.get("color_depth") is None
                          else str(d["color_depth"])),
             scene=d.get("scene") or SCENE_DEFAULT_LABEL,
+            hidden_collections=d.get("hidden_collections") or (),
             resume=bool(d.get("resume", True)),
             # 存档里的次数回填到那个下拉（判据在 retry_label_from_config）：
             # 老存档读进来照样跑成原来那样，预设里没有的数值也如实显示
@@ -707,6 +710,7 @@ class FormModel(object):
             resolution_percentage=pct, file_format=fmt or None,
             color_depth=depth or None,
             scene=scene_to_config(self.scene),
+            hidden_collections=list(self.hidden_collections),
             state_path=None, log_path=None,
             max_restarts=max_restarts,
             max_frame_attempts=attempts,
@@ -1099,6 +1103,13 @@ def event_line(kind, ev):
         return "渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or []))
     if kind == "depth_set":
         return "输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format"))
+    if kind == "collections_hidden":
+        applied = ev.get("applied") or []
+        missing = ev.get("missing") or []
+        msg = "已隐藏集合：%s" % ("、".join(applied) if applied else "（无）")
+        if missing:
+            msg += " · 工程里找不到已忽略：%s" % "、".join(missing)
+        return msg
     if kind == "engine_set" and ev.get("requested") != ev.get("actual"):
         return "引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual"))
     if kind == "job_done":

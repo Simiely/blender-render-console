@@ -19,11 +19,11 @@ STATE_VERSION = 1
 DEFAULT_STATE_FILENAME = ".render_state.json"
 
 
-def task_signature(blend, output_template, frames, scene):
-    """「这是不是同一个任务」的判据：工程 + 输出模板 + 帧范围 + 场景。
+def task_signature(blend, output_template, frames, scene, hidden_collections=None):
+    """「这是不是同一个任务」的判据：工程 + 输出模板 + 帧范围 + 场景 + 隐藏集合。
 
-    **四个字段缺一不可**：同一个工程换场景，帧号往往一模一样，但产物完全是另一张图 ——
-    少了场景这一项就会把上一个场景的进度算进来（产物全错还看不出来）。
+    **这些字段缺一不可**：同一个工程换场景 / 换隐藏集合，帧号往往一模一样，
+    但产物完全是另一张图 —— 少了这些项就会把上一套配置的进度算进来（产物全错还看不出来）。
 
     为什么放在这个叶子模块：`core`（运行时续跑）与 `taskstore`（开机续跑）都要做这个判断，
     原先各自手写了一遍这四个字段。两处一旦漂开，**"开机能不能续跑"会和"运行时能不能续跑"
@@ -34,14 +34,17 @@ def task_signature(blend, output_template, frames, scene):
     return (os.path.abspath(blend) if blend else "",
             output_template or "",
             tuple(int(f) for f in (frames or ())),
-            scene or "")
+            scene or "",
+            # 顺序无关（界面勾选顺序不该影响任务身份），但名字要归一化成字符串
+            tuple(sorted(str(c) for c in (hidden_collections or ()))))
 
 
 class JobState(object):
     """一次渲染任务的断点状态。"""
 
     def __init__(self, path, blend="", frames=(), output_template="", engine=None,
-                 samples=None, device=None, resolution=None, file_format=None, scene=None):
+                 samples=None, device=None, resolution=None, file_format=None, scene=None,
+                 hidden_collections=()):
         self.path = path
         self.version = STATE_VERSION
         self.blend = blend
@@ -54,6 +57,8 @@ class JobState(object):
         self.file_format = file_format
         # 渲染的场景名；空 = 工程里激活的那个。换场景不能续跑（帧号一样但内容不同）
         self.scene = scene or ""
+        # 隐藏的集合名列表。换隐藏集合 = 出图内容变了，不能续旧断点（同场景号但内容不同）
+        self.hidden_collections = list(hidden_collections or ())
         self.created = time.time()
         self.updated = time.time()
         # 键在内存里是 int，落盘时转 str（JSON 只接受字符串键）
@@ -77,10 +82,13 @@ class JobState(object):
                 return None
             st = cls(path)
             for k in ("version", "blend", "output_template", "engine", "samples",
-                      "device", "file_format", "scene", "created", "updated"):
+                      "device", "file_format", "scene", "hidden_collections",
+                      "created", "updated"):
                 if k in d:
                     setattr(st, k, d[k])
             st.frames = [int(x) for x in d.get("frames", [])]
+            # 旧断点没有这个字段 → 空列表（等价于"没隐藏任何集合"，向后兼容）
+            st.hidden_collections = [str(x) for x in (d.get("hidden_collections") or [])]
             res = d.get("resolution")
             st.resolution = list(res) if res else None
             st.done = {int(k): v for k, v in (d.get("done") or {}).items()}
@@ -107,6 +115,7 @@ class JobState(object):
             "resolution": self.resolution,
             "file_format": self.file_format,
             "scene": self.scene,
+            "hidden_collections": self.hidden_collections,
             "created": round(self.created, 3),
             "updated": round(time.time(), 3),
             "done": {str(k): v for k, v in sorted(self.done.items())},
@@ -163,7 +172,8 @@ class JobState(object):
     # ---------- 查询 ----------
     def signature(self):
         """这个断点属于哪个任务（与 `JobConfig.signature()` 可比）。"""
-        return task_signature(self.blend, self.output_template, self.frames, self.scene)
+        return task_signature(self.blend, self.output_template, self.frames, self.scene,
+                              self.hidden_collections)
 
     def remaining(self, max_attempts=3, frames=None):
         """还剩哪些帧要渲染：未完成 且 未失败 且 还有重试额度。

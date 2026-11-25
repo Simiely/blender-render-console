@@ -149,6 +149,32 @@ def apply_overrides(sc):
 
     job = JOB
 
+    # ---- 隐藏集合 ----
+    # 用 collection.hide_render（全局、只内存生效，绝不 save_mainfile）。
+    # 不用 layer_collection.exclude：那是 per-view-layer 的，多视图层时行为不一致。
+    # 设完必须回读（AGENTS 坑：Blender 对不合法设置静默忽略），并 emit 事件让日志可见。
+    hidden = job.get("hidden_collections") or []
+    if hidden:
+        applied, missing = [], []
+        for name in hidden:
+            col = bpy.data.collections.get(name)
+            if col is None:
+                missing.append(name)
+                continue
+            try:
+                col.hide_render = True
+                if col.hide_render:               # 回读校验
+                    applied.append(name)
+                else:
+                    warn("集合「%s」设置隐藏失败（回读仍为可见）" % name)
+            except Exception as e:
+                warn("集合「%s」设置隐藏失败：%r" % (name, e))
+        if missing:
+            warn("工程里找不到这些集合，已忽略：%s（工程现有：%s）"
+                 % ("、".join(missing),
+                    "、".join(c.name for c in bpy.data.collections)[:200]))
+        emit("collections_hidden", applied=applied, missing=missing)
+
     # ---- 引擎 ----
     # 注意目标是 `scene.render`（RenderSettings），不是 scene 本身
     engine = job.get("engine")

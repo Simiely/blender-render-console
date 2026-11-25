@@ -55,6 +55,42 @@ class TestParserValidation(unittest.TestCase):
         args = build_parser().parse_args(["x.blend"])
         self.assertEqual((args.max_frame_attempts, args.max_no_progress), (3, 3))
 
+    def test_hide_collection_repeats(self):
+        """--hide-collection 可重复；顺序保留（driver 按给出的顺序处理）。"""
+        args = build_parser().parse_args(
+            ["x.blend", "--hide-collection", "泡泡系统", "--hide-collection", "04_动态"])
+        self.assertEqual(args.hidden_collections, ["泡泡系统", "04_动态"])
+
+
+class TestHiddenCollectionsField(unittest.TestCase):
+    """隐藏集合字段从配置 → 存档 → 签名一路不丢（AGENTS 坑 56：字段死在生产侧）。"""
+
+    def test_roundtrip_through_config(self):
+        from brconsole.core import JobConfig
+        cfg = JobConfig("x.blend", [1, 2], "out/f_####",
+                        hidden_collections=["泡泡系统", "04_动态"])
+        d = cfg.to_dict()
+        self.assertEqual(d["hidden_collections"], ["泡泡系统", "04_动态"])
+        rebuilt = JobConfig.from_dict(d)
+        self.assertEqual(rebuilt.hidden_collections, ["泡泡系统", "04_动态"])
+
+    def test_old_config_defaults_to_empty(self):
+        from brconsole.core import JobConfig
+        cfg = JobConfig.from_dict({"blend": "x.blend", "frames": [1], "output_template": "o"})
+        self.assertEqual(cfg.hidden_collections, [])
+
+    def test_signature_changes_with_hidden_collections(self):
+        from brconsole.core import JobConfig
+        a = JobConfig("x.blend", [1], "out/f_####")
+        b = JobConfig("x.blend", [1], "out/f_####", hidden_collections=["04_动态"])
+        self.assertNotEqual(a.signature(), b.signature())
+        # 顺序无关（界面勾选顺序不该影响任务身份）
+        c = JobConfig("x.blend", [1], "out/f_####",
+                      hidden_collections=["04_动态", "泡泡系统"])
+        d = JobConfig("x.blend", [1], "out/f_####",
+                      hidden_collections=["泡泡系统", "04_动态"])
+        self.assertEqual(c.signature(), d.signature())
+
 
 class TestFriendlyFrameErrors(unittest.TestCase):
     """帧范围写错时：报错是人话（指出第几段 / 步长必须 ≥ 1），**不能变成 traceback**。
