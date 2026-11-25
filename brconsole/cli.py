@@ -12,7 +12,7 @@ import sys
 import time
 
 from . import locate, power
-from .guimodel import NativeLineFilter
+from .guimodel import NativeLineFilter, event_text, outcome_reason
 from .core import (JobConfig, RenderJob, complete_output_template, parse_frames,
                    parse_restart_limit)
 from .eta import fmt_clock, fmt_duration
@@ -134,15 +134,13 @@ class ConsoleReporter(object):
             self._progress("  渲染帧 %d ..." % ev.get("frame"))
             return
         if kind == "frame_error":
-            self._line("  × 帧 %s 渲染失败：%s" % (ev.get("frame"), ev.get("err")))
+            self._line("  × " + event_text(kind, ev))
             return
         if kind == "crash":
-            self._line("  ※ Blender 退出码 %s（第 %s 次重启），已完成 %s/%s，还剩 %s 帧"
-                       % (ev.get("rc"), ev.get("restart_index"),
-                          ev.get("done"), ev.get("total"), len(ev.get("remaining") or [])))
+            self._line("  ※ " + event_text(kind, ev))
             return
         if kind == "warn":
-            self._line("  ! %s" % ev.get("msg", ""))
+            self._line("  ! " + event_text(kind, ev))
             return
         if kind == "stall":
             head = "首帧准备" if ev.get("first_frame") else "渲染"
@@ -153,18 +151,13 @@ class ConsoleReporter(object):
             self._line(msg)
             return
         if kind == "resume":
-            self._line("  断点续跑：已完成 %s/%s 帧 - %s"
-                       % (len(ev.get("done") or []), ev.get("total"), ev.get("state_path")))
+            text = event_text(kind, ev)
+            if ev.get("state_path"):
+                text += " - %s" % ev["state_path"]
+            self._line("  " + text)
             return
-        if kind == "restart":
-            self._line("  第 %s 次重启，剩余帧 %s" % (ev.get("restart_index"), ev.get("pending")))
-            return
-        if kind == "settings":
-            self._line("  实际设置：引擎 %s | %sx%s @%s%% | 采样 %s | 输出 %s"
-                       % (ev.get("engine"), (ev.get("res") or [0, 0])[0],
-                          (ev.get("res") or [0, 0])[1], ev.get("pct"),
-                          "-" if ev.get("samples") is None else ev.get("samples"),
-                          ev.get("output")))
+        if kind in ("restart", "settings"):
+            self._line("  " + event_text(kind, ev))
             return
         if kind == "job_start":
             if ev.get("unlimited_restarts"):
@@ -182,50 +175,25 @@ class ConsoleReporter(object):
             return
         if kind == "job_done":
             self._flush_native()
-            self._line("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s | 完成于 %s"
-                       % (len(ev.get("done") or []), ev.get("total", 0),
-                          len(ev.get("failed") or {}), len(ev.get("exhausted") or []),
-                          ev.get("restarts", 0), fmt_duration(ev.get("elapsed")),
-                          fmt_clock(time.time(), seconds=True)))
+            self._line(event_text(kind, ev) + " | 完成于 %s"
+                       % fmt_clock(time.time(), seconds=True))
             # `ok` 优先：最后一帧渲完的同一瞬间按了 Ctrl+C 时两者同时为真，
             # 这时报「已取消」与"全部完成 N/N"自相矛盾（与界面同一口径）
-            if ev.get("ok"):
-                pass
-            elif ev.get("cancelled"):
+            category, _reason = outcome_reason(kind, ev)
+            if category == "cancelled":
                 self._line("  已取消（进度已保存，下次同命令可续跑）")
-            else:
+            elif category != "ok":
                 self._line("  未完成 —— 再次执行同一条命令即可从断点继续")
             return
         if kind == "job_error":
             self._flush_native()
-            self._line("  × %s" % ev.get("error"))
+            self._line("  × " + event_text(kind, ev))
             return
-        if kind == "give_up":
-            self._line("  重启次数已达上限，停止。剩余帧 %s" % ev.get("remaining"))
-            return
-        if kind == "no_progress":
-            self._line("  连续 %s 轮一帧都没推进（已完成 %s/%s），停止 —— 重试解决不了的问题，"
-                       "检查工程或显存（剩余 %s）"
-                       % (ev.get("rounds"), ev.get("done"), ev.get("total"),
-                          ev.get("remaining")))
-            return
-        if kind == "device_set":
-            self._line("  渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or [])))
-            return
-        if kind == "depth_set":
-            self._line("  输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format")))
-            return
-        if kind == "collections_hidden":
-            applied = ev.get("applied") or []
-            missing = ev.get("missing") or []
-            msg = "  已隐藏集合：%s" % ("、".join(applied) if applied else "（无）")
-            if missing:
-                msg += " · 工程里找不到已忽略：%s" % "、".join(missing)
-            self._line(msg)
-            return
-        if kind == "engine_set":
-            if ev.get("requested") != ev.get("actual"):
-                self._line("  引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual")))
+        if kind in ("give_up", "no_progress", "device_set", "depth_set",
+                    "collections_hidden", "engine_set", "engine_info"):
+            text = event_text(kind, ev)
+            if text is not None:
+                self._line("  " + text)
             return
 
 

@@ -610,6 +610,82 @@ def frames_preview(segments, step=1):
 
 
 
+def outcome_reason(kind, ev):
+    """任务结束事件 → `(类别, 原因文案)`，类别：`ok/cancelled/failed/incomplete`。
+
+    `settle_task_action`、终端收尾、界面收尾都从这里取原因 —— 以前"你停止了任务"
+    和"上次运行没能跑完"在三个文件里各写一遍，改一处就会让日志和存档原因对不上。
+    """
+    if kind == "job_done" and ev.get("ok"):
+        return "ok", ""
+    if ev.get("cancelled"):
+        return "cancelled", "你停止了任务"
+    if kind == "job_error":
+        return "failed", "上次运行没能跑完（%s）" % (ev.get("error") or "异常")
+    return "incomplete", "上次运行没能跑完（%s）" % (
+        ev.get("error") or "有帧一直失败")
+
+
+def event_text(kind, ev):
+    """core 事件的**唯一事实文案**（不带符号/缩进），终端与界面共用。
+
+    只收"事实句"：符号、缩进、进度行、多段提示由各自的适配器加。
+    返回 None = 这一类没有共用文案，适配器自己处理。
+    """
+    if kind == "frame_error":
+        return "帧 %s 渲染失败：%s" % (ev.get("frame"), ev.get("err"))
+    if kind == "crash":
+        return ("Blender 退出码 %s（第 %s 次重启），已完成 %s/%s，还剩 %s 帧"
+                % (ev.get("rc"), ev.get("restart_index"), ev.get("done"),
+                   ev.get("total"), len(ev.get("remaining") or [])))
+    if kind == "warn":
+        return str(ev.get("msg", ""))
+    if kind == "resume":
+        return "断点续跑：已完成 %s/%s 帧" % (len(ev.get("done") or []), ev.get("total"))
+    if kind == "restart":
+        return "第 %s 次重启，剩余帧 %s" % (ev.get("restart_index"), ev.get("pending"))
+    if kind == "settings":
+        return ("实际设置：引擎 %s | %sx%s @%s%% | 采样 %s | 输出 %s"
+                % (ev.get("engine"), (ev.get("res") or [0, 0])[0],
+                   (ev.get("res") or [0, 0])[1], ev.get("pct"),
+                   "-" if ev.get("samples") is None else ev.get("samples"),
+                   ev.get("output")))
+    if kind == "give_up":
+        return "重启次数已达上限，停止。剩余帧 %s" % ev.get("remaining")
+    if kind == "no_progress":
+        return ("连续 %s 轮一帧都没推进（已完成 %s/%s），停止 —— 重试解决不了的问题，"
+                "检查工程或显存（剩余 %s）"
+                % (ev.get("rounds"), ev.get("done"), ev.get("total"),
+                   ev.get("remaining")))
+    if kind == "device_set":
+        return "渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or []))
+    if kind == "depth_set":
+        return "输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format"))
+    if kind == "collections_hidden":
+        applied = ev.get("applied") or []
+        missing = ev.get("missing") or []
+        msg = "已隐藏集合：%s" % ("、".join(applied) if applied else "（无）")
+        if missing:
+            msg += " · 工程里找不到已忽略：%s" % "、".join(missing)
+        return msg
+    if kind == "engine_set":
+        if ev.get("requested") == ev.get("actual"):
+            return None
+        return "引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual"))
+    if kind == "engine_info":
+        return "实际场景：%s · 引擎 %s（%s 帧）" % (
+            ev.get("scene") or "（工程默认）", ev.get("engine"),
+            len(ev.get("frames") or []))
+    if kind == "job_error":
+        return str(ev.get("error"))
+    if kind == "job_done":
+        return ("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s"
+                % (len(ev.get("done") or []), ev.get("total", 0),
+                   len(ev.get("failed") or {}), len(ev.get("exhausted") or []),
+                   ev.get("restarts", 0), fmt_duration(ev.get("elapsed"))))
+    return None
+
+
 def settle_task_action(kind, ev):
     """一轮跑完后该怎么处置待办存档 → `(action, reason)`。
 
@@ -628,10 +704,9 @@ def settle_task_action(kind, ev):
     ⚠️ 这段逻辑特意放在 guimodel（不碰 tkinter）——它决定"开机要不要自动跑"，
     是这套机制里最不能出错的一环，必须能被单测直接钉住。
     """
-    if kind == "job_done" and ev.get("ok"):
+    category, reason = outcome_reason(kind, ev)
+    if category == "ok":
         return "clear", ""
-    reason = ("你停止了任务" if ev.get("cancelled")
-              else "上次运行没能跑完（%s）" % (ev.get("error") or "有帧一直失败"))
     return "stop", reason
 
 
@@ -1189,7 +1264,11 @@ class LogModel(object):
 
 
 def event_line(kind, ev):
-    """把 core 事件翻成一行面板日志；返回 None 表示这条不用显示。"""
+    """把 core 事件翻成一行面板日志；返回 None 表示这条不用显示。
+
+    事实文案统一在 `event_text()`；这里只加符号前缀和界面特有的几种
+    （逐帧进度、首帧提示、启动摘要）。
+    """
     if kind == "native":
         return None                                  # 原生行由界面按开关单独处理
     if kind == "frame_done":
@@ -1201,16 +1280,6 @@ def event_line(kind, ev):
             ev.get("frame"), fmt_duration(ev.get("secs")),
             ev.get("done"), ev.get("total"),
             " · 预热帧不计入基线" if ev.get("warmup") else "", tail)
-    if kind == "frame_error":
-        return "✗ 帧 %s 失败：%s" % (ev.get("frame"), ev.get("err"))
-    if kind == "crash":
-        return "⚠ Blender 退出（码 %s），已完成 %s/%s，准备第 %s 次重启" % (
-            ev.get("rc"), ev.get("done"), ev.get("total"), ev.get("restart_index"))
-    if kind == "restart":
-        return "↻ 第 %s 次重启，剩余帧 %s" % (ev.get("restart_index"), ev.get("pending"))
-    if kind == "run_start":
-        return "启动 Blender（第 %s 轮，待渲染 %s 帧）" % (
-            ev.get("restart_index"), len(ev.get("pending") or []))
     if kind == "stall":
         # 首帧前 Blender 要先读 .blend、加载全部贴图、把场景搬上 GPU ——
         # 大工程这一步几分钟没有输出都正常。旧文案只说"未知阶段"，
@@ -1219,47 +1288,21 @@ def event_line(kind, ev):
         return ("… %s已 %ss 没有新输出（%s）" % (head, ev.get("idle_sec"), ev.get("phase"))
                 + ("：大工程加载贴图/上传场景可能要 1～3 分钟，请耐心等待，不要停止"
                    if ev.get("first_frame") else "：若阶段持续不变再检查工程/显存"))
-    if kind == "warn":
-        return "! %s" % ev.get("msg", "")
-    if kind == "give_up":
-        return "✗ 重启次数已达上限，停止（剩余 %s）" % ev.get("remaining")
-    if kind == "no_progress":
-        return ("✗ 连续 %s 轮一帧都没推进（已完成 %s/%s），停止 —— 重试解决不了的问题，"
-                "看看是不是工程/显存本身有问题（剩余 %s）"
-                % (ev.get("rounds"), ev.get("done"), ev.get("total"), ev.get("remaining")))
-    if kind == "resume":
-        return "断点续跑：已完成 %s/%s 帧" % (len(ev.get("done") or []), ev.get("total"))
-    if kind == "settings":
-        return "实际设置：引擎 %s · %sx%s@%s%% · 采样 %s" % (
-            ev.get("engine"), (ev.get("res") or [0, 0])[0], (ev.get("res") or [0, 0])[1],
-            ev.get("pct"), "-" if ev.get("samples") is None else ev.get("samples"))
-    if kind == "device_set":
-        return "渲染设备：%s（%s）" % (ev.get("type"), ", ".join(ev.get("devices") or []))
-    if kind == "depth_set":
-        return "输出位数：%s 位（%s）" % (ev.get("depth"), ev.get("file_format"))
-    if kind == "collections_hidden":
-        applied = ev.get("applied") or []
-        missing = ev.get("missing") or []
-        msg = "已隐藏集合：%s" % ("、".join(applied) if applied else "（无）")
-        if missing:
-            msg += " · 工程里找不到已忽略：%s" % "、".join(missing)
-        return msg
-    if kind == "engine_set" and ev.get("requested") != ev.get("actual"):
-        return "引擎 %s → 实际 %s" % (ev.get("requested"), ev.get("actual"))
-    if kind == "job_done":
-        return "任务结束：完成 %s/%s · 失败 %s · 放弃 %s · 重启 %s 次 · 用时 %s" % (
-            len(ev.get("done") or []), ev.get("total"), len(ev.get("failed") or {}),
-            len(ev.get("exhausted") or []), ev.get("restarts"),
-            fmt_duration(ev.get("elapsed")))
-    if kind == "job_error":
-        return "✗ %s" % ev.get("error")
+    if kind == "run_start":
+        return "启动 Blender（第 %s 轮，待渲染 %s 帧）" % (
+            ev.get("restart_index"), len(ev.get("pending") or []))
     if kind == "job_start":
         scene = ev.get("scene")
         return "开始：%s（共 %s 帧%s）→ %s" % (
             ev.get("blend"), ev.get("total"),
             " · 场景 %s" % scene if scene else " · 用工程默认场景",
             ev.get("output"))
-    return None
+    text = event_text(kind, ev)
+    if text is None:
+        return None
+    symbol = {"frame_error": "✗ ", "crash": "⚠ ", "restart": "↻ ",
+              "give_up": "✗ ", "no_progress": "✗ "}.get(kind, "")
+    return symbol + text
 
 
 def guess_state_path(output_template):

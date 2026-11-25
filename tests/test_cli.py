@@ -11,6 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from brconsole.cli import ConsoleReporter, build_parser  # noqa: E402
+from brconsole.guimodel import (event_line, event_text, outcome_reason,  # noqa: E402
+                                settle_task_action)
 
 
 class TestConsoleReporterNativeFilter(unittest.TestCase):
@@ -31,6 +33,34 @@ class TestConsoleReporterNativeFilter(unittest.TestCase):
         r = ConsoleReporter(verbose=True, stream=stream)
         r("native", {"line": "Error: Texture not found"})
         self.assertIn("Error: Texture not found", stream.getvalue())
+
+
+class TestEventTextShared(unittest.TestCase):
+    """CLI 与 GUI 的事件文案必须有同一事实来源，否则改一边就对不上账。"""
+
+    def test_crash_sentence_shared_by_both_adapters(self):
+        ev = {"rc": 1, "restart_index": 2, "done": 5, "total": 12,
+              "remaining": [6, 7]}
+        sentence = event_text("crash", ev)
+        self.assertIn(sentence, event_line("crash", ev))
+        stream = io.StringIO()
+        ConsoleReporter(stream=stream)("crash", ev)
+        self.assertIn(sentence, stream.getvalue())
+
+    def test_engine_info_reaches_both_adapters(self):
+        """场景名此前发了事件却没人显示；现在两端都能看到。"""
+        ev = {"scene": "SceneA", "engine": "CYCLES", "frames": [1, 2]}
+        self.assertIn("SceneA", event_line("engine_info", ev))
+        stream = io.StringIO()
+        ConsoleReporter(stream=stream)("engine_info", ev)
+        self.assertIn("SceneA", stream.getvalue())
+
+    def test_job_outcome_reason_has_single_owner(self):
+        ev = {"cancelled": True, "ok": False}
+        self.assertEqual(outcome_reason("job_done", ev),
+                         ("cancelled", "你停止了任务"))
+        self.assertEqual(settle_task_action("job_done", ev),
+                         ("stop", "你停止了任务"))
 
 
 class TestParserValidation(unittest.TestCase):
