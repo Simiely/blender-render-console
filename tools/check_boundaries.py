@@ -42,7 +42,11 @@ UI_FILES = {"brconsole/gui.py", "brconsole/theme.py", "brconsole/uikit.py",
             "brconsole/gui/form_controller.py",
             "brconsole/gui/inspect_controller.py",
             "brconsole/gui/queue_controller.py",
-            "brconsole/gui/render_controller.py"}
+            "brconsole/gui/render_controller.py",
+            "brconsole/gui/log_controller.py",
+            "brconsole/gui/event_controller.py",
+            "brconsole/gui/aftermath_controller.py",
+            "brconsole/gui/refresh_controller.py"}
 UI_MODULES = {"brconsole/gui", "brconsole/theme", "brconsole/uikit",
               "brconsole/gui_view", "brconsole/ui_project",
               "brconsole/ui_frames", "brconsole/ui_render",
@@ -52,7 +56,9 @@ UI_MODULES = {"brconsole/gui", "brconsole/theme", "brconsole/uikit",
               "brconsole/gui/app", "brconsole/gui/app_state",
               "brconsole/gui/common", "brconsole/gui/form_controller",
               "brconsole/gui/inspect_controller",
-              "brconsole/gui/queue_controller", "brconsole/gui/render_controller"}
+              "brconsole/gui/queue_controller", "brconsole/gui/render_controller",
+              "brconsole/gui/log_controller", "brconsole/gui/event_controller",
+              "brconsole/gui/aftermath_controller", "brconsole/gui/refresh_controller"}
 DRIVER = "brconsole/driver.py"
 # 组合根：天然"什么都知道"，包内底层不许依赖界面层这条对它不适用
 COMPOSITION_ROOT = "main.py"
