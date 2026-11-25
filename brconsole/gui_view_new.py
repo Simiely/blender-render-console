@@ -5,6 +5,7 @@
 让已有业务方法不用整体重写。
 """
 
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -255,3 +256,169 @@ def build(app, root):
     app.program.set_versions([])
     app.program.vars["retry"].set(DEFAULT_RETRY)
     app.program.set_retry_note(retry_note(DEFAULT_RETRY))
+
+
+_VAR_ATTRS = {
+    "blend": "v_blend", "scene": "v_scene", "blender": "v_blender",
+    "output": "v_output", "engine": "v_engine", "samples": "v_samples",
+    "device": "v_device", "width": "v_w", "height": "v_h", "pct": "v_pct",
+    "format": "v_format", "depth": "v_depth", "resume": "v_resume",
+    "native": "v_native", "retry": "v_retry", "autostart": "v_autostart",
+    "auto_resume": "v_auto_resume", "aftermath": "v_aftermath",
+    "blender_ver": "v_blender_ver",
+}
+
+_CONTROL_ATTRS = {
+    "blender_ver": "cmb_blender_ver", "retry": "cmb_retry",
+    "depth": "cmb_depth", "scene": "cmb_scene", "inspect": "btn_inspect",
+    "start": "btn_start", "stop": "btn_stop",
+    "clear_state": "btn_clear_state",
+    "status": "lbl_status", "state": "lbl_state",
+    "retry_note": "lbl_retry_note", "autostart_note": "lbl_autostart",
+    "collection_status": "lbl_collections", "inspect_note": "lbl_inspect",
+    "scene_note": "lbl_scene", "frames_preview": "lbl_frames",
+    "queue_count": "lbl_queue_count", "queue": "lbl_queue",
+}
+
+_TEXT_KEYS = {
+    "status": "lbl_status", "state": "lbl_state",
+    "retry_note": "lbl_retry_note", "autostart_note": "lbl_autostart",
+    "collection_status": "lbl_collections", "inspect_note": "lbl_inspect",
+    "scene_note": "lbl_scene", "frames_preview": "lbl_frames",
+    "queue_count": "lbl_queue_count", "queue": "lbl_queue",
+}
+
+
+class TkView(object):
+    """`brconsole.view_contract.ViewProtocol` 的 Tk 实现。
+
+    旧业务仍可直接读 `app.v_*` / `app.lbl_*`（兼容期），但新控制器只走这里。
+    `build()` 保持原样：它仍然把控件别名挂到 app 上，避免一次性大改。
+    """
+
+    def __init__(self, app, root):
+        self.app = app
+        self.root = root
+        build(app, root)
+
+    # ---------- 变量 ----------
+    def var(self, name):
+        return getattr(self.app, _VAR_ATTRS[name])
+
+    def get(self, name):
+        return self.var(name).get()
+
+    def set(self, name, value):
+        self.var(name).set(value)
+
+    def trace(self, name, mode, callback):
+        return self.var(name).trace_add(mode, callback)
+
+    # ---------- 控件 ----------
+    def configure(self, name, **kw):
+        getattr(self.app, _CONTROL_ATTRS.get(name, name)).configure(**kw)
+
+    def cget(self, name, key):
+        return getattr(self.app, _CONTROL_ATTRS.get(name, name)).cget(key)
+
+    def _text_widget(self, key):
+        if key.startswith("summary."):
+            return getattr(self.app, "lbl_sum_" + key.split(".", 1)[1])
+        if key.startswith("overview."):
+            return self.app._overview_tags[key.split(".", 1)[1]]
+        return getattr(self.app, _TEXT_KEYS[key])
+
+    def set_text(self, key, text, **kw):
+        self._text_widget(key).configure(text=text, **kw)
+
+    def text(self, key):
+        return self._text_widget(key).cget("text")
+
+    # ---------- 下拉 ----------
+    def set_versions(self, values):
+        self.configure("blender_ver", values=list(values))
+
+    def set_retry_values(self, values):
+        self.configure("retry", values=list(values))
+
+    def set_depth_values(self, values, disabled=False):
+        self.configure("depth", values=list(values),
+                       state="disabled" if disabled else "readonly")
+
+    def set_scene_values(self, values, disabled=False):
+        self.configure("scene", values=list(values),
+                       state="disabled" if disabled else "readonly")
+
+    # ---------- 按钮 / 进度 ----------
+    def set_inspect_enabled(self, enabled):
+        self.configure("inspect", state="normal" if enabled else "disabled")
+
+    def set_running(self, running):
+        self.configure("start", state="disabled" if running else "normal")
+        self.configure("stop", state="normal" if running else "disabled")
+
+    def set_progress(self, value):
+        self.app.pb["value"] = value
+
+    # ---------- 日志 ----------
+    def append_log(self, lines):
+        text = self.app.txt
+        text.configure(state="normal")
+        for line in (lines if isinstance(lines, (list, tuple)) else [lines]):
+            text.insert("end", "[%s] %s\n" % (
+                time.strftime("%m-%d %H:%M:%S"), line))
+        n = int(text.index("end-1c").split(".")[0])
+        if n > 4000:
+            text.delete("1.0", "%d.0" % (n - 2000))
+        text.see("end")
+        text.configure(state="disabled")
+
+    def clear_log(self):
+        self.app.txt.configure(state="normal")
+        self.app.txt.delete("1.0", "end")
+        self.app.txt.configure(state="disabled")
+
+    # ---------- 队列 ----------
+    def set_queue(self, items, selected_id=None):
+        items = list(items or [])
+        selected = 0
+        if selected_id is not None:
+            for i, item in enumerate(items):
+                if item.get("id") == selected_id:
+                    selected = i
+                    break
+        self.app.lst_queue.set_items(items, selected)
+
+    def queue_selection(self):
+        return tuple(self.app.lst_queue.curselection())
+
+    def queue_nearest(self, y):
+        return self.app.lst_queue.nearest(y)
+
+    # ---------- 帧段 ----------
+    def set_segments(self, segments, focus=False):
+        self.app.frames_module.set_segments(segments)
+        if focus and self.app.frames_module.rows:
+            self.app.frames_module.rows[-1]["start"].focus_set()
+
+    def read_segments(self):
+        return self.app.frames_module.read_segments()
+
+    def segment_count(self):
+        return len(self.app.frames_module.rows)
+
+    def refresh_segments(self):
+        self.app.frames_module.refresh_counts()
+
+    # ---------- 折叠模块 ----------
+    def set_module_expanded(self, key, expanded):
+        card = self.app._modules[key]["card"]
+        if bool(card.expanded) != bool(expanded):
+            card.toggle_card()
+        self.app._modules[key]["expanded"] = bool(expanded)
+
+    def toggle_module(self, key):
+        card = self.app._modules[key]["card"]
+        card.toggle_card()
+        self.app._modules[key]["expanded"] = card.expanded
+        return card.expanded

@@ -180,9 +180,10 @@ class App(object):
     def _build(self, root):
         if os.environ.get("BRC_OLD_UI") == "1":
             gui_view.build(self, root)
+            self.view = None          # 旧视图没有实现新契约，保留兼容分支
             return
-        from . import gui_view_new
-        gui_view_new.build(self, root)
+        from .gui_view_new import TkView
+        self.view = TkView(self, root)
 
     def _on_mousewheel(self, event):
         w = self.root.winfo_containing(event.x_root, event.y_root)
