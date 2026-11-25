@@ -22,21 +22,24 @@ import tkinter as tk
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from . import (applock, autostart, diskspace, locate, notify, power,
-               queue_store, taskstore, theme)
+               queue_store, taskstore, theme, uikit, gui_view)
 from . import __version__
 from .layout import FROZEN_SUBDIR
 from .core import JobConfig, RenderJob
 from .guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP,
                        DEFAULT_RETRY, DEPTH_KEEP_LABEL, DEVICES, ENGINES, FORMATS,
                        RETRY_CHOICES, SCENE_NEED_READ_LABEL,
-                       coerce_depth, depth_choices, depth_value, format_ext_for,
-                       format_from_label, format_label, retarget_extension,
+                       checks_from_hidden, coerce_depth, depth_choices, depth_value,
+                       format_ext_for, format_from_label, format_label,
+                       hidden_from_checks, retarget_extension,
                        retry_note,
                        SCENE_PLACEHOLDERS, FormModel, LogModel, NativeLineFilter,
                        ProgressModel,
                        aftermath_plan, event_line, fields_from_detail,
-                       frames_preview, guess_state_path,
-                       new_segment, normalise_segment,
+                       fmt_clock, fmt_duration,
+                       frames_preview, frames_to_segments, guess_state_path,
+                       new_segment, normalise_segment, segment_label,
+                       segments_to_frames,
                        scene_to_config, settle_task_action,
                        state_summary)
 from .inspect import (read_blend_info, scene_detail, scene_names,
@@ -45,6 +48,8 @@ from .inspect import (read_blend_info, scene_detail, scene_names,
 POLL_MS = 80
 LOG_MAX_LINES = 4000
 TITLE = "blender-render-console"
+#: 各模块内部 grid 的统一间距（模块级常量：拆出来的 _build_* 方法也要用）
+PAD = {"padx": 6, "pady": 4}
 #: 标题栏带版本号：用户经常同时装着几个版本，"这是哪个版本"必须能一眼看到。
 #: ⚠️ 版本号**只从** `brconsole.__version__` 取，别在这里再写一份字面量。
 #: 标题变了就得同步 `applock.focus_window()` 的查找方式（它按前缀兜底，见那里）。
@@ -131,8 +136,22 @@ class App(object):
         self.stopping = False
         self._inspected_path = None      # 已经读过配置的工程，避免重复读
         self._inspecting = False
+        self._inspect_token = 0          # 异步读配置的令牌：切走工程后旧结果必须丢弃
+        self._inspect_path = None        # 发起读取时的工程路径（竞态校验用）
+        self._inspect_item_id = None     # 发起读取时的队列项（回填快照用）
         self._scene_info = None          # 最近一次读到的工程配置（含各场景详情）
+        self._scene_info_cache = {}      # 按工程路径缓存，切回同一工程不用再起 Blender
+        self._queue_refreshing = False   # 程序化设置选中项时别触发切项回调
         self._frame_preview = []         # 帧段列表展开后的帧号（实时回显的副产物）
+        self._seg_rows = []              # 帧段行的控件句柄（_build 里填充）
+        self._queue_mode = False          # 「开始渲染」正在按队列顺序跑
+        self._current_queue_item = None   # 当前正在渲染的队列项
+        self._selected_queue_id = None    # 右侧详情展示的队列项
+        self._last_queue_event = None     # 最后一项的结果，队列收尾时判关机/睡眠用
+        self._queue_total = 0             # 本轮要跑几项（状态行显示 2/3 用）
+        self._queue_index = 0
+        self._modules = {}                # 各可折叠模块的控件句柄（_build 里填）
+        self._overview_tags = {}          # 概览模块里的值 Label
 
         root.title(WINDOW_TITLE)   # 与 applock.focus_window 按标题找窗口共用同一句
         _apply_icon(root)
@@ -142,440 +161,98 @@ class App(object):
         self._autofill_blender()
         self._sync_autostart_ui()
         self._sync_resume_ui()
-        self._queue_mode = False          # 队列模式标志（_run_next_queue_item 置位）
-        self._current_queue_item = None
         self._refresh_queue()             # 启动时显示磁盘上已有的队列
         if demo:
             self._setup_demo()
         elif autostart_mode:
-            # 开机自启拉起：认领未完成任务（下面的 after 要等控件都建好、布局完再跑）
             self.root.after(200, self.try_autostart_resume)
         elif preset_blend:
-            # 命令行直接把工程带进来：填好并自动读一次配置
             self.v_blend.set(preset_blend)
             self.v_output.set(FormModel.complete_output("", preset_blend))
             self.root.after(200, self.on_inspect)
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
         # 手填/粘贴 Blender 路径时清掉版本下拉的旧选择 —— 界面不能说谎
-        # （下拉还写着"Blender 5.2"，实际跑的是用户刚粘的另一个路径）
         self.v_blender.trace_add("write", self._on_blender_var_changed)
         self.root.after(POLL_MS, self._poll)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     # ---------------- 界面搭建 ----------------
+    # ---------------- 视图层接口（所有控件由 gui_view 生成）----------------
     def _build(self, root):
-        pad = {"padx": 6, "pady": 4}
-        root.columnconfigure(0, weight=1)
-        root.rowconfigure(2, weight=1)
+        if os.environ.get("BRC_OLD_UI") == "1":
+            gui_view.build(self, root)
+            return
+        from . import gui_view_new
+        gui_view_new.build(self, root)
 
-        # ---- 任务配置 ----
-        box = ttk.LabelFrame(root, text="任务")
-        box.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
-        box.columnconfigure(1, weight=1)          # 只有主输入列吃掉多余宽度
+    def _on_mousewheel(self, event):
+        w = self.root.winfo_containing(event.x_root, event.y_root)
+        path = str(w) if w else ""
+        for canvas in (self.prog_canvas, self.right_canvas):
+            if canvas is not None and path.startswith(str(canvas)):
+                canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+                return
 
-        self.v_blend = tk.StringVar()
-        self.v_scene = tk.StringVar(value=SCENE_NEED_READ_LABEL)
-        self.v_blender = tk.StringVar()
-        self.v_output = tk.StringVar()
-        # ⚠️ 帧范围没有 v_* 单值（起/止/步长）：它是**段列表**，每段一行控件、
-        #    段数会变，用固定的 StringVar 表达不了（见 `_add_segment_row`）。
-        self.v_engine = tk.StringVar(value=ENGINES[0][1])
-        self.v_samples = tk.StringVar()
-        self.v_device = tk.StringVar(value=DEVICES[0][1])
-        self.v_w = tk.StringVar()
-        self.v_h = tk.StringVar()
-        self.v_pct = tk.StringVar()
-        self.v_format = tk.StringVar(value=format_label(FORMATS[0][0]))
-        # 图片位数：格式是「保持工程设置」时这里显示"随工程"且控件禁用 ——
-        # 说了不碰工程，就不该让人以为还能单独改位数
-        self.v_depth = tk.StringVar(value=DEPTH_KEEP_LABEL)
-        self.v_resume = tk.BooleanVar(value=True)
-        # 原生输出**默认开启**（v0.8.1）：它才是排错时真正有用的东西（Python traceback、
-        # 着色器编译失败、纹理找不到都只出现在这里）。重复的采样进度行由
-        # `NativeLineFilter` 折叠，不会把面板刷爆。
-        self.v_native = tk.BooleanVar(value=True)
-        # 重试策略**只有一个下拉**（v0.8.4）：选中的次数同时作用于重启与单帧尝试，
-        # 选「一直重复」则两者都不限。原先一个下拉 + 两个数字框 + 两行说明，
-        # 那四件东西其实只表达了一件事（见 guimodel.retry_plan）。
-        self.v_retry = tk.StringVar(value=DEFAULT_RETRY)
-        # 开机自启勾选态**不从记忆读**，而是下面按注册表实际登记情况回填 ——
-        # 界面必须反映"真的会自启吗"，不能显示一个自己记的、可能已经失效的状态
-        self.v_autostart = tk.BooleanVar(value=False)
-        self.v_auto_resume = tk.BooleanVar(value=True)
-        # 「任务结束后」：本次会话的选择，**不入存档** —— 每次启动都回到"什么都不做"，
-        # 这是更安全的默认（开机自启续跑完一个任务后，机器不该因为上次的旧选择被关掉）
-        self.v_aftermath = tk.StringVar(value=AFTERMATH_LABELS[0][0])
-        # Blender 多版本候选（locate 探测结果），供下拉选择；选择即写 v_blender
-        self._blender_by_label = {}
-        self._blender_candidates = []
-        self.v_blender_ver = tk.StringVar()
-        # 隐藏集合：勾选状态用 dict 存（集合名 -> BooleanVar），读工程配置时重建。
-        # 用 dict 而不是一个 StringVar 拼接：集合名可能含空格/中文，拼字符串迟早解析错。
-        self._collection_vars = {}
-        self._collection_objects = {}     # name -> 对象数（显示给用户判断影响面）
-        self.hidden_collections = []      # 当前生效的隐藏列表（勾选变化即更新）
-        # 挂起的善后倒计时（关机/睡眠）：{(dialog, cancel)} —— 新任务开始时必须撤掉，
-        # 否则"渲完弹 60 秒倒计时 → 用户这期间点开始渲染 → 机器把新渲染关掉"
-        self._pending_countdown = None
-
-        r = 0
-        ttk.Label(box, text="工程 .blend").grid(row=r, column=0, sticky="w", **pad)
-        self.ent_blend = ttk.Entry(box, textvariable=self.v_blend)
-        self.ent_blend.grid(row=r, column=1, columnspan=3, sticky="ew", **pad)
-        self.ent_blend.bind("<FocusOut>", lambda _e: self.maybe_inspect())
-        ttk.Button(box, text="浏览…", width=9, command=self.pick_blend).grid(
-            row=r, column=4, **pad)
-
-        r += 1
-        ttk.Label(box, text="场景").grid(row=r, column=0, sticky="w", **pad)
-        self.cmb_scene = ttk.Combobox(box, textvariable=self.v_scene, width=26,
-                                      state="disabled", values=[SCENE_NEED_READ_LABEL])
-        self.cmb_scene.grid(row=r, column=1, sticky="w", **pad)
-        self.cmb_scene.bind("<<ComboboxSelected>>", self.on_scene_change)
-        self.lbl_scene = ttk.Label(
-            box, text="读取工程配置后可用；工程里只有一个场景时不用管它",
-            style="Muted.TLabel")
-        self.lbl_scene.grid(row=r, column=2, columnspan=2, sticky="w", **pad)
-
-        r += 1
-        # ---- 隐藏集合：读工程配置后列出该工程的集合，勾选的渲染时隐藏 ----
-        ttk.Label(box, text="隐藏集合").grid(row=r, column=0, sticky="nw", **pad)
-        self.col_box = ttk.Frame(box)
-        self.col_box.grid(row=r, column=1, columnspan=4, sticky="ew", **pad)
-        self.lbl_collections = ttk.Label(
-            self.col_box, text="读取工程配置后可勾选；勾上的集合渲染时隐藏（不改工程文件）",
-            style="Muted.TLabel")
-        self.lbl_collections.pack(anchor="w")
-
-        r += 1
-        ttk.Label(box, text="Blender").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(box, textvariable=self.v_blender).grid(row=r, column=1, columnspan=3,
-                                                         sticky="ew", **pad)
-        ttk.Button(box, text="自动探测", width=9, command=self.autofill_blender).grid(
-            row=r, column=4, **pad)
-
-        r += 1
-        # ---- 帧范围：**段列表**（一段一行、可增可删、每段自带步长）----
-        #
-        # 早先这里是「起/止/步长 + 一个 20 字符宽的帧列表输入框」：多段不连续的序列帧
-        # 只能挤在那个框里手打，语法没写在界面上、报错还是 Python 原文，
-        # 而且框几乎看不见 —— 等于"功能有，但没人用得上"。
-        # 现在改成：点「＋ 添加一段」→ 新起一行 → 填这一段的起/止/步长。
-        ttk.Label(box, text="帧范围").grid(row=r, column=0, sticky="nw", **pad)
-        self.seg_box = ttk.Frame(box)
-        self.seg_box.grid(row=r, column=1, columnspan=3, sticky="ew")
-        self.seg_box.columnconfigure(0, weight=1)
-        # 段行容器：增删只重建它，不动下面的按钮与回显行
-        self.seg_rows = ttk.Frame(self.seg_box)
-        self.seg_rows.grid(row=0, column=0, sticky="w")
-        self._seg_rows = []
-        seg_btns = ttk.Frame(self.seg_box)
-        seg_btns.grid(row=1, column=0, sticky="w", pady=(3, 0))
-        ttk.Button(seg_btns, text="＋ 添加一段", width=12,
-                   command=self.on_add_segment).pack(side="left")
-        ttk.Label(seg_btns, text="多段不连续：加一段填一段；每段可单独填步长"
-                                 "（如 100-200 每 5 帧）；段之间重复的帧只渲一次",
-                  style="Muted.TLabel").pack(side="left", padx=(10, 0))
-        # 实时回显：改了任一格就重算 —— 按下开始之前就能看到"到底会渲哪些帧"
-        # wraplength 随容器宽度变：段多的时候这行会很长，不折行就会被右边缘裁掉
-        self.lbl_frames = ttk.Label(self.seg_box, text="", style="Muted.TLabel",
-                                    justify="left")
-        self.lbl_frames.grid(row=2, column=0, sticky="w", pady=(3, 0))
-        self.seg_box.bind("<Configure>", self._on_seg_box_resize)
-
-        r += 1
-        ttk.Label(box, text="引擎 / 采样").grid(row=r, column=0, sticky="w", **pad)
-        g = ttk.Frame(box)
-        g.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Combobox(g, textvariable=self.v_engine, width=20, state="readonly",
-                     values=[v for _, v in ENGINES]).pack(side="left")
-        ttk.Label(g, text="采样").pack(side="left", padx=(12, 2))
-        ttk.Entry(g, textvariable=self.v_samples, width=8).pack(side="left")
-        ttk.Label(g, text="（留空＝保持工程设置）", foreground="#9aa0a6").pack(
-            side="left", padx=(6, 0))
-
-        r += 1
-        ttk.Label(box, text="设备 / 分辨率").grid(row=r, column=0, sticky="w", **pad)
-        h = ttk.Frame(box)
-        h.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Combobox(h, textvariable=self.v_device, width=10, state="readonly",
-                     values=[v for _, v in DEVICES]).pack(side="left")
-        ttk.Label(h, text="宽").pack(side="left", padx=(12, 2))
-        ttk.Entry(h, textvariable=self.v_w, width=7).pack(side="left")
-        ttk.Label(h, text="高").pack(side="left", padx=(8, 2))
-        ttk.Entry(h, textvariable=self.v_h, width=7).pack(side="left")
-        ttk.Label(h, text="百分比%").pack(side="left", padx=(12, 2))
-        ttk.Entry(h, textvariable=self.v_pct, width=5).pack(side="left")
-
-        # 格式 / 位数单独一行：跟「设备 / 分辨率」同一行时，格式下拉会被挤到只显示
-        # 小半句（ttk 的 width 是字符数，中文双宽，且 Tk 的 combobox 不做省略号）
-        r += 1
-        ttk.Label(box, text="格式 / 位数").grid(row=r, column=0, sticky="w", **pad)
-        f = ttk.Frame(box)
-        f.grid(row=r, column=1, columnspan=3, sticky="w")
-        self.cmb_format = ttk.Combobox(f, textvariable=self.v_format, width=20,
-                                       state="readonly",
-                                       values=[format_label(s[0]) for s in FORMATS])
-        self.cmb_format.pack(side="left")
-        self.cmb_format.bind("<<ComboboxSelected>>", self._on_format_changed)
-        fit_combobox(self.cmb_format)       # 宽度按最长选项实测算，不靠手填字符数
-        ttk.Label(f, text="位数").pack(side="left", padx=(12, 2))
-        self.cmb_depth = ttk.Combobox(f, textvariable=self.v_depth, width=7,
-                                      state="disabled",
-                                      values=depth_choices(FORMATS[0][0]))
-        self.cmb_depth.pack(side="left")
-        fit_combobox(self.cmb_depth)
-
-        r += 1
-        ttk.Label(box, text="输出模板").grid(row=r, column=0, sticky="w", **pad)
-        ttk.Entry(box, textvariable=self.v_output).grid(row=r, column=1, columnspan=3,
-                                                        sticky="ew", **pad)
-        ttk.Button(box, text="选择目录", width=9, command=self.pick_output).grid(
-            row=r, column=4, **pad)
-
-        r += 1
-        opts = ttk.Frame(box)
-        opts.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Checkbutton(opts, text="从断点续跑（未完成的帧接着渲染）",
-                        variable=self.v_resume).pack(side="left")
-        # 重试策略只剩这一个下拉（v0.8.4）：**选中的次数同时管重启和单帧尝试**。
-        # 原先的「连续无进展」「单帧最多尝试」两个数字框 + 两行长说明表达的是同一件事，
-        # 全删了（见 guimodel.retry_plan）。
-        ttk.Label(opts, text="失败重试").pack(side="left", padx=(16, 6))
-        self.cmb_retry = ttk.Combobox(opts, textvariable=self.v_retry, state="readonly",
-                                      values=list(RETRY_CHOICES))
-        self.cmb_retry.pack(side="left")
-        fit_combobox(self.cmb_retry, list(RETRY_CHOICES))
-        self.cmb_retry.bind("<<ComboboxSelected>>", lambda _e: self._sync_retry_note())
-
-        # 一句短说明：「这一次到底放宽/收紧了什么」。独占一行 —— 和上面的控件挤在一起
-        # 一定会被右边裁掉（这也是原来那两行说明必须独立成行的原因）。
-        r += 1
-        note = ttk.Frame(box)
-        note.grid(row=r, column=1, columnspan=3, sticky="w")
-        self.lbl_retry_note = ttk.Label(note, text=retry_note(DEFAULT_RETRY),
-                                        style="Muted.TLabel")
-        self.lbl_retry_note.pack(side="left")
-
-        r += 1
-        opts2 = ttk.Frame(box)
-        opts2.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Checkbutton(opts2, text="显示 Blender 原生输出（默认开，同类进度行自动折叠）",
-                        variable=self.v_native).pack(side="left")
-
-        # ---- 开机自启 / 自动续跑 ----
-        r += 1
-        boot = ttk.Frame(box)
-        boot.grid(row=r, column=1, columnspan=3, sticky="w")
-        self.chk_autostart = ttk.Checkbutton(
-            boot, text="开机自动启动", variable=self.v_autostart,
-            command=self.on_toggle_autostart)
-        self.chk_autostart.pack(side="left")
-        # ⚠️ 这个勾选**必须真的接上**：曾经它只是个摆设（v_auto_resume 建了、显示了，
-        #    全项目没有一处读它 —— 勾/取消都没作用）。现在它有两个作用点：
-        #    ① 点「开始渲染」时按勾选态写存档里的 autoresume；
-        #    ② 当场改已有存档的标记（取消勾选立刻生效，不用等下次开始）。
-        self.chk_auto_resume = ttk.Checkbutton(
-            boot, text="启动时自动续跑未完成任务", variable=self.v_auto_resume,
-            command=self.on_toggle_auto_resume)
-        self.chk_auto_resume.pack(side="left", padx=(12, 0))
-        self.lbl_autostart = ttk.Label(boot, text="", style="Muted.TLabel")
-        self.lbl_autostart.pack(side="left", padx=10)
-
-        r += 1
-        misc = ttk.Frame(box)
-        misc.grid(row=r, column=1, columnspan=3, sticky="w")
-        ttk.Label(misc, text="任务结束后").pack(side="left")
-        self.cmb_aftermath = ttk.Combobox(misc, textvariable=self.v_aftermath, width=15,
-                                          state="readonly",
-                                          values=[l for l, _ in AFTERMATH_LABELS])
-        self.cmb_aftermath.pack(side="left", padx=(4, 0))
-        ttk.Label(misc, text="Blender 版本").pack(side="left", padx=(18, 2))
-        self.cmb_blender_ver = ttk.Combobox(misc, textvariable=self.v_blender_ver,
-                                            width=20, state="readonly", values=[])
-        self.cmb_blender_ver.pack(side="left")
-        self.cmb_blender_ver.bind("<<ComboboxSelected>>", self.on_blender_version)
-        ttk.Label(misc, text="（探测到多个版本时可切换）",
-                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
-
-        r += 1
-        info = ttk.Frame(box)
-        info.grid(row=r, column=1, columnspan=3, sticky="ew")
-        self.btn_inspect = ttk.Button(info, text="读取工程配置", width=14,
-                                      command=self.on_inspect)
-        self.btn_inspect.pack(side="left")
-        self.lbl_inspect = ttk.Label(info, text="选好工程后会自动读一次（引擎/采样/"
-                                                "分辨率/帧范围/输出路径）",
-                                     style="Muted.TLabel")
-        self.lbl_inspect.pack(side="left", padx=10)
-
-        r += 1
-        # ---- 多工程队列 ----
-        qbox = ttk.LabelFrame(box, text="渲染队列（多个工程按顺序跑）")
-        qbox.grid(row=r, column=0, columnspan=4, sticky="ew", **pad)
-        self.lst_queue = tk.Listbox(qbox, height=3, activestyle="none")
-        self.lst_queue.pack(side="left", fill="both", expand=True, padx=(4, 4), pady=4)
-        qbtns = ttk.Frame(qbox)
-        qbtns.pack(side="right", fill="y", pady=4)
-        ttk.Button(qbtns, text="＋加入队列", width=12,
-                   command=self.on_queue_add).pack(fill="x")
-        ttk.Button(qbtns, text="移除", width=12,
-                   command=self.on_queue_remove).pack(fill="x", pady=(2, 0))
-        up_down = ttk.Frame(qbtns)
-        up_down.pack(fill="x", pady=(2, 0))
-        ttk.Button(up_down, text="↑", width=5,
-                   command=lambda: self.on_queue_move(-1)).pack(side="left")
-        ttk.Button(up_down, text="↓", width=5,
-                   command=lambda: self.on_queue_move(1)).pack(side="left", padx=(2, 0))
-        self.btn_queue_run = ttk.Button(qbtns, text="▶ 跑队列", width=12,
-                                        command=self.on_queue_run)
-        self.btn_queue_run.pack(fill="x", pady=(2, 0))
-        self.lbl_queue = ttk.Label(box, text="", style="Muted.TLabel")
-        self.lbl_queue.grid(row=r + 1, column=0, columnspan=4, sticky="w", padx=6)
-
-        # ---- 控制条 ----
-        bar = ttk.Frame(root)
-        bar.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
-        self.btn_start = ttk.Button(bar, text="开始渲染", style="Accent.TButton",
-                                    command=self.on_start)
-        self.btn_start.pack(side="left")
-        self.btn_stop = ttk.Button(bar, text="停止", command=self.on_stop,
-                                   state="disabled")
-        self.btn_stop.pack(side="left", padx=6)
-        ttk.Button(bar, text="打开输出目录", command=self.open_output_dir).pack(side="left")
-        # 渲染中**禁用**：中途删断点，内存态要到下一帧完成才补写，这个窗口期里
-        # 崩溃会把已完成帧的进度全部丢掉
-        self.btn_clear_state = ttk.Button(bar, text="清空断点",
-                                          command=self.clear_state)
-        self.btn_clear_state.pack(side="left", padx=6)
-        ttk.Button(bar, text="清空日志", command=self.clear_log).pack(side="left")
-        self.lbl_state = ttk.Label(bar, text="", style="Muted.TLabel")
-        self.lbl_state.pack(side="right")
-
-        # ---- 进度 ----
-        prog = ttk.LabelFrame(root, text="进度")
-        prog.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
-        prog.columnconfigure(0, weight=1)
-        prog.rowconfigure(2, weight=1)
-
-        self.pb = ttk.Progressbar(prog, orient="horizontal", mode="determinate",
-                                  maximum=100)
-        self.pb.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
-        # 状态与 ETA **合成一行**（曾经 ETA 是右侧另贴的一个右对齐 Label：
-        # 它没有权重、宽度随文字变，长起来会往左顶、和状态文字叠在一起 —— 界面会错乱）。
-        # 现在只有这一个 Label，整行 left 对齐，`_refresh` 把两段文字拼起来塞进去。
-        self.lbl_status = ttk.Label(prog, text="就绪", anchor="w", justify="left")
-        self.lbl_status.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
-
-        # ⚠️ `wrap="none"` 会让长行（Windows 路径动辄上百字符）**直接被右边缘裁掉**，
-        #    而这里只有竖向滚动条，横着看不到 —— 出错时最关键的那行往往就是被裁的那行。
-        #    `wrap="word"` 实测两件事都做到了：中文/英文按词换行；单个超长 token（路径）
-        #    也会在控件边界处断开（`tmp_probe/probe_wrap.py` 对照过三种模式）。
-        self.txt = tk.Text(prog, height=12, wrap="word", state="disabled",
-                           font=("Consolas", 9), relief="flat",
-                           **theme.log_widget_colors())
-        self.vs = ttk.Scrollbar(prog, orient="vertical", command=self.txt.yview)
-        self._sb_style = theme.SCROLL_STYLE
-        self.txt.configure(yscrollcommand=self._on_log_scroll)
-        self.txt.grid(row=2, column=0, sticky="nsew", padx=(6, 0), pady=6)
-        self.vs.grid(row=2, column=1, sticky="ns", pady=6)
-
-        # ---- 底部说明 ----
-        ttk.Label(root, text="渲染走 `blender -b` 无头模式，不改动你的 .blend；"
-                             "崩溃或停止后再次开始即可从断点继续。",
-                  style="Muted.TLabel").grid(row=3, column=0, sticky="w",
-                                             padx=10, pady=(0, 8))
-
-        # 段行的初始值取自 `FormModel` 的默认（**唯一来源**，别在这里再写一份 "1"/"250"）
-        self._set_segments(self.form.segments)
+    def _toggle_module(self, key):
+        m = self._modules.get(key)
+        if m and m.get("card"):
+            m["card"].toggle_card()
+            m["expanded"] = m["card"].expanded
 
     # ---------------- 帧段（多段不连续的序列帧） ----------------
     def _add_segment_row(self, seg, focus=False):
-        """建一行「段 N · 起 / 止 / 步长 · ✕」。返回这一行的句柄（存在 `_seg_rows`）。"""
         seg = normalise_segment(seg)
-        row = ttk.Frame(self.seg_rows)
-        row.grid(row=0, column=0, sticky="w")      # 真正的位置由 _sync_segment_ui 重排
-        handle = {"row": row, "label": ttk.Label(row, text="段 %d" % (len(self._seg_rows) + 1),
-                                                 width=5),
-                  "vars": {}, "entries": {}, "btn_remove": None}
-        handle["label"].pack(side="left")
-        for key, caption, width in (("start", "起", 7), ("end", "止", 7),
-                                    ("step", "步长", 4)):
-            ttk.Label(row, text=caption).pack(side="left", padx=(6, 2))
-            var = tk.StringVar(value=seg.get(key, ""))
-            ent = ttk.Entry(row, textvariable=var, width=width)
-            ent.pack(side="left")
-            var.trace_add("write", lambda *_a: self._refresh_frame_preview())
-            handle["vars"][key] = var
-            handle["entries"][key] = ent
-        btn = ttk.Button(row, text="✕", width=2,
-                         command=lambda: self.on_remove_segment(handle))
-        btn.pack(side="left", padx=(8, 0))
-        handle["btn_remove"] = btn
-        self._seg_rows.append(handle)
-        if focus:
-            handle["entries"]["start"].focus_set()
+        handle = self.frames_module.add_segment(
+            seg.get("start", ""), seg.get("end", ""), seg.get("step", "1"),
+            focus=focus)
+        self._seg_rows = list(self.frames_module.rows)
         return handle
 
     def _set_segments(self, segments):
-        """用一份段列表**重建**界面上的段行（增删 / 存档回填 / 读工程配置都走它）。
-
-        为什么是重建而不是逐行同步：段数是会变的，逐个改控件又要处理"多了少了"，
-        容易留下没接线的控件。这里一次拆光重建，配合 `_sync_segment_ui` 重排编号。
-        """
-        for h in self._seg_rows:
-            h["row"].destroy()
-        self._seg_rows = []
-        for seg in (list(segments) or [new_segment()]):
-            self._add_segment_row(seg)
-        self._sync_segment_ui()
+        self.frames_module.set_segments(segments)
+        self._seg_rows = list(self.frames_module.rows)
 
     def _sync_segment_ui(self):
-        """重排段号与**位置** + 只剩一段时禁掉「✕」（任务至少要有一段）+ 刷新回显。
-
-        ⚠️ 位置必须在这里重排，不能在 `_add_segment_row` 里用 `len(self._seg_rows)` 当行号：
-        删掉中间一段后，列表长度与"已被占用的网格行"就对不上了 —— 再添加一段会**落在
-        同一格里，两行重叠，界面上少一行**（实测抓到：段 1、段 2、段 3 里显示出的只有
-        段 1 和段 3，而模型里三段都在）。位置这件事只由这里说了算。
-        """
-        only_one = len(self._seg_rows) <= 1
-        for i, h in enumerate(self._seg_rows):
-            h["row"].grid(row=i, column=0, sticky="w", pady=1)
-            h["label"].configure(text="段 %d" % (i + 1))
-            h["btn_remove"].configure(state="disabled" if only_one else "normal")
-        self._refresh_frame_preview()
+        self.frames_module.refresh_counts()
 
     def _read_segments(self):
-        return [{k: v.get() for k, v in h["vars"].items()} for h in self._seg_rows]
+        return self.frames_module.read_segments()
 
     def _refresh_frame_preview(self):
-        """实时回显：改任一格就重算 —— 合法绿字「共 N 帧：…」，不合法红字指出第几段。"""
-        frames, text, ok = frames_preview(self._read_segments())
+        segments = self._read_segments()
+        frames, text, ok = frames_preview(segments)
         self._frame_preview = frames
-        self.lbl_frames.configure(text=text, style="OK.TLabel" if ok else "Warn.TLabel")
+        self.lbl_frames.configure(text=text,
+                                  style="OK.TLabel" if ok else "Warn.TLabel")
+        self.frames_module.refresh_counts()
 
-    def _on_seg_box_resize(self, event):
-        """帧范围那块变宽/变窄 → 跟着调回显的折行宽度，保证它永远不被右边缘裁掉。
-
-        只设 `wraplength`（idempotent），不去改父容器尺寸，所以不会和布局互相触发。
-        """
-        self.lbl_frames.configure(wraplength=max(320, event.width - 8))
+    def _on_seg_box_resize(self, _event):
+        return
 
     def on_add_segment(self):
-        """「＋ 添加一段」：新起一行并把光标放进去 —— 加完直接输。"""
-        self._add_segment_row(new_segment(), focus=True)
-        self._sync_segment_ui()
+        self.frames_module.add_segment("", "", "1", focus=True)
+        self._seg_rows = list(self.frames_module.rows)
         self._log("新增第 %d 段帧范围 —— 填「起」（只渲一帧就只填起帧，"
-                  "要区间就把「止」也填上）" % len(self._seg_rows))
+                  "要区间就把「止」也填上）" % len(self.frames_module.rows))
 
     def on_remove_segment(self, handle):
-        if len(self._seg_rows) <= 1:
-            return                       # 只剩一段时按钮是禁用的，这里再兜一道
-        handle["row"].destroy()
-        self._seg_rows.remove(handle)
-        self._sync_segment_ui()
-        self._log("已移除 1 段帧范围，现在 %d 段" % len(self._seg_rows))
+        if len(self.frames_module.rows) <= 1:
+            return
+        self.frames_module.remove_handle(handle)
+        self._seg_rows = list(self.frames_module.rows)
+        self._log("已移除 1 段帧范围，现在 %d 段"
+                  % len(self.frames_module.rows))
 
     # ---------------- 表单动作 ----------------
+    @staticmethod
+    def _plausible_blender(path):
+        """路径看着像真 Blender 才信：文件名里得有 blender。
+
+        demo 会把 sys.executable（python.exe）塞进队列项当 blender——那种项被
+        选中时会把 v_blender 回填成 python.exe，之后读取/渲染全变成
+        "python -b 工程.blend"，.blend 被当 Python 脚本执行（用户实际踩过）。
+        """
+        return "blender" in os.path.basename(str(path or "")).lower()
+
     def _autofill_blender(self):
         try:
             cands = locate.find_blender()
@@ -639,9 +316,11 @@ class App(object):
             filetypes=[("Blender 工程", "*.blend"), ("所有文件", "*.*")])
         if path:
             self.v_blend.set(path)
+            self.v_scene.set(SCENE_NEED_READ_LABEL)
             if not self.v_output.get():
                 self.v_output.set(FormModel.complete_output("", path))
-            self.on_inspect()             # 选完立刻把工程里的渲染配置读出来
+            # 选工程即入队并自动读配置（HTML 定稿的交互），不再只填一个路径
+            self.on_queue_add()
 
     def maybe_inspect(self):
         """手填/粘贴路径后失焦时也试着读一次（同一个工程不重复读）。"""
@@ -650,15 +329,25 @@ class App(object):
             self.on_inspect()
 
     # ---------------- 读取工程里的渲染配置 ----------------
-    def on_inspect(self):
+    def on_inspect(self, force=False):
+        """读当前工程的渲染配置。选择/添加队列项后会自动调用（同一个工程不重复读）。
+
+        ⚠️ 异步竞态：读一次要起一次 Blender（几十秒），期间用户可能已切到别的工程。
+        每次请求带一个 token，回主线程时校验 token + 路径 + 队列项，旧结果一律丢弃，
+        否则会把 A 工程的配置写到 B 项上（HANDOFF 风险 2）。
+        """
         if self._inspecting or self.prog.running:
             return                        # 渲染中别去抢 Blender
         blend = self.v_blend.get().strip()
         if not blend or not os.path.exists(blend):
             messagebox.showwarning("还没选工程", "先选一个 .blend 工程文件。")
             return
+        if not force and blend == self._inspected_path and self._scene_info:
+            return                        # 已经读过，切场景直接用内存里的多场景配置
         blender = self.v_blender.get().strip()
-        if not blender or not os.path.exists(blender):
+        # 名字里连 blender 都没有（如 demo 泄漏的 python.exe）→ 当没有配置过，重新探测
+        if (not blender or not os.path.exists(blender)
+                or (not self.demo and not self._plausible_blender(blender))):
             self._autofill_blender()
             blender = self.v_blender.get().strip()
         if not blender or not os.path.exists(blender):
@@ -667,6 +356,10 @@ class App(object):
             return
 
         self._inspecting = True
+        self._inspect_token += 1
+        token = self._inspect_token
+        self._inspect_path = blend
+        self._inspect_item_id = self._selected_queue_id
         self._inspected_path = blend
         # 换工程了：旧工程的场景列表立刻作废，读完再填（否则会拿旧场景名去渲染）
         self._scene_info = None
@@ -675,17 +368,28 @@ class App(object):
         self.lbl_inspect.configure(text="正在读取工程配置…", style="Muted.TLabel")
         self.log.add("读取工程配置：%s（一次会把工程里所有场景都读出来）"
                      % os.path.basename(blend))
-        threading.Thread(target=self._inspect_worker, args=(blender, blend),
-                         daemon=True).start()
+        threading.Thread(target=self._inspect_worker,
+                         args=(blender, blend, token), daemon=True).start()
 
-    def _inspect_worker(self, blender, blend):
+    def _inspect_worker(self, blender, blend, token):
         try:
             info = read_blend_info(blender, blend, timeout=300)
         except Exception as e:
             info = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
-        self.q.put(("__inspect__", info))
+        self.q.put(("__inspect__", {"token": token, "info": info}))
 
-    def _apply_inspect(self, info):
+    def _apply_inspect(self, payload):
+        token = (payload or {}).get("token")
+        info = (payload or {}).get("info")
+        stale = (token != self._inspect_token
+                 or (self._inspect_path or "") != self.v_blend.get().strip()
+                 or (self._inspect_item_id or "") != (self._selected_queue_id or ""))
+        if stale:
+            self.log.add("工程配置读取结果已过期（期间切了工程），已丢弃")
+            if token == self._inspect_token:
+                self._inspecting = False
+                self.btn_inspect.configure(state="normal")
+            return
         self._inspecting = False
         self.btn_inspect.configure(state="normal")
         if not info or not info.get("ok"):
@@ -695,9 +399,16 @@ class App(object):
             self.log.add("! 读取工程配置失败：%s" % msg.replace("\n", " "))
             self._scene_info = None
             self._reset_scene_combo()
+            # 失败原因只在日志里：日志默认折叠着的话用户根本看不见，
+            # 会以为"点了没反应/没修复"。失败时把面板展开。
+            panel = getattr(self, "log_panel", None)
+            if panel is not None:
+                panel.expand()
             return
 
         self._scene_info = info
+        self._scene_info_cache[self.v_blend.get().strip()] = info
+        self.btn_inspect.configure(text="重新读取工程配置")
         names = scene_names(info)
         active = info.get("scene") or ""
         # 顶层字段就是「激活场景」那一份，直接拿来填表单
@@ -712,22 +423,28 @@ class App(object):
             style="OK.TLabel")
         self.log.add("已读取工程配置：" + summarize_blend(info))
         self._update_scene_combo(names, active)
-        self._rebuild_collection_ui(info.get("collections") or [],
-                                    self.hidden_collections)  # 保留已勾选项
+        # 工程里本来就 hide_render 的集合 → hidden 列表 → 界面上不勾选
+        collections = info.get("collections") or []
+        project_hidden = [c.get("name") for c in collections
+                          if isinstance(c, dict) and c.get("hidden")]
+        self._rebuild_collection_ui(collections, project_hidden)
         self._report_scene_camera(info, active)
+        # 自动读取完必须刷新该队列项的 cfg 与帧数，否则详情/后续渲染用旧值
+        self._snapshot_selected_item()
 
     def _fill_from_detail(self, detail, name=""):
         """按一个场景的配置重填表单（引擎/采样/分辨率/输出路径、帧范围都是 per-scene 的）。
 
-        帧范围只填**第 1 段**、其余段原样留着：用户自己加的那几段是他明确要渲的片断，
-        读一次工程配置就全抹掉等于把他的输入吃了。而第 1 段本来就是"工程自己的帧范围"。
+        帧范围**整段按工程重填**：读工程配置＝"以工程为准"，此时留着上一次的段
+        会让界面显示一堆工程里根本没有的帧（上一版只覆盖第 1 段，用户看到的是
+        骨架里残留的 2-3）。读完之后用户照样可以再加段。
         """
         fields = fields_from_detail(detail, self.v_blend.get().strip())
-        segs = self._read_segments() or [new_segment()]
-        for key in ("start", "end", "step"):
-            if key in fields:
-                segs[0][key] = str(fields[key])
-        self._set_segments(segs)
+        if fields.get("start") or fields.get("end"):
+            seg = new_segment(str(fields.get("start", "")),
+                              str(fields.get("end", "")),
+                              str(fields.get("step", "1") or "1"))
+            self._set_segments([seg])
         for key, var in (("engine", self.v_engine),
                          ("samples", self.v_samples), ("device", self.v_device),
                          ("width", self.v_w), ("height", self.v_h),
@@ -743,47 +460,55 @@ class App(object):
                             fields.get("color_depth"))
         return fields
 
-    # ---------------- 隐藏集合 ----------------
-    def _rebuild_collection_ui(self, collections, selected=()):
-        """读工程配置后重建集合勾选清单。
+    # ---------------- 集合显示（勾选＝渲染显示，与 hidden 存储相反）----------------
+    def _rebuild_collection_ui(self, collections, hidden=()):
+        """读工程配置后重建「集合显示」勾选清单。
 
-        `collections` 是 inspect 出的 [{name, objects}, ...]；`selected` 是要勾选的名字
-        （从存档/队列项回填）。空列表 = 还没读工程配置，显示提示文案。
+        `collections` 是 inspect 出的 [{name, objects, hidden}, ...]；`hidden` 是
+        **要隐藏**的名字（来自工程 hide_render 或队列项快照）。界面勾选态由
+        `checks_from_hidden()` 反转得到 —— 不要在界面里改 `hidden` 的存储语义。
         """
         for w in self.col_box.winfo_children():
             w.destroy()
         self._collection_vars = {}
         self._collection_objects = {}
-        selected = set(selected or ())
         if not collections:
-            self.lbl_collections = ttk.Label(
-                self.col_box, text="读取工程配置后可勾选；勾上的集合渲染时隐藏（不改工程文件）",
+            self.lbl_collections.configure(
+                text="读取工程配置后可勾选；勾选＝渲染时显示，取消＝渲染时隐藏",
                 style="Muted.TLabel")
-            self.lbl_collections.pack(anchor="w")
             self.hidden_collections = []
             return
-        self.lbl_collections = ttk.Label(
-            self.col_box, text="勾选 = 渲染时隐藏（只内存生效，不改 .blend）：",
+        self.lbl_collections.configure(
+            text="勾选＝渲染时显示；取消勾选＝渲染时隐藏（只内存生效，不改 .blend）",
             style="Muted.TLabel")
-        self.lbl_collections.pack(anchor="w")
-        inner = ttk.Frame(self.col_box)
+        inner = ttk.Frame(self.col_box, style="Card.TFrame")
         inner.pack(anchor="w", fill="x")
+        names = [(item.get("name") if isinstance(item, dict) else str(item))
+                 for item in collections]
+        checked = set(checks_from_hidden(names, hidden))
         for i, item in enumerate(collections):
             name = item.get("name") if isinstance(item, dict) else str(item)
             nobj = item.get("objects") if isinstance(item, dict) else None
-            var = tk.BooleanVar(value=(name in selected))
+            var = tk.BooleanVar(value=(name in checked))
             var.trace_add("write", lambda *_a: self._on_collection_toggle())
-            cb = ttk.Checkbutton(inner, text=("%s（%s 个对象）" % (name, nobj) if nobj is not None else name),
+            cb = ttk.Checkbutton(inner, text=("%s（%s 个对象）" % (name, nobj)
+                                              if nobj is not None else name),
                                  variable=var)
             cb.grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 14), pady=1)
             self._collection_vars[name] = var
             self._collection_objects[name] = nobj
-        self.hidden_collections = [n for n, v in self._collection_vars.items() if v.get()]
+        self.hidden_collections = [n for n, v in self._collection_vars.items()
+                                   if not v.get()]
+        self._sync_overview()
 
     def _on_collection_toggle(self):
-        self.hidden_collections = [n for n, v in self._collection_vars.items() if v.get()]
+        """界面勾选变了 → 重算 hidden 列表（存储仍是隐藏列表）+ 刷新当前项快照。"""
+        names = list(self._collection_vars)
+        checked = [n for n, v in self._collection_vars.items() if v.get()]
+        self.hidden_collections = hidden_from_checks(names, checked)
+        self._snapshot_selected_item()
         if self.hidden_collections:
-            self.log.add("隐藏集合：%s（点开始渲染时生效）"
+            self.log.add("渲染时隐藏：%s（已保存，点开始渲染时生效）"
                          % "、".join(self.hidden_collections))
 
     def _update_scene_combo(self, names, active):
@@ -942,6 +667,8 @@ class App(object):
         这段时间里机器一崩，开机还是会自动跑起来 —— 与他的意思相反。
         """
         want = bool(self.v_auto_resume.get())
+        # 队列的旗标也要一起改：set_current() 每跑一项都会用它写 pending.json
+        queue_store.set_autoresume(want)
         if taskstore.load() is None:
             # 别悄悄吞掉 —— 勾了没反应，用户会以为坏了
             self._log("当前没有待办任务：这个开关会在下次点「开始渲染」时写入存档")
@@ -1016,7 +743,9 @@ class App(object):
         """把 `FormModel` 铺到控件上（开机续跑回填用）。"""
         self.form = fm
         self.v_blend.set(fm.blend)
-        self.v_blender.set(fm.blender)
+        # 存档里的 blender 可能是 demo 泄漏的 python.exe —— 不是真 Blender 就别铺
+        if self.demo or not fm.blender or self._plausible_blender(fm.blender):
+            self.v_blender.set(fm.blender)
         self.v_output.set(fm.output)
         self._set_segments(fm.segments)
         self.v_engine.set(fm.engine)
@@ -1048,39 +777,280 @@ class App(object):
         self._sync_retry_note()
 
     # ---------------- 多工程队列 ----------------
-    def _refresh_queue(self):
-        """从 queue.json 重画队列列表（单一数据源：磁盘）。"""
-        self.lst_queue.delete(0, "end")
+    def _selected_item(self):
+        """当前右侧展示的队列项（磁盘上的 queue.json 是唯一数据源）。"""
         q = queue_store.load()
-        for it in (q or {}).get("items", []):
+        if not q or not q.get("items"):
+            return None
+        for it in q["items"]:
+            if it.get("id") == self._selected_queue_id:
+                return it
+        return q["items"][0]
+
+    def _refresh_queue(self):
+        """重画左栏队列，并把选中项铺到右侧模块（含概览与标题摘要）。"""
+        q = queue_store.load()
+        items = (q or {}).get("items", [])
+        self.lst_queue.delete(0, "end")
+        for it in items:
             cfg = it.get("config") or {}
             name = os.path.basename(cfg.get("blend") or "?")
             frames = cfg.get("frames") or []
-            rng = ("%d 帧" % len(frames)) if frames else "?"
-            self.lst_queue.insert("end", "%s · %s · %s [%s]" % (
-                name, rng, it.get("status", "pending"),
-                os.path.basename(cfg.get("output_template") or "").replace("####", "#")))
+            # 卡片第二行给「帧数 · 断点进度」——比重复一遍输出文件名有用得多
+            # ⚠️ 断点文件是按**输出目录**放的：两项共用同一目录时会读到同一份，
+            #    所以只在「总数跟这一项自己的帧数对得上」时才敢显示。
+            out = cfg.get("output_template") or ""
+            bp = state_summary(guess_state_path(out)) if out else None
+            done = ""
+            if bp and frames and bp.get("total") == len(frames):
+                done = "已完成 %d/%d" % (bp["done"], bp["total"])
+            self.lst_queue.insert(
+                "end", " %s | %s | %s | %s" % (
+                    name, ("%d 帧" % len(frames)) if frames else "?",
+                    it.get("status", queue_store.STATUS_PENDING), done))
+            status = it.get("status")
+            if status == queue_store.STATUS_DONE:
+                self.lst_queue.itemconfig("end", foreground=theme.MUTED)
+            elif status == queue_store.STATUS_FAILED:
+                self.lst_queue.itemconfig("end", foreground=theme.WARN)
+        self.lbl_queue_count.configure(text="%d 项" % len(items))
         self.lbl_queue.configure(text=queue_store.summary(q))
-        if q and q.get("items"):
-            self.btn_queue_run.configure(state="normal")
+        ids = [it.get("id") for it in items]
+        if self._selected_queue_id not in ids:
+            self._selected_queue_id = ids[0] if ids else None
+        if self._selected_queue_id:
+            idx = ids.index(self._selected_queue_id)
+            self._queue_refreshing = True
+            self.lst_queue.selection_clear(0, "end")
+            self.lst_queue.selection_set(idx)
+            self.lst_queue.see(idx)
+            self._queue_refreshing = False
+        # 启动/没有任何编辑时：把选中项的配置铺到右侧，别让左边高亮一项、
+        # 右边却全是「—」。用户一旦自己填过（v_blend 非空）就不再覆盖。
+        if items and not str(self.v_blend.get() or "").strip():
+            self._apply_queue_item(self._selected_item())
+        self._sync_overview()
+
+    @staticmethod
+    def _choice_label(choices, value):
+        """(显示文案, 实际值) 表 → 给人看的文案（下拉里存的是实际值）。"""
+        return next((label for label, val in choices if val == value),
+                    value or "—")
+
+    @staticmethod
+    def _short_choice(choices, value):
+        """概览里用的短文案：留空一律说「随工程」，别把长标签塞进四列格子。"""
+        raw = str(value or "").strip()
+        if not raw:
+            return "随工程"
+        label = next((label for label, val in choices if val == raw), raw)
+        return label.split("（")[0]          # 去掉「（用 .blend 里的）」这类括注
+
+    @staticmethod
+    def _short_path(path, limit=24):
+        """概览里的路径只留最后两段（…\\out\\demo_a_####）：四列格子里放不下全路径。"""
+        s = str(path or "")
+        parts = s.replace("/", "\\").split("\\")
+        tail = "\\".join([p for p in parts[-2:] if p]) if len(parts) > 1 else s
+        short = "…\\" + tail if len(parts) > 2 else tail
+        if len(short) <= limit + 2:
+            return short
+        return "…" + short[-(limit + 1):]
+
+    def _sync_overview(self):
+        """概览与四个标题摘要：标题栏永远显示当前值，不用展开模块去找。"""
+        if not self._overview_tags:
+            return
+        self._collect_form()
+        segs = self._read_segments()
+        frames, _errors = segments_to_frames(segs)
+        hidden = [n for n, v in self._collection_vars.items() if not v.get()]
+        cfg = (self._selected_item() or {}).get("config") or {}
+        bp = state_summary(guess_state_path(self.v_output.get()))
+        bp_text = ("%d/%d" % (bp["done"], bp["total"])) if bp else "无"
+        samples = str(self.v_samples.get() or "").strip()
+        engine = self._short_choice(ENGINES, self.v_engine.get())
+        fmt_ident = format_from_label(self.v_format.get())
+        fmt = fmt_ident.upper() if fmt_ident else "随工程"
+        depth = str(self.v_depth.get() or "").strip()
+        if fmt != "随工程" and depth and depth != DEPTH_KEEP_LABEL:
+            fmt = "%s · %s 位" % (fmt, depth)
+        w, h = str(self.v_w.get() or "").strip(), str(self.v_h.get() or "").strip()
+        values = {
+            "blend": os.path.basename(self.v_blend.get() or "—") or "—",
+            "frames": " · ".join(segment_label(s) for s in segs if s.get("start") or s.get("end")) or "—",
+            "count": "%d 帧" % len(frames),
+            "engine": ("%s · 采样 %s" % (engine, samples)) if samples else engine,
+            "device": self._short_choice(DEVICES, self.v_device.get()),
+            "res": ("%s×%s @%s%%" % (w, h, self.v_pct.get() or "100")
+                    if (w and h) else "随工程"),
+            "format": fmt,
+            "output": self._short_path(self.v_output.get() or "") or "—",
+            "hidden": ("、".join(hidden[:2]) + ("　等 %d 个" % len(hidden)
+                                              if len(hidden) > 2 else ""))
+                      if hidden else "（无）",
+            "retry": "%s · 断点 %s" % (
+                "一直重试" if self.v_retry.get() == DEFAULT_RETRY
+                else (self.v_retry.get() or "—"), bp_text),
+        }
+        for key, var in self._overview_tags.items():
+            var.set(values.get(key, "—"))
+        overview = getattr(self, "overview", None)
+        if overview is not None:
+            sel = self._selected_item() or {}
+            name = os.path.basename((sel.get("config") or {}).get("blend")
+                                    or self.v_blend.get() or "")
+            overview.set_head(name or "未选工程",
+                              sel.get("status") or queue_store.STATUS_PENDING)
+        try:
+            self.lbl_sum_overview.configure(
+                text="%s · %d 帧" % (values["blend"], len(frames)))
+            self.lbl_sum_project.configure(
+                text=os.path.basename(self.v_blend.get() or "") or "未选工程")
+            self.lbl_sum_frames.configure(text="%d 段 · %d 帧" % (len(segs), len(frames)))
+            self.lbl_sum_render.configure(
+                text="%s · %s · %sx%s" % (
+                    self._choice_label(ENGINES, self.v_engine.get()),
+                    self._choice_label(DEVICES, self.v_device.get()),
+                    self.v_w.get() or "?", self.v_h.get() or "?"))
+            self.lbl_sum_program.configure(
+                text=os.path.basename(self.v_blender_ver.get()
+                                      or self.v_blender.get() or "—"))
+        except AttributeError:
+            pass                                  # 初始化过程中摘要 Label 还没建全
+
+    def _apply_queue_item(self, item):
+        """把某一项的配置快照铺到右侧表单（切队列项 / 渲染下一项都走它）。"""
+        if not item:
+            return
+        fm = FormModel.from_config(item.get("config") or {},
+                                   item.get("blender_exe") or "")
+        self._apply_form_model(fm)
+        path = fm.blend
+        cached = self._scene_info_cache.get(path)
+        if cached:
+            self._scene_info = cached
+            self._inspected_path = path
+            self._update_scene_combo(scene_names(cached), cached.get("scene") or "")
+            self._rebuild_collection_ui(cached.get("collections") or [],
+                                        fm.hidden_collections)
+            self.btn_inspect.configure(text="重新读取工程配置", state="normal")
         else:
-            self.btn_queue_run.configure(state="disabled")
+            self._scene_info = None
+            self.btn_inspect.configure(text="读取工程配置", state="normal")
+        self._refresh_state_label()
+        self._sync_overview()
+
+    def _snapshot_selected_item(self):
+        """把当前表单写回选中项的快照（切项/勾选集合/读配置完成时调用）。"""
+        item = self._selected_item()
+        if not item:
+            return
+        self._collect_form()
+        cfg, errors, _warns = self.form.to_config()
+        if errors:
+            return                       # 半填状态别写坏快照
+        blender = self.v_blender.get().strip() or item.get("blender_exe") or ""
+        if not self.demo and not self._plausible_blender(blender):
+            blender = ""                 # 别把 python.exe 之类的假路径写回存档
+        queue_store.update_config(item["id"], cfg, blender)
+        self._sync_overview()
+
+    def _on_queue_select(self, _event=None):
+        if getattr(self, "_queue_refreshing", False):
+            return
+        sel = self.lst_queue.curselection()
+        if not sel:
+            return
+        q = queue_store.load()
+        if not q:
+            return
+        item = q["items"][sel[0]]
+        if item.get("id") == self._selected_queue_id:
+            # 点的就是当前项：配置不用重铺，但"点条目"本身仍是要看它，日志跟着展开
+            panel = getattr(self, "log_panel", None)
+            if panel is not None:
+                panel.expand()
+            return
+        self._snapshot_selected_item()   # 先把旧项的修改存回去
+        self._selected_queue_id = item.get("id")
+        self._apply_queue_item(item)
+        # 切到某一项＝要看这一项的情况，日志/进度面板跟着展开
+        panel = getattr(self, "log_panel", None)
+        if panel is not None:
+            panel.expand()
+        self.on_inspect()                 # 新工程自动读配置与集合状态
+
+    def on_queue_reorder(self, src, dst):
+        q = queue_store.load()
+        if not q or not (0 <= src < len(q["items"])) or not (0 <= dst < len(q["items"])):
+            return
+        if src == dst:
+            return
+        item_id = q["items"][src]["id"]
+        delta = 1 if dst > src else -1
+        for _ in range(abs(dst - src)):
+            if not queue_store.move(item_id, delta):
+                break
+        self._refresh_queue()
+
+    # 左栏拖动排序（旧 Listbox 版本；新左栏内部已处理）
+    def _on_queue_drag_start(self, event):
+        self._drag_from = self.lst_queue.nearest(event.y)
+
+    def _on_queue_drag_move(self, _event):
+        return                            # 只在松手时真正移动，避免抖来抖去
+
+    def _on_queue_drag_end(self, event):
+        src = getattr(self, "_drag_from", None)
+        self._drag_from = None
+        if src is None:
+            return
+        dst = self.lst_queue.nearest(event.y)
+        if src == dst:
+            return
+        q = queue_store.load()
+        if not q or not (0 <= src < len(q["items"])) or not (0 <= dst < len(q["items"])):
+            return
+        item_id = q["items"][src]["id"]
+        delta = 1 if dst > src else -1
+        for _ in range(abs(dst - src)):
+            if not queue_store.move(item_id, delta):
+                break
+        self._selected_queue_id = item_id
+        self._refresh_queue()
+        self._log("队列顺序已调整")
 
     def on_queue_add(self):
-        """把当前表单快照加入队列。"""
+        """把当前表单加入队列；按工程路径去重，加入后自动读配置与集合状态。"""
         self._collect_form()
         cfg, errors, _warns = self.form.to_config()
         if errors:
             messagebox.showerror("配置有问题", "\n".join("· " + e for e in errors))
-            return
+            return None
         blender = (self.form.blender or "").strip()
         if not blender or not os.path.exists(blender):
             messagebox.showerror("配置有问题", "先指定有效的 blender.exe")
-            return
+            return None
+        q = queue_store.load()
+        want = os.path.normcase(os.path.abspath(cfg.blend))
+        for it in (q or {}).get("items", []):
+            old = os.path.normcase(os.path.abspath((it.get("config") or {}).get("blend") or ""))
+            if old == want:
+                self._selected_queue_id = it.get("id")
+                queue_store.update_config(it["id"], cfg, blender)
+                self._refresh_queue()
+                self._apply_queue_item(it)
+                self._log("工程已在队列中，已用当前配置更新它")
+                self.on_inspect(force=True)
+                return it
         _q, item = queue_store.add(cfg, blender)
+        self._selected_queue_id = item["id"]
         self._log("已加入队列：%s（%d 帧）"
                   % (os.path.basename(cfg.blend), len(cfg.frames)))
         self._refresh_queue()
+        self.on_inspect(force=True)      # 自动读取配置 + 集合状态，并刷新该项快照
+        return item
 
     def on_queue_remove(self):
         sel = self.lst_queue.curselection()
@@ -1092,7 +1062,11 @@ class App(object):
         item = q["items"][sel[0]]
         if queue_store.remove(item.get("id")):
             self._log("已从队列移除：%s" % os.path.basename(item["config"]["blend"]))
+        self._selected_queue_id = None
         self._refresh_queue()
+        nxt = self._selected_item()
+        if nxt:
+            self._apply_queue_item(nxt)
 
     def on_queue_move(self, delta):
         sel = self.lst_queue.curselection()
@@ -1100,53 +1074,59 @@ class App(object):
             return
         q = queue_store.load()
         if q and queue_store.move(q["items"][sel[0]].get("id"), delta):
+            self._selected_queue_id = q["items"][sel[0]].get("id")
             self._refresh_queue()
-            new_sel = max(0, min(len(q["items"]) - 1, sel[0] + delta))
-            self.lst_queue.selection_set(new_sel)
-
-    def on_queue_run(self):
-        """开始跑整个队列（逐个工程）。"""
-        q = queue_store.load()
-        if not q or not q.get("items"):
-            messagebox.showinfo("队列为空", "先点「＋加入队列」添加工程。")
-            return
-        if self.prog.running and hasattr(self, "job") and self.job:
-            messagebox.showinfo("渲染进行中", "当前有任务在跑，等它结束再跑队列。")
-            return
-        self._queue_mode = True
-        self._run_next_queue_item()
 
     def _run_next_queue_item(self):
-        """从队列取下一项设为当前并启动渲染；队列空则收尾。"""
+        """取下一项设为当前并启动渲染；队列跑完则收尾。"""
         item = queue_store.next_pending()
         if item is None:
-            self._queue_mode = False
-            self._log("队列全部完成。")
-            self._refresh_queue()
-            messagebox.showinfo("队列完成", "所有工程已渲染完成。")
+            self._finish_queue()
             return
-        queue_store.set_current(item["id"])
         cfg = JobConfig.from_dict(item["config"])
+        blender = (item.get("blender_exe") or "").strip()
+        bad = ""
+        if (not blender or not os.path.exists(blender)
+                or (not self.demo and not self._plausible_blender(blender))):
+            bad = "blender.exe 不存在或无效：%s" % (blender or "未指定")
+        elif not cfg.blend or not os.path.exists(cfg.blend):
+            bad = "工程文件不存在：%s" % cfg.blend
+        elif not cfg.frames:
+            bad = "没有可渲染的帧"
+        else:
+            level, why = diskspace.check(cfg)
+            if level == "block":
+                bad = "磁盘空间不足：%s" % why.replace("\n", " ")
+            elif level == "warn":
+                for line in (why or "").splitlines():
+                    self._log("! %s" % line)
+        if bad:
+            # 一项坏掉不该拖住整个队列：标失败、说清楚，然后接着下一项
+            self.log.add("! 队列项跳过：%s —— %s"
+                         % (os.path.basename(item["config"]["blend"]), bad))
+            queue_store.set_status(item["id"], queue_store.STATUS_FAILED)
+            self._refresh_queue()
+            self.root.after(100, self._run_next_queue_item)
+            return
+        queue_store.set_current(item["id"])   # 顺带写 pending.json，供开机续跑认领
         self._current_queue_item = item
-        self._start_cfg(cfg, item.get("blender_exe") or "",
-                        queue_mode=True)
-        self._log("队列：开始第 %s 项 —— %s"
-                  % (queue_store.load()["current"] + 1, os.path.basename(cfg.blend)))
+        self._selected_queue_id = item["id"]
+        self._apply_queue_item(item)
+        self._queue_index += 1
+        self._start_cfg(cfg, blender, segments=len(cfg.frames))
+        self._log("队列：开始第 %d/%d 项 —— %s（%d 帧）" % (
+            self._queue_index, self._queue_total, os.path.basename(cfg.blend),
+            len(cfg.frames)))
         self._refresh_queue()
 
-    def _save_task(self, cfg, blender):
-        """点击开始后**先存档再跑**：只有这样，进程被强杀时才有东西可供开机续跑。"""
-        auto = bool(self.v_auto_resume.get())
-        try:
-            p = taskstore.save(cfg, blender, autoresume=auto,
-                               reason="你在界面上关掉了「启动时自动续跑未完成任务」")
-            self._log("任务已存档：%s（%s）"
-                      % (p, "意外中断后开机可自动续跑" if auto
-                         else "已按你的设置关掉自动续跑，中断后需手动点开始"))
-        except Exception as e:
-            # 存不上只损失"自动续跑"，不该拦住建档本身，但必须在日志里说清楚
-            self._log("! 任务存档失败（不影响本次渲染，但开机不会自动续跑）：%s: %s"
-                      % (type(e).__name__, e))
+    def _finish_queue(self):
+        self._queue_mode = False
+        self._log("队列全部完成（%d 项）。" % self._queue_index)
+        self._refresh_queue()
+        # 关机/睡眠只在**整个队列**跑完后触发，不在中间项触发
+        if self._last_queue_event:
+            kind, ev = self._last_queue_event
+            self._maybe_aftermath(kind, ev)
 
     def try_autostart_resume(self):
         """开机自启拉起时的入口：认领未完成任务。
@@ -1212,51 +1192,62 @@ class App(object):
         # 它当年存进来之后全项目没有一处读它 —— AGENTS 坑 35 的同款）
 
     def on_start(self):
-        self._collect_form()
-        cfg, errors, warns = self.form.to_config()
-        for w in warns:
-            self._log("! %s" % w)
-        if errors:
-            messagebox.showerror("配置有问题", "\n".join("· " + e for e in errors))
-            return
-        blender = (self.form.blender or "").strip()
-        if not blender:
-            messagebox.showerror("配置有问题", "还没指定 blender.exe（点「自动探测」或手填）")
-            return
-        if not os.path.exists(blender):
-            messagebox.showerror("配置有问题", "blender.exe 不存在：%s" % blender)
-            return
+        """「开始渲染」= 按队列顺序跑完整个队列（已删除单独的「跑队列」入口）。
 
-        bad = self._scene_conflict()
-        if bad:
-            messagebox.showerror("配置有问题", bad)
-            return
-
-        # 空间预检要放在**存档之前**：拦下来的任务不该留下待办存档，
-        # 否则下次开机它会以 drop 态被认领一次，白跑一趟提示。
-        level, why = diskspace.check(cfg)
-        if level == "block":
-            messagebox.showerror("磁盘空间不足，先别开始", why)
-            return
-        if level == "warn":
-            for line in why.splitlines():
-                self._log("! %s" % line)
-
-        self._start_cfg(cfg, blender, queue_mode=False, segments=len(self.form.segments))
-
-    def _start_cfg(self, cfg, blender, queue_mode=False, segments=None):
-        """启动一份 JobConfig（on_start 与队列共用；校验已在调用方做过）。
-
-        `queue_mode=True` 时不撤关机倒计时（队列后面还有任务，不能中途关机器）。
+        队列为空时把当前表单当成唯一一项入队，保留"配好参数直接点开始"的用法；
+        非空时严格按队列里项的**存储快照**跑，不拿右侧当前表单覆盖别人。
         """
-        # 撤掉挂起的关机/睡眠倒计时 —— 但**要等所有校验都过了**再撤：
-        # 配置错误（缺 blender、场景冲突、空间不足）根本没开始新任务，
-        # 却把用户刚设的关机撤掉，等于让机器白开一夜（P-W6）。
-        if not queue_mode:
-            self._cancel_pending_countdown()
-        # 存档要**赶在起线程之前**：晚一步就意味着"已经开始跑但还没存档"这段窗口里
-        # 被强杀会让这次任务无从续起
-        self._save_task(cfg, blender)
+        if self.prog.running or self._queue_mode:
+            messagebox.showinfo("渲染进行中", "当前有任务在跑，等它结束再开始。")
+            return
+        q = queue_store.load()
+        if not q or not q.get("items"):
+            self._collect_form()
+            cfg, errors, warns = self.form.to_config()
+            for w in warns:
+                self._log("! %s" % w)
+            if errors:
+                messagebox.showerror("配置有问题", "\n".join("· " + e for e in errors))
+                return
+            bad = self._scene_conflict()
+            if bad:
+                messagebox.showerror("配置有问题", bad)
+                return
+            blender = (self.form.blender or "").strip()
+            if not blender or not os.path.exists(blender):
+                messagebox.showerror("配置有问题", "blender.exe 不存在：%s" % blender)
+                return
+            # 空间预检要在入队前：拦下来的任务不该留下待办存档
+            level, why = diskspace.check(cfg)
+            if level == "block":
+                messagebox.showerror("磁盘空间不足，先别开始", why)
+                return
+            for line in (why or "").splitlines():
+                self._log("! %s" % line)
+            _q, item = queue_store.add(cfg, blender)
+            self._selected_queue_id = item["id"]
+            q = queue_store.load()
+
+        # 上一轮已经全部跑完 → 重置状态重新跑，否则「开始渲染」看起来像没反应
+        if not any(it.get("status") != queue_store.STATUS_DONE for it in q["items"]):
+            for it in q["items"]:
+                queue_store.set_status(it["id"], queue_store.STATUS_PENDING)
+            q = queue_store.load()
+            self._log("上一轮队列已全部完成，重置状态后重新按顺序渲染")
+        # 校验全部通过后才撤倒计时：否则配置错了却把用户设好的关机一并撤掉
+        self._cancel_pending_countdown()
+        self._queue_mode = True
+        self._queue_total = len(q["items"])
+        self._queue_index = 0
+        self._log("开始渲染：按队列顺序跑 %d 项" % self._queue_total)
+        self._run_next_queue_item()
+
+    def _start_cfg(self, cfg, blender, segments=None):
+        """启动队列中的一项；pending.json 已由 `set_current()` 写好，别再覆盖。
+
+        逐项校验（blender / 工程 / 帧 / 磁盘空间）在 `_run_next_queue_item()` 做，
+        坏项标失败后继续下一项，不让一项拖住整个队列。
+        """
         # 防睡眠守卫在这里注入（组合根职责）：CLI 与 GUI 都长跑，谁构造谁注入
         self.job = RenderJob(cfg, blender, cmd_factory=self.cmd_factory,
                              power_guard=(power.keep_awake, power.allow_sleep))
@@ -1320,6 +1311,8 @@ class App(object):
         # 主动停止 = "我知道，别自己跑"：撤掉自动续跑标记，但断点文件原样留着。
         # 改标记而不是删存档 —— 删了断点就成了"没跑过"，用户还得从头来。
         if taskstore.set_autoresume(False, "你点了「停止」"):
+            # 队列也要同步：否则下一项 set_current() 又把 True 写回 pending
+            queue_store.set_autoresume(False)
             self._log("已取消开机自动续跑（断点保留，想继续随时点「开始渲染」）")
 
     def on_close(self):
@@ -1375,25 +1368,27 @@ class App(object):
             self._refresh_state_label()
             self._settle_task(kind, ev)
             self._finish_notify(kind, ev)
-            if getattr(self, "_queue_mode", False):
-                # 队列模式：标记当前项后自动进下一项；不在中间触发关机/睡眠。
-                # 例外：用户主动停止（cancelled）—— 停整个队列，不再自动进下一项。
-                item = getattr(self, "_current_queue_item", None)
-                cancelled = bool(ev.get("cancelled"))
-                if item:
-                    status = (queue_store.STATUS_DONE if kind == "job_done" and ev.get("ok")
-                              else queue_store.STATUS_PENDING if cancelled
-                              else queue_store.STATUS_FAILED)
-                    queue_store.set_status(item["id"], status)
-                    self._log("队列项已标记：%s" % status)
-                self._refresh_queue()
-                if cancelled:
-                    self._queue_mode = False
-                    self._log("队列已暂停（当前项保留断点；点「▶ 跑队列」可继续）")
-                else:
-                    self.root.after(300, self._run_next_queue_item)
+            # 「开始渲染」永远是队列模式：标记当前项后自动进下一项；
+            # 关机/睡眠只在**整个队列**结束时判，不在中间项触发。
+            # 例外：用户主动停止 → 停整个队列，当前项保留断点，点开始可续跑。
+            item = getattr(self, "_current_queue_item", None)
+            cancelled = bool(ev.get("cancelled"))
+            if item:
+                status = (queue_store.STATUS_DONE if kind == "job_done" and ev.get("ok")
+                          else queue_store.STATUS_PENDING if cancelled
+                          else queue_store.STATUS_FAILED)
+                queue_store.set_status(item["id"], status)
+                self._log("队列项已标记：%s（%s）" % (
+                    status, os.path.basename(item["config"]["blend"])))
+            self._last_queue_event = (kind, ev)
+            self._refresh_queue()
+            if cancelled:
+                self._queue_mode = False
+                self._log("队列已暂停（当前项保留断点；点「开始渲染」可接着跑）")
+            elif queue_store.next_pending() is None:
+                self._finish_queue()
             else:
-                self._maybe_aftermath(kind, ev)
+                self.root.after(300, self._run_next_queue_item)
 
     def _settle_task(self, kind, ev):
         """一轮跑完后处置待办存档。判据在 `guimodel.settle_task_action`（可单测）。"""
@@ -1542,7 +1537,29 @@ class App(object):
         # 状态 · ETA · 单帧 全在一行里 —— 不再另贴一个右对齐 Label
         tail = " · ".join(x for x in (p.eta_text(), p.per_frame_text()) if x)
         text = p.status_text()
+        if self._queue_mode and self._queue_total:
+            text = "队列 %d/%d · %s" % (self._queue_index, self._queue_total, text)
         self.lbl_status.configure(text=("%s　|　%s" % (text, tail)) if tail else text)
+        self._refresh_metrics(p)
+
+    def _refresh_metrics(self, p):
+        """把用时 / 单帧 / 速度 / ETA / 预计完成换算成给人看的一行。"""
+        panel = getattr(self, "log_panel", None)
+        if panel is None:
+            return
+        if p.started_at is None:
+            elapsed = "—"
+        elif p.running:
+            elapsed = fmt_duration(time.time() - p.started_at)
+        else:
+            elapsed = fmt_duration(p.elapsed or 0.0)
+        per_frame = fmt_duration(p.per_frame) if p.per_frame else "—"
+        speed = ("%.1f 帧/分" % (60.0 / p.per_frame)
+                 if p.per_frame and p.per_frame > 0 else "—")
+        eta = fmt_duration(p.eta_sec) if p.eta_sec else "—"
+        finish = (fmt_clock(time.time() + p.eta_sec)
+                  if (p.eta_sec and p.running) else "—")
+        panel.set_metrics(elapsed, per_frame, speed, eta, finish)
 
     def _refresh_state_label(self):
         info = state_summary(guess_state_path(self.v_output.get()))
@@ -1557,22 +1574,44 @@ class App(object):
 
     # ---------------- demo（自检/截图用）----------------
     def _setup_demo(self):
-        """填一套可直接跑的示例配置，并用假 Blender 跑一轮（不走真 Blender）。"""
+        """自检：用假 Blender 顺序跑两个示例队列项（含多段不连续帧）。
+
+        demo 写自己的临时目录，且**先清空队列**，避免把用户真实队列拿来跑。
+        """
         import tempfile
         d = tempfile.mkdtemp(prefix="brc-demo-")
-        blend = os.path.join(d, "demo.blend")
-        with open(blend, "wb") as f:
-            f.write(b"BLENDER-v5")
-        self.v_blend.set(blend)
+        # 存档整体重定向进 demo 临时目录：demo 绝不能把示例项（和 python.exe 假
+        # Blender 路径）写进用户真实 queue.json —— 那会污染后续所有读取与渲染
+        os.environ["BRC_STORE_DIR"] = os.path.join(d, "store")
+        queue_store.save([])
         # demo 走假 Blender，这里只需一个"存在"的可执行文件满足 core 的校验
+        exe = sys.executable
         if not self.v_blender.get():
-            self.v_blender.set(sys.executable)
-        # 故意用**两段不连续**的帧（1-4 + 9-10）：截图/自检里就能看到多段功能的样子
-        # （总帧数与早先的 1-6 相同，避免动到别人的预期）
-        self._set_segments([new_segment("1", "4"), new_segment("9", "10")])
-        self.v_output.set(os.path.join(d, "out", "frame_####"))
-        self._inspected_path = blend      # 假工程，别真去调 Blender 读配置
-        self.lbl_state.configure(text="demo 模式：用假 Blender 模拟 6 帧（分 1-4、9-10 两段）")
+            self.v_blender.set(exe)
+        specs = (("demo_a", [new_segment("1", "4"), new_segment("9", "10")]),
+                 ("demo_b", [new_segment("2", "3")]))
+        first_blend = ""
+        for name, segs in specs:
+            blend = os.path.join(d, name + ".blend")
+            with open(blend, "wb") as f:
+                f.write(b"BLENDER-v5")
+            fm = FormModel(blend=blend, blender=exe,
+                           output=os.path.join(d, "out", name + "_####"),
+                           segments=segs)
+            cfg, errors, _warns = fm.to_config()
+            if errors:
+                self.log.add("! demo 配置无效：%s" % "；".join(errors))
+                continue
+            queue_store.add(cfg, exe)
+            if not first_blend:
+                first_blend = blend
+        q = queue_store.load()
+        self._selected_queue_id = q["items"][0]["id"]
+        self._apply_queue_item(q["items"][0])
+        self._inspected_path = first_blend   # 假工程，别真去调 Blender 读配置
+        self.lbl_state.configure(
+            text="demo 模式：假 Blender 顺序跑 %d 项（第一项分 1-4、9-10 两段）"
+                 % len(q["items"]))
         self.root.after(300, self.on_start)
 
 
@@ -1585,6 +1624,11 @@ def run_gui(demo=False, cmd_factory=None, preset_blend=None, autostart_mode=Fals
     # `--demo`（自检）旁路：它写自己的临时目录，要能与真实例并存。
     lock = None
     root = tk.Tk()
+    if demo:
+        # 进 App 前就重定向存档：App 初始化早期（续跑认领等）就会读 pending
+        import tempfile as _tf
+        os.environ["BRC_STORE_DIR"] = os.path.join(
+            _tf.mkdtemp(prefix="brc-demo-store-"), "store")
     try:
         # DPI 校正要在套主题**之前**：主题里的复选框指示器是图片元素，
         # 图片不会跟着缩放自动变大 —— 必须在建它的时候就知道当前 DPI。

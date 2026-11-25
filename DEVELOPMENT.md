@@ -5,6 +5,32 @@
 
 ---
 
+## v0.11.0 · 界面定稿落地与队列渲染语义（2026-11-25）
+
+这一版把 `brc-ui-final.html` 的交互基准搬进 tkinter，并把「跑队列」合并进「开始渲染」。
+留下三条容易再踩的痕：
+
+1. **界面勾选与存储字段必须只反转一次**。「集合显示」勾选＝渲染显示；但
+   `JobConfig/state/driver` 的 `hidden_collections` 一直是「要隐藏的名字」，断点签名也靠它。
+   反转只放在 `guimodel.hidden_from_checks()/checks_from_hidden()`，`gui.py` 只管把结果贴到
+   复选框上。`inspect` 脚本额外回读 `collection.hide_render` 作为默认勾选态。
+   如果哪天有人"顺手把存储也反过来"，断点会悄悄串任务，而且测试不一定立刻红——
+   所以新增了 5 条转换语义单测。
+2. **自动读工程是异步的，必须防串项**。读一次要起一个无头 Blender，几十秒内用户可能已经
+   切到别的队列项。现在每次请求带 token，回主线程时同时校验 token、工程路径、队列项 id，
+   三项全对才写回；完成后立刻 `queue_store.update_config()` 刷新该快照，否则详情和后续
+   渲染会用旧帧数。同一工程按路径缓存，切回来不重复起 Blender。
+3. **「开始渲染」现在是批量入口**。它按 `queue.json` 快照逐项跑，`set_current()` 负责写
+   `pending.json`（开机续跑逻辑一行没改）；坏项标 failed 跳过，停止则整队列暂停、
+   当前项回 pending 保留断点。关机/睡眠从"每个 job 完成"移到"整个队列结束"才判。
+   队列旗标与 `taskstore` 同步：用户取消「启动时自动续跑」时，两个存储一起改，
+   否则下一项 `set_current()` 又把 `True` 写回 pending（坑 35 的同款）。
+
+验证边界要写清楚：482 条单测 + tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
+均通过；**真机 Blender 渲染、打包 exe、高 DPI/窄窗口截图尚未回归**。
+
+---
+
 ## 一、项目概览
 
 **目标**：做一个 Windows 上的单文件 GUI 工具（PyInstaller 打包 exe），用代码启动 Blender 工程渲染，实时看到进度与预计结束时间，崩溃后自动续跑。

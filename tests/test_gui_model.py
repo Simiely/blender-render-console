@@ -26,6 +26,7 @@ from brconsole.guimodel import (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN,  # noqa: 
                                 depth_choices, depth_value, depths_for, event_line,
                                 fields_from_detail, format_ext_for, format_from_label,
                                 format_label, frames_preview, frames_to_text,
+                                hidden_from_checks, checks_from_hidden,
                                 frames_to_segments, guess_state_path, new_segment,
                                 retarget_extension,
                                 retry_count, retry_label_for, retry_label_from_config,
@@ -186,6 +187,15 @@ class TestSceneHelpers(unittest.TestCase):
     def test_fields_from_detail_empty(self):
         self.assertEqual(fields_from_detail(None), {})
         self.assertEqual(fields_from_detail({}, "D:/a/b.blend"), {})
+
+    def test_fields_from_detail_eevee_next_alias(self):
+        """4.2+ 的 identifier 是 BLENDER_EEVEE_NEXT，下拉里只有 EEVEE 一项。
+
+        不认这个别名的话，读工程读出来的引擎会被当成"不认识"丢掉，界面继续显示
+        上一个工程的引擎 —— 用户看到的就是"读了工程但参数没变"。
+        """
+        f = fields_from_detail({"engine": "BLENDER_EEVEE_NEXT"}, "D:/a/b.blend")
+        self.assertEqual(f["engine"], "BLENDER_EEVEE")
 
     def test_form_passes_scene_to_config(self):
         d = tempfile.mkdtemp(prefix=".brc-gui-")
@@ -1290,6 +1300,45 @@ class TestAftermathPlan(unittest.TestCase):
         self.assertIsNone(aftermath_plan("", True, False))
         self.assertIsNone(aftermath_plan("关机", True, False))     # 界面存的是值不是文案
         self.assertIsNone(aftermath_plan(None, True, False))
+
+
+class TestCollectionDisplaySemantics(unittest.TestCase):
+    """界面「集合显示」勾选＝渲染时显示，但存储永远是 hidden 列表。
+
+    这是 v0.11.0 最容易改错的一处：反转界面时**不能**顺手把 `cfg.hidden`
+    也反转成「可见列表」—— 断点签名、driver 隐藏集合、存档回填全按 hidden 解释。
+    所以转换只允许在界面边界发生，且必须能被单测钉住（AGENTS 坑 35/56）。
+    """
+
+    NAMES = ["泡泡系统", "04_动态", "灯光"]
+
+    def test_unchecked_collections_become_hidden(self):
+        # 界面勾了两个 → 没勾的「灯光」才是要隐藏的
+        self.assertEqual(
+            hidden_from_checks(self.NAMES, ["泡泡系统", "04_动态"]), ["灯光"])
+
+    def test_all_checked_means_nothing_hidden(self):
+        self.assertEqual(hidden_from_checks(self.NAMES, self.NAMES), [])
+        self.assertEqual(hidden_from_checks(self.NAMES, []), list(self.NAMES))
+
+    def test_snapshot_hidden_restores_checks(self):
+        # 存档里的 hidden 列表要还原成"反过来的勾选态"
+        self.assertEqual(
+            checks_from_hidden(self.NAMES, ["灯光"]), ["泡泡系统", "04_动态"])
+        self.assertEqual(checks_from_hidden(self.NAMES, []), list(self.NAMES))
+
+    def test_round_trip_keeps_storage_semantics(self):
+        hidden = ["04_动态"]
+        checked = checks_from_hidden(self.NAMES, hidden)
+        self.assertEqual(hidden_from_checks(self.NAMES, checked), hidden)
+        # hidden 列表一直是"要隐藏的名字"，不能变成可见列表
+        self.assertNotIn("泡泡系统", hidden)
+
+    def test_missing_or_unknown_names_are_ignored(self):
+        self.assertEqual(hidden_from_checks(None, None), [])
+        self.assertEqual(checks_from_hidden(self.NAMES, ["不存在的集合"]), self.NAMES)
+        # 顺序跟随工程，不跟随传入的 checked/hidden 集合
+        self.assertEqual(hidden_from_checks(self.NAMES, ["04_动态", "泡泡系统"]), ["灯光"])
 
 
 if __name__ == "__main__":

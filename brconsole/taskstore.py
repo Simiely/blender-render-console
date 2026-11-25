@@ -39,7 +39,15 @@ def store_dir():
 
     刻意**不放输出目录旁边**：开机自启时还不知道任务在哪，
     必须有一个跟工程/输出无关的固定位置能问出「有没有待办任务」。
+
+    设了 `BRC_STORE_DIR` 就整体重定向 —— demo/自检用它把自己的队列和 pending
+    关进临时目录，绝不读写用户真实存档（曾经 demo 项连带 python.exe 假 Blender
+    被写进真实 queue.json，用户后续读取全跑在 python.exe 上）。
     """
+    override = os.environ.get("BRC_STORE_DIR")
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
     if not base:
         base = os.path.join(os.path.expanduser("~"), ".local", "share")

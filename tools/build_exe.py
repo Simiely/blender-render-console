@@ -49,6 +49,7 @@ from brconsole.layout import FROZEN_SUBDIR   # noqa: E402  单一来源，别再
 SIDECAR = os.path.join(ROOT, "sidecar")
 ENTRY = os.path.join(ROOT, "main.py")
 ICON = os.path.join(ROOT, "assets", "app.ico")
+LOGO = os.path.join(ROOT, "assets", "app.png")
 
 # 隔离 venv：PyInstaller 只装在里面（不污染用户环境）
 VENV_CANDIDATES = [
@@ -416,6 +417,8 @@ a.datas += [(%(driver_dst_file)r, %(driver)r, 'DATA')]
 # 图标也进包：exe 自己的图标由下面的 icon= 写进 PE 资源，但**窗口**图标要运行时读文件
 # （不设的话 Windows 上 Tk 窗口会顶着 Tk 自带的羽毛，跟 exe 图标对不上）
 a.datas += [(%(icon_dst)r, %(icon)r, 'DATA')]
+# 顶栏 logo：界面里是 22px 的 PNG（tk.PhotoImage 读不了 ico），单独再带一份
+a.datas += [(%(logo_dst)r, %(logo)r, 'DATA')]
 
 pyz = PYZ(a.pure)
 
@@ -452,6 +455,8 @@ exe = EXE(
         "driver_dst_file": FROZEN_SUBDIR + "/py/driver.py",
         "icon": ICON,
         "icon_dst": FROZEN_SUBDIR + "/assets/app.ico",
+        "logo": LOGO,
+        "logo_dst": FROZEN_SUBDIR + "/assets/app.png",
         "version": version_file,
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)

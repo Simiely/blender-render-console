@@ -170,6 +170,40 @@ def set_status(item_id, status):
     return True
 
 
+def update_config(item_id, cfg, blender_exe=None):
+    """刷新某一项的**配置快照**（自动读工程配置完成后必须调，否则后续用旧值）。
+
+    传 `JobConfig` 或 `to_dict()` 的结果都行；`blender_exe=None` 表示不动原来的
+    程序路径。状态、排序、current 一律原样保留 —— 这里只换快照，不做事。
+    """
+    q = load()
+    if not q:
+        return False
+    data = cfg.to_dict() if hasattr(cfg, "to_dict") else dict(cfg or {})
+    for it in q["items"]:
+        if it.get("id") == item_id:
+            it["config"] = data
+            if blender_exe is not None:
+                it["blender_exe"] = blender_exe or ""
+            save(q["items"], q.get("current", 0), q.get("autoresume", True))
+            return True
+    return False
+
+
+def set_autoresume(flag):
+    """整份队列的开机续跑旗标（与界面「启动时自动续跑」勾选同步）。
+
+    `set_current()` 写 pending.json 时直接取这个值 —— 只改 pending 不改队列的话，
+    下一项又会用回旧旗标，界面勾选等于只对当前项有效（坑 35 的同款）。
+    队列文件不存在时返回 False（没有队列可改，不算错误）。
+    """
+    q = load()
+    if not q:
+        return False
+    save(q["items"], q.get("current", 0), bool(flag))
+    return True
+
+
 def set_current(item_id):
     """把某项设为当前（current 索引），并把它的 config 写进 pending.json
     供现有开机续跑逻辑认领；返回写入的 pending 存档。"""

@@ -8,8 +8,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from brconsole.inspect import (MARK, output_template_from, parse_info,  # noqa: E402
-                               scene_detail, scene_names, summarize)
+from brconsole.inspect import (MARK, SCRIPT, output_template_from,  # noqa: E402
+                               parse_info, scene_detail, scene_names, summarize)
 
 
 class TestSceneHelpers(unittest.TestCase):
@@ -78,6 +78,10 @@ class TestParseInfo(unittest.TestCase):
 
     def test_missing_marker(self):
         self.assertIsNone(parse_info("nothing here"))
+
+    def test_collections_report_render_hidden_state(self):
+        """「集合显示」的默认勾选要靠工程里 hide_render 的回读，脚本不能漏这个字段。"""
+        self.assertIn('"hidden": bool(c.hide_render)', SCRIPT)
         self.assertIsNone(parse_info(""))
 
     def test_broken_json(self):

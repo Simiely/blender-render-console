@@ -31,8 +31,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import arch_metrics as am                                            # noqa: E402
 
 # 允许碰 tkinter 的文件（界面层）
-UI_FILES = {"brconsole/gui.py", "brconsole/theme.py"}
-UI_MODULES = {"brconsole/gui", "brconsole/theme"}
+UI_FILES = {"brconsole/gui.py", "brconsole/theme.py", "brconsole/uikit.py",
+            "brconsole/gui_view.py", "brconsole/ui_project.py",
+            "brconsole/ui_frames.py", "brconsole/ui_render.py",
+            "brconsole/ui_overview.py", "brconsole/ui_topbar.py",
+            "brconsole/ui_leftqueue.py", "brconsole/ui_log.py",
+            "brconsole/ui_program.py", "brconsole/gui_view_new.py"}
+UI_MODULES = {"brconsole/gui", "brconsole/theme", "brconsole/uikit",
+              "brconsole/gui_view", "brconsole/ui_project",
+              "brconsole/ui_frames", "brconsole/ui_render",
+              "brconsole/ui_overview", "brconsole/ui_topbar",
+              "brconsole/ui_leftqueue", "brconsole/ui_log",
+              "brconsole/ui_program", "brconsole/gui_view_new"}
 DRIVER = "brconsole/driver.py"
 # 组合根：天然"什么都知道"，包内底层不许依赖界面层这条对它不适用
 COMPOSITION_ROOT = "main.py"
