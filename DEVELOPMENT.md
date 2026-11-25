@@ -26,7 +26,7 @@
    队列旗标与 `taskstore` 同步：用户取消「启动时自动续跑」时，两个存储一起改，
    否则下一项 `set_current()` 又把 `True` 写回 pending（坑 35 的同款）。
 
-验证边界要写清楚：482 条单测 + tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
+验证边界要写清楚：全量单测（当前 492 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
 均通过；**真机 Blender 渲染、打包 exe、高 DPI/窄窗口截图尚未回归**。
 
 ---
@@ -283,7 +283,7 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 **依赖方向**：`gui` → {`guimodel`} → `core` → {`parser`, `eta`, `state`}；`cli` 是**终端适配器**，只被组合根
 `main` 依赖（界面不再借它 —— 帧范围解析 `parse_frames` 与 `parse_restart_limit` 一样放在 `core`）；
 `driver` 独立（跑在 Blender 里，和宿主代码只有 JSON 契约，所以依赖图上**没有边**）。
-依赖方向由 `tools/check_boundaries.py` 的 6 条规则守着，改完跑一次。
+依赖方向由 `tools/check_boundaries.py` 的 7 条规则守着，改完跑一次。
 `core` 通过 `cmd_factory` 注入命令行拼装方式，
 所以测试可以换成假进程而不动业务逻辑（`tests/fake_blender.py`）。
 
@@ -970,6 +970,6 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 | `tools/smoke_real_blender.py` | **真机冒烟 7 场景**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 → 多场景 `-S` 选场景 → 多段不连续帧 → 「一直重启」A/B 对照 |
 | `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 采样像素；`--list` 列窗口标题 |
 | `tools/arch_metrics.py` | **架构度量**：解析 import 建依赖图，输出 Ca/Ce/I 耦合表、依赖环（文件级）、SDP 违规、扇入榜；运行时 / `TYPE_CHECKING` / 函数体惰性三类依赖分开统计。**改依赖后重跑** |
-| `tools/check_boundaries.py` | **边界检查**（5 条可执行规则）：GUI 边界 / 层方向 / 无环 / `driver.py` 隔离 / 裸 print。有违规则退出码 1；配套 `tests/test_boundaries.py` 是反向用例 |
+| `tools/check_boundaries.py` | **边界检查**（7 条可执行规则）：GUI 边界 / 层方向 / 适配器只给组合根 / 包 `__init__` 保持叶子 / 无环 / `driver.py` 隔离 / 裸 print。有违规则退出码 1；配套 `tests/test_boundaries.py` 是反向用例。注意 GUI 白名单是登记表，新增 UI 文件要同步登记 |
 | `tests/fake_blender.py` | 与真机同构的假 Blender（原生行 + JSON 进度 + 可指定帧崩溃 / 前 N 次启动必崩），给续跑逻辑做端到端测试 |
 | `tests/` | 312 条单测：ETA / 原生行解析 / 状态文件 / 续跑与取消 / 重启策略 / 命令行拼装 / 界面逻辑 / 工程配置解析 / 场景与输出路径 / 输出模板绝对化 / 任务存档与续跑判定 / 开机自启开关（含 260 字符上限）/ 「一直重启」时限次的默认值（含"可改回"护栏）/ 磁盘空间预检（含"取不到就放行"与"系统盘水位更高"）/ 架构边界规则（反向用例：违规样本必命中、合规样本不误报）/ Blender 探测（深度限制 / 跳过噪音目录 / 环境变量优先级）/ driver 契约（扩展名表与假 Blender 逐项一致、落盘路径规则）/ 坏断点容错（合法 JSON + 错字段值 → 当没有）/ 单实例锁（二次 acquire 被拒 / 交还可再拿 / 崩溃后内核回收）/ 电源管理与善后决策（防睡眠成对 / 倒计时取消 / 只在渲完触发） |
