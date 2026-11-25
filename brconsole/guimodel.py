@@ -9,6 +9,7 @@
 界面层（`gui.py`）只负责把这三个模型贴到控件上，业务逻辑一行都不写。
 """
 
+import math
 import os
 import re
 import time
@@ -402,19 +403,14 @@ def segment_label(seg, step=1):
     return "%d-%d%s" % (a, b, "" if eff == "1" else " 每 %s 帧" % eff)
 
 
-def segments_to_frames(segments, step=1):
-    """界面上的帧段列表 → `(帧号列表, 错误列表)`。
+def _parse_segments(segments, step=1):
+    """把帧段归一成 `(起, 止, 步长)` 描述符 + 错误列表，**不展开帧号**。
 
-    段语义（每一条都要能被界面上的回显看出来，别让它变成"填了才知道"）：
-    - 起/止 **都空** → 这一段还没填，跳过（不算错 —— 刚点「添加一段」的空行就是这状态）
-    - 只填一边 → **单帧**（回显写成「第 N 帧」）
-    - 都填 → 区间，起 > 止 自动交换（填反了而已）
-    - 步长空 → 用全局 `step`；步长 < 1 报错（静默当 1 会让"每 5 帧"变成每帧都渲）
-    - 段之间重复的帧去重后升序 —— 两段重叠不会被渲两遍
-
-    错误一律带**段号**：界面上有若干行，不说是哪一行等于没说。
+    语义与 `segments_to_frames` 完全一致，抽出来是为了让"渲染用的全量展开"和
+    "界面每敲一个字符就跑的实时回显"共用同一套校验规则：回显说 6 帧，
+    真正渲染就必须是那 6 帧，不能两边各写一份解析后悄悄漂开。
     """
-    frames, errors = [], []
+    descs, errors = [], []
 
     def as_int(text, label, no):
         t = str(text or "").strip()
@@ -435,20 +431,105 @@ def segments_to_frames(segments, step=1):
         st, bad_st = as_int(seg["step"], "步长", i)
         if bad_s or bad_e or bad_st:
             continue
+        if s is None or e is None:
+            f = e if s is None else s
+            descs.append((f, f, 1))
+            continue
+        a, b = (s, e) if s <= e else (e, s)
+        eff = st if st is not None else step
         try:
-            if s is None or e is None:
-                frames.append(e if s is None else s)
-            else:
-                frames.extend(expand_segment(s, e, st if st is not None else step))
+            if eff < 1:
+                raise ValueError("步长必须 ≥ 1，当前：%s" % (eff,))
+            descs.append((a, b, eff))
         except ValueError as exc:
             errors.append("第 %d 段：%s" % (i, exc))
+    return descs, errors
 
+
+def segments_to_frames(segments, step=1):
+    """界面上的帧段列表 → `(帧号列表, 错误列表)`。
+
+    段语义（每一条都要能被界面上的回显看出来，别让它变成"填了才知道"）：
+    - 起/止 **都空** → 这一段还没填，跳过（不算错 —— 刚点「添加一段」的空行就是这状态）
+    - 只填一边 → **单帧**（回显写成「第 N 帧」）
+    - 都填 → 区间，起 > 止 自动交换（填反了而已）
+    - 步长空 → 用全局 `step`；步长 < 1 报错（静默当 1 会让"每 5 帧"变成每帧都渲）
+    - 段之间重复的帧去重后升序 —— 两段重叠不会被渲两遍
+
+    错误一律带**段号**：界面上有若干行，不说是哪一行等于没说。
+    """
+    descs, errors = _parse_segments(segments, step)
+    frames = []
+    for a, b, s in descs:
+        frames.extend(expand_segment(a, b, s))
     seen, out = set(), []
     for f in frames:
         if f not in seen:
             seen.add(f)
             out.append(f)
     return sorted(out), errors
+
+
+def _ap_intersection(descs):
+    """一组等差数列的交集帧数；无解返回 0（中国剩余定理）。
+
+    两个段 `1-9 每 2 帧` 与 `1-9 每 3 帧` 的交集是 `1,7`：
+    同余式有解当且仅当起点差能被步长 gcd 整除，解模 lcm 唯一。
+    用它做容斥，才能在**不展开帧号**的前提下数清重叠段去重后的总数。
+    """
+    a0, b0, m = descs[0]
+    r, lo, hi = a0, a0, b0
+    for a, b, s in descs[1:]:
+        lo, hi = max(lo, a), min(hi, b)
+        g = math.gcd(m, s)
+        if (a - r) % g:
+            return 0
+        m_g, s_g = m // g, s // g
+        t = ((a - r) // g * pow(m_g, -1, s_g)) % s_g
+        r = (r + m * t) % (m * s_g)
+        m = m * s_g
+    if lo > hi:
+        return 0
+    k0 = (lo - r + m - 1) // m
+    k1 = (hi - r) // m
+    return max(0, k1 - k0 + 1)
+
+
+def _ap_union_count(descs, segments=None, step=1):
+    """展开后**去重**的帧数，不物化帧号（实时回显用）。
+
+    段数 ≤ 12 时走容斥 + CRT，代价 O(2^段数)，与帧数无关；
+    段数更多时退回全量展开（界面上极少见，此时本来就该提示用户简化）。
+    """
+    if not descs:
+        return 0
+    if len(descs) > 12:
+        return len(segments_to_frames(segments, step)[0])
+    total = 0
+    for mask in range(1, 1 << len(descs)):
+        subset = [descs[i] for i in range(len(descs)) if mask & (1 << i)]
+        n = _ap_intersection(subset)
+        if n:
+            total += n if bin(mask).count("1") % 2 else -n
+    return max(0, total)
+
+
+def frame_count(segments, step=1):
+    """帧段 → `(去重后的帧数, 错误列表)`，不物化帧号。"""
+    descs, errors = _parse_segments(segments, step)
+    return _ap_union_count(descs, segments, step), errors
+
+
+def _capped_frames(descs, cap):
+    """从描述符里取前 `cap` 个帧号，供错误回显/超大范围回显用。"""
+    out = []
+    for a, b, s in descs:
+        while a <= b and len(out) < cap:
+            out.append(a)
+            a += s
+        if len(out) >= cap:
+            break
+    return out
 
 
 def frames_to_segments(frames, step=1):
@@ -482,6 +563,9 @@ PREVIEW_MAX_SEGMENTS = 4
 PREVIEW_MAX_MERGED = 60
 #: 单段且帧数不超过这个数时，回显里把帧号全列出来
 PREVIEW_MAX_LIST = 12
+#: 超过这个帧数就不再物化帧号做紧凑回显 —— 界面每敲一个字符都会调这里，
+#: 不能因为用户填了 1-1000000 就让主线程每次分配几十 MB（实测 0.4s / 91MB）
+PREVIEW_MATERIALIZE_LIMIT = 20000
 
 
 def frames_preview(segments, step=1):
@@ -490,13 +574,22 @@ def frames_preview(segments, step=1):
     界面每改一个字符就调它一次：合法 → 绿字「共 N 帧：…」，
     不合法 → 红字「！第 2 段：…」。**按下「开始渲染」前就能看出问题在哪**，
     而不是等弹框。
-    """
-    frames, errors = segments_to_frames(segments, step)
-    if errors:
-        return frames, "！ " + "；".join(errors), False
-    if not frames:
-        return frames, "！ 还没有可渲染的帧 —— 至少填一段的起帧", False
 
+    性能约束：回显帧数用 `frame_count()` 按等差数列容斥算，与帧数无关；
+    只有帧数不多时才物化帧号给"合并后 1-240"那句紧凑对账。大范围回显里
+    帧号列表最多给 `PREVIEW_MAX_LIST` 个示例，真正的全量展开只发生在
+    点「开始渲染」之后的 `segments_to_frames()`。
+    """
+    descs, errors = _parse_segments(segments, step)
+    count = _ap_union_count(descs, segments, step)
+    if errors:
+        return _capped_frames(descs, PREVIEW_MAX_LIST), "！ " + "；".join(errors), False
+    if not count:
+        return [], "！ 还没有可渲染的帧 —— 至少填一段的起帧", False
+
+    frames = (segments_to_frames(segments, step)[0]
+              if count <= PREVIEW_MATERIALIZE_LIMIT
+              else _capped_frames(descs, PREVIEW_MAX_LIST))
     labels = [segment_label(sg, step) for sg in (segments or [])]
     labels = [x for x in labels if x != "（未填）"]
     if len(labels) > PREVIEW_MAX_SEGMENTS:
@@ -505,12 +598,15 @@ def frames_preview(segments, step=1):
     if len(labels) > 1:
         # 多段时再补一句"合并后是什么"：两个段**重叠或首尾相接**时，光看每段看不出
         # 最后究竟渲哪些帧（重复的帧会被去掉、只渲一次）。这一句就是那份对账。
-        merged = frames_to_text(frames)
-        if len(merged) <= PREVIEW_MAX_MERGED:
-            body += "；合并后 %s" % merged
-    elif len(frames) <= PREVIEW_MAX_LIST:
+        if count <= PREVIEW_MATERIALIZE_LIMIT:
+            merged = frames_to_text(frames)
+            if len(merged) <= PREVIEW_MAX_MERGED:
+                body += "；合并后 %s" % merged
+        else:
+            body += "；合并后 %d 帧（帧号太多，略）" % count
+    elif count <= PREVIEW_MAX_LIST:
         body += "（%s）" % ", ".join(str(f) for f in frames)
-    return frames, "共 %d 帧：%s" % (len(frames), body), True
+    return frames, "共 %d 帧：%s" % (count, body), True
 
 
 
