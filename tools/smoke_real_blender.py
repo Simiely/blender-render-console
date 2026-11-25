@@ -26,6 +26,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
+from brconsole import locate                                     # noqa: E402
+
+#: 只是默认提示，不保证存在 —— 官方安装器不同版本会装到 `Blender 5.2\` 或
+#: `Blender\5.2\` 两种目录里。main() 会先用 --blender / 自动探测纠正它。
 BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
 WORK = os.path.join(HERE, "_smoke")
 PY = sys.executable
@@ -299,12 +303,13 @@ def case_multi_scene(blend, out_dir):
     """场景六：多场景直选。
 
     两个场景的分辨率刻意不同（64x48 / 128x96），所以**产物尺寸就是"渲的是哪个场景"
-    的硬证据**，比看日志可靠。另单验一条：场景名写错时 Blender 会静默回落到默认场景
-    （退出码仍是 0），我们必须有明确告警，不能让它悄悄过去。
+    的硬证据**，比看日志可靠。另单验一条：Blender 遇到不存在的场景会静默回落到默认
+    场景且退出码仍是 0，我们必须在 driver 回读后**立刻失败、一张图都不产** ——
+    一整套错图比没有图更贵（见 `core.scene_missing_error`）。
 
     ⚠️ 这一项**不能**传 `--res`：一覆盖分辨率，两个场景就分不出来了。
     """
-    log("\n[6/7] 多场景：-S 选场景（含场景名写错时的告警与回落）")
+    log("\n[6/7] 多场景：-S 选场景（含场景名写错时的告警与拒绝回落）")
     ok = True
     for name, want in (("SceneA", (64, 48)), ("SceneB", (128, 96))):
         d = os.path.join(out_dir, name.lower())
@@ -330,9 +335,10 @@ def case_multi_scene(blend, out_dir):
                        "--no-resume"], timeout=300)
     pngs = sorted(glob.glob(os.path.join(d, "s_*.png")))
     got = png_size(pngs[0]) if pngs else None
-    log("  [NoSuchScene] rc=%s | 产物 %s（默认场景 SceneA = 64x48）" % (rc, got))
+    log("  [NoSuchScene] rc=%s | 产物 %s（应为 None：不许回落渲错图）" % (rc, got))
     ok &= check("  场景名写错：有明确告警", "没有场景" in out)
-    ok &= check("  场景名写错：回落到默认场景并照常渲完", got == (64, 48), str(got))
+    ok &= check("  场景名写错：立刻失败", rc != 0, "rc=%s" % rc)
+    ok &= check("  场景名写错：不产出错图", got is None, str(got))
     return ok, ""
 
 
@@ -526,10 +532,19 @@ def main():
     ap.add_argument("--keep", action="store_true", help="保留产物目录")
     ap.add_argument("--only", choices=["1", "2", "3", "4", "5", "6", "7"],
                     help="只跑某一个场景")
+    ap.add_argument("--blender", help="blender.exe 路径；不给则先用默认值、再自动探测")
     args = ap.parse_args()
 
-    if not os.path.exists(BLENDER):
-        raise SystemExit("找不到 Blender：%s（改脚本里的 BLENDER 常量）" % BLENDER)
+    global BLENDER
+    if args.blender:
+        BLENDER = os.path.abspath(args.blender)
+    elif not os.path.exists(BLENDER):
+        found = locate.find_blender()
+        if found:
+            BLENDER = found[0]
+            log("自动探测到 Blender：%s" % BLENDER)
+    if not BLENDER or not os.path.exists(BLENDER):
+        raise SystemExit("找不到 Blender：%s（用 --blender 指定）" % BLENDER)
 
     os.makedirs(WORK, exist_ok=True)
     blend = make_scene(os.path.join(WORK, "smoke.blend"))

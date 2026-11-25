@@ -2,6 +2,17 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]（refactor/program-contract-0.11.1）
+
+程序侧收口，为后续 UI 规范落地做准备：
+
+- **帧段实时回显不再物化百万帧**：`guimodel` 抽出 `_parse_segments` 作为渲染与回显共用的解析入口，用等差数列容斥 + CRT 精确计数；`1-1000000` 的回显从实测 0.425s / 91MB 降到 0ms / 0MB，全量展开仍只在真正渲染时发生。
+- **autoresume 收敛为 `taskstore` 单一 owner**：新增 `prefs.json` 记住"还没有待办任务时用户先改的开关"；`queue.json` 不再存第二份旗标，停止/关窗不再双写。
+- **事件文案与结束原因单一来源**：新增 `guimodel.event_text` / `outcome_reason`，CLI 与 GUI 共用；`settle_task_action` 改为委托；此前发了却没人显示的 `engine_info` 现在两端都会显示实际场景。
+- **文档改为以脚本实测为准**：`__init__.py` 不再写死 I 值/扇入/SDP；单测数与边界规则数对齐实测；`check_boundaries` 头注释说明 GUI 白名单是登记表。
+- **真机冒烟脚本修正**：支持 `--blender` 与自动探测；场景名写错的断言从"回落渲完"改为"立刻失败且不产错图"（与 `core.scene_missing_error` 一致）。7 个场景全部通过。
+
+
 ## [0.11.0] - 2026-11-25
 
 **界面重构（方案 C 定稿）+「开始渲染」改成顺序跑整个队列** —— 布局按逐轮反馈的
