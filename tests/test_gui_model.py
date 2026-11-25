@@ -1021,6 +1021,21 @@ class TestFramesPreview(unittest.TestCase):
         self.assertTrue(ok)
         self.assertLess(len(text), 80)
 
+    def test_huge_range_is_counted_without_materializing_frames(self):
+        """每敲一个字符都会回显：百万帧不能每次都真的展开成百万个整数。"""
+        frames, text, ok = frames_preview([new_segment("1", "1000000")])
+        self.assertTrue(ok)
+        self.assertIn("共 1000000 帧", text)
+        self.assertLessEqual(len(frames), 12)   # 只给示例，不给全量
+        self.assertLess(len(text), 80)
+
+    def test_huge_overlapping_steps_are_deduplicated_exactly(self):
+        """容斥 + CRT：每 2 帧 / 每 3 帧的交集是每 6 帧，只数一次。"""
+        _, text, ok = frames_preview([new_segment("1", "1000000", "2"),
+                                      new_segment("1", "1000000", "3")])
+        self.assertTrue(ok)
+        self.assertIn("共 666667 帧", text)
+
 
 
 class TestFormFromConfig(unittest.TestCase):
