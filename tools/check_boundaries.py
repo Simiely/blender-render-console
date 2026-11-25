@@ -36,13 +36,23 @@ UI_FILES = {"brconsole/gui.py", "brconsole/theme.py", "brconsole/uikit.py",
             "brconsole/ui_frames.py", "brconsole/ui_render.py",
             "brconsole/ui_overview.py", "brconsole/ui_topbar.py",
             "brconsole/ui_leftqueue.py", "brconsole/ui_log.py",
-            "brconsole/ui_program.py", "brconsole/gui_view_new.py"}
+            "brconsole/ui_program.py", "brconsole/gui_view_new.py",
+            "brconsole/gui/__init__.py", "brconsole/gui/app.py",
+            "brconsole/gui/app_state.py", "brconsole/gui/common.py",
+            "brconsole/gui/form_controller.py",
+            "brconsole/gui/inspect_controller.py",
+            "brconsole/gui/queue_controller.py",
+            "brconsole/gui/render_controller.py"}
 UI_MODULES = {"brconsole/gui", "brconsole/theme", "brconsole/uikit",
               "brconsole/gui_view", "brconsole/ui_project",
               "brconsole/ui_frames", "brconsole/ui_render",
               "brconsole/ui_overview", "brconsole/ui_topbar",
               "brconsole/ui_leftqueue", "brconsole/ui_log",
-              "brconsole/ui_program", "brconsole/gui_view_new"}
+              "brconsole/ui_program", "brconsole/gui_view_new",
+              "brconsole/gui/app", "brconsole/gui/app_state",
+              "brconsole/gui/common", "brconsole/gui/form_controller",
+              "brconsole/gui/inspect_controller",
+              "brconsole/gui/queue_controller", "brconsole/gui/render_controller"}
 DRIVER = "brconsole/driver.py"
 # 组合根：天然"什么都知道"，包内底层不许依赖界面层这条对它不适用
 COMPOSITION_ROOT = "main.py"
