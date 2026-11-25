@@ -667,8 +667,7 @@ class App(object):
         这段时间里机器一崩，开机还是会自动跑起来 —— 与他的意思相反。
         """
         want = bool(self.v_auto_resume.get())
-        # 队列的旗标也要一起改：set_current() 每跑一项都会用它写 pending.json
-        queue_store.set_autoresume(want)
+        # 只写 taskstore：它先记偏好（没待办时也生效），set_current() 再据此写 pending
         if taskstore.load() is None:
             # 别悄悄吞掉 —— 勾了没反应，用户会以为坏了
             self._log("当前没有待办任务：这个开关会在下次点「开始渲染」时写入存档")
@@ -679,10 +678,11 @@ class App(object):
                       % ("开启" if want else "取消"))
 
     def _sync_resume_ui(self):
-        """勾选态对齐到**存档的真实情况**（而不是程序自己记的默认值）。"""
+        """勾选态对齐到**用户偏好**（没待办任务时也能记住上次的选择）。"""
         rec = taskstore.load()
-        if rec is not None:
-            self.v_auto_resume.set(bool(rec.get("autoresume", True)))
+        self.v_auto_resume.set(
+            bool(taskstore.autoresume_preference() if rec is None
+                 else rec.get("autoresume", True)))
 
     # ---- 输出格式 / 图片位数 ----
     def _depth_value(self):
@@ -1311,8 +1311,6 @@ class App(object):
         # 主动停止 = "我知道，别自己跑"：撤掉自动续跑标记，但断点文件原样留着。
         # 改标记而不是删存档 —— 删了断点就成了"没跑过"，用户还得从头来。
         if taskstore.set_autoresume(False, "你点了「停止」"):
-            # 队列也要同步：否则下一项 set_current() 又把 True 写回 pending
-            queue_store.set_autoresume(False)
             self._log("已取消开机自动续跑（断点保留，想继续随时点「开始渲染」）")
 
     def on_close(self):

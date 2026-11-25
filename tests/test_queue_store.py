@@ -139,16 +139,26 @@ class TestQueue(unittest.TestCase):
         self.assertEqual(queue_store.load()["items"][0]["config"]["scene"], "Scene.001")
         self.assertFalse(queue_store.update_config("no-such-id", data))
 
-    def test_set_autoresume_applies_to_later_set_current(self):
-        """界面取消勾选后，下一项写 pending 时也必须带上关掉的旗标。"""
+    def test_autoresume_has_single_owner_taskstore(self):
+        """界面取消勾选后，每一项写 pending 都从 taskstore 取旗标；queue.json 不再是源。"""
         q, a = queue_store.add(self.cfg("a"), "b")
         q2, b2 = queue_store.add(self.cfg("b"), "b")
-        self.assertTrue(queue_store.set_autoresume(False))
-        self.assertFalse(queue_store.load()["autoresume"])
         queue_store.set_current(a["id"])
-        self.assertFalse(taskstore.load()["autoresume"])
+        self.assertTrue(taskstore.set_autoresume(False))
         queue_store.set_current(b2["id"])
         self.assertFalse(taskstore.load()["autoresume"])
+        with open(queue_store.queue_path(), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        self.assertNotIn("autoresume", raw)   # queue.json 不再存第二份旗标
+
+    def test_preference_survives_when_no_pending_yet(self):
+        """还没待办任务时先取消勾选，之后第一次 set_current 也必须尊重它。"""
+        self.assertFalse(taskstore.set_autoresume(False, "界面取消勾选"))  # 没 pending → False
+        self.assertFalse(taskstore.autoresume_preference())
+        q, a = queue_store.add(self.cfg("a"), "b")
+        queue_store.set_current(a["id"])
+        self.assertFalse(taskstore.load()["autoresume"])
+        self.assertEqual(taskstore.load()["auto_reason"], "界面取消勾选")
 
 
 if __name__ == "__main__":
