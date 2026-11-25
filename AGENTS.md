@@ -52,7 +52,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（当前 492 条，数量以运行时输出为准；不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（当前 500 条，数量以运行时输出为准；不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 7 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景

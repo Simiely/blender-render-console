@@ -15,17 +15,20 @@
       theme.py      深色主题
       uikit.py      可复用 UI 零件（卡片 / 按钮 / 胶囊 / 滚动区）
       tkboot.py     缺 tkinter 时带 sidecar 自举重启
-    （碰 tkinter 的都在界面层：gui / gui_view / gui_view_new / ui_* / theme / uikit，
+    （碰 tkinter 的都在界面层：gui/ 包、gui_view_new、ui_*、theme、uikit；
      白名单由 `tools/check_boundaries.py` 守着）
 
     core.py         调度核心：子进程 + 双通道读取 + 崩溃续跑
                     （帧范围解析 `parse_frames` 是共用工具，放在这里不许界面找 cli 借）
     inspect.py      读取 .blend 里已有的渲染配置（另起一个 Blender 进程）
-    guimodel.py     界面逻辑：表单校验 / 事件→状态 / 日志缓冲（不碰 tkinter，可单测）
+    guimodel/       界面纯逻辑包：constants / frames / form / events / progress /
+                    logs / stateinfo；`__init__.py` 只是兼容门面（不碰 tkinter，可单测）
     taskstore.py    待办任务存档（开机续跑的依据：任务"是什么"；autoresume 唯一来源）
     queue_store.py  多工程队列（顺序与状态；不再存第二份 autoresume）
     cli.py          命令行适配器 —— 只该被组合根依赖，不许被界面依赖
-    gui.py          业务 + 后台线程 + 事件队列；视图装配交给 gui_view_new.py / ui_*
+    view_contract.py 控制器与视图之间的语义契约（无 tkinter，FakeView 可单测）
+    gui/            界面控制包：app 薄壳 + app_state + 8 个 controller mixin +
+                    common（共享导入）；唯一 Tk 视图实现在 gui_view_new.TkView
     driver.py       跑在 **Blender 进程内**的驱动脚本。它不是本机的模块，
                     靠 `core.read_driver_source()` 注入源码字符串执行，
                     所以依赖图上没有任何边 —— 改了它要跑真机冒烟。
@@ -33,6 +36,8 @@
 **组合根是 `main.py`**：只有它可以把上面这些拼起来（它天然"什么都知道"，
 所以它 import 界面层不算违规）。依赖方向必须指向更稳定的方向（SDP）。
 实测 0 环、`tools/check_boundaries.py` 的 7 条规则全过；SDP 的实测违规数以脚本为准。
+⚠️ `guimodel/__init__.py` 与 `gui/` 内 controller 经 `common` 共享导入会产生 SDP 违规：
+前者是兼容门面，后者是同层共享导入，都不是领域层耦合反了；判断架构仍以 0 环与边界规则为准。
 """
 
 # ⚠️ 这个文件**只放文档和版本号，绝不 import 子模块、也不放共用常量**。
