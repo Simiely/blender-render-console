@@ -116,5 +116,40 @@ class TestQueue(unittest.TestCase):
         self.assertEqual(rec["config"]["blend"], os.path.abspath(cfg.blend))
 
 
+    def test_update_config_refreshes_snapshot_in_place(self):
+        """自动读工程配置后必须换掉该队列项的快照，否则后续按旧帧数跑（坑 56/风险 3）。"""
+        q, a = queue_store.add(self.cfg("a"), "old-blender.exe")
+        queue_store.add(self.cfg("b"), "b")
+        cfg = self.cfg("a")
+        cfg.frames = [1, 3, 5, 7]
+        cfg.hidden_collections = ["灯光"]
+        self.assertTrue(queue_store.update_config(a["id"], cfg, "new-blender.exe"))
+        items = queue_store.load()["items"]
+        self.assertEqual(items[0]["config"]["frames"], [1, 3, 5, 7])
+        self.assertEqual(items[0]["config"]["hidden_collections"], ["灯光"])
+        self.assertEqual(items[0]["blender_exe"], "new-blender.exe")
+        self.assertEqual(items[0]["status"], queue_store.STATUS_PENDING)
+        self.assertEqual(len(items), 2)              # 只更新一项，别把队列清了
+
+    def test_update_config_accepts_dict_and_unknown_id(self):
+        q, a = queue_store.add(self.cfg("a"), "b")
+        data = queue_store.load()["items"][0]["config"]
+        data["scene"] = "Scene.001"
+        self.assertTrue(queue_store.update_config(a["id"], data))
+        self.assertEqual(queue_store.load()["items"][0]["config"]["scene"], "Scene.001")
+        self.assertFalse(queue_store.update_config("no-such-id", data))
+
+    def test_set_autoresume_applies_to_later_set_current(self):
+        """界面取消勾选后，下一项写 pending 时也必须带上关掉的旗标。"""
+        q, a = queue_store.add(self.cfg("a"), "b")
+        q2, b2 = queue_store.add(self.cfg("b"), "b")
+        self.assertTrue(queue_store.set_autoresume(False))
+        self.assertFalse(queue_store.load()["autoresume"])
+        queue_store.set_current(a["id"])
+        self.assertFalse(taskstore.load()["autoresume"])
+        queue_store.set_current(b2["id"])
+        self.assertFalse(taskstore.load()["autoresume"])
+
+
 if __name__ == "__main__":
     unittest.main()

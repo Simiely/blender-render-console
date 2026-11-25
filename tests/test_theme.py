@@ -172,12 +172,29 @@ class TestScrollbarIsSlimAndArrowless(unittest.TestCase):
 
     def test_no_arrow_elements_in_layout(self):
         style = self._install()
-        self.assertEqual(len(style.layouts), 4, "竖/横 × 常态/空闲态 共 4 套")
+        # 竖/横 × (日志底 LOG_BG / 模块区底 PANEL) × 常态/空闲态 = 8 套。
+        # 面板底那一组是给右栏 ScrollArea 用的：槽色写死 LOG_BG 的话，
+        # 在模块区那 10px 就是一条深色竖带（看着像边框）。
+        self.assertEqual(len(style.layouts), 8, "竖/横 × 两种底色 × 常态/空闲态 共 8 套")
+        names = [name for name, _spec in style.layouts]
+        for expected in ("Vertical.TScrollbar", "Panel.Vertical.TScrollbar",
+                         "Flat.Panel.Vertical.TScrollbar"):
+            self.assertTrue(any(n == expected or n.endswith("." + expected)
+                                for n in names), "缺 %s：%s" % (expected, names))
         for name, spec in style.layouts:
             flat = repr(spec)
             self.assertIn("trough", flat)
             self.assertIn("thumb", flat)
             self.assertNotIn("arrow", flat, "%s 的布局里不该还有箭头" % name)
+
+    def test_panel_variant_uses_panel_trough(self):
+        """Panel 变体的槽色必须是面板色；日志变体的槽色仍是 LOG_BG。"""
+        style = self._install()
+        by_name = dict(style.configures)
+        self.assertEqual(by_name["Panel.Vertical.TScrollbar"]["troughcolor"],
+                         theme.PANEL)
+        self.assertEqual(by_name["Vertical.TScrollbar"]["troughcolor"],
+                         theme.LOG_BG)
 
     def test_idle_style_is_invisible_and_same_thickness(self):
         """空闲态滑块与槽同色（=看不见），而且杆宽必须和常态完全一致 —— 否则换样式会挪布局。"""

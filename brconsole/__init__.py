@@ -10,8 +10,11 @@
       locate.py     blender.exe 探测（文件系统扫描，不用注册表）
       diskspace.py  开工前的磁盘空间预检
       autostart.py  开机自启（HKCU 的 Run 项）
-      theme.py      深色主题（和 gui 一起，是全仓仅有的两个碰 tkinter 的文件）
+      theme.py      深色主题
+      uikit.py      可复用 UI 零件（卡片 / 按钮 / 胶囊 / 滚动区）
       tkboot.py     缺 tkinter 时带 sidecar 自举重启
+    （碰 tkinter 的都在界面层：gui / gui_view / gui_view_new / ui_* / theme / uikit，
+     白名单由 `tools/check_boundaries.py` 守着）
 
     core.py         I = 0.38  调度核心：子进程 + 双通道读取 + 崩溃续跑（**扇入第一**）
     inspect.py      I = 0.50  读取 .blend 里已有的渲染配置
@@ -19,7 +22,10 @@
                               （帧范围解析 `parse_frames` 是共用工具，放在 core 里）
     guimodel.py     I = 0.75  界面逻辑：表单校验 / 事件→状态 / 日志缓冲（不碰 tkinter，可单测）
     taskstore.py    I = 0.75  待办任务存档（开机续跑的依据：任务"是什么"）
-    gui.py          I = 1.00  tkinter 界面：控件 + 后台线程 + 事件队列
+    gui.py          I = 1.00  tkinter 界面：业务 + 后台线程 + 事件队列
+                              （视图装配在 gui_view_new.py / 旧版 gui_view.py，
+                                单模块零件在 ui_topbar / ui_leftqueue / ui_program /
+                                ui_overview / ui_project / ui_frames / ui_render / ui_log）
     driver.py       ——       跑在 **Blender 进程内**的驱动脚本。它不是本机的模块，
                               靠 `core.read_driver_source()` 注入源码字符串执行，
                               所以依赖图上没有任何边 —— 改了它要跑真机冒烟。
@@ -38,4 +44,4 @@
 #    共用常量放**叶子模块**：打包布局见 `layout.py`。
 #    这条由 `tools/check_boundaries.py` 的 `init-stays-leaf` 规则守着。
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"

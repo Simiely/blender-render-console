@@ -243,6 +243,32 @@ def retarget_extension(template, fmt):
     return root + "." + ext
 
 
+# ---------------- 集合显示：界面勾选 ↔ 内部 hidden 列表 ----------------
+#
+# 界面上「集合显示」勾选 = 渲染时显示；取消勾选 = 渲染时隐藏。
+# 但底层（core/state/driver/JobConfig）沿用的字段名一直是 `hidden_collections`，
+# 存的也确实是「要隐藏的集合名」。两边语义相反，**只在界面边界转换一次**：
+# 别去反转存储结构（断点签名、driver 都依赖它），也别在 gui.py 里再写一遍转换。
+
+def hidden_from_checks(names, checked):
+    """`(工程里的全部集合名, 界面上勾选的名字)` → 要隐藏的名字列表。
+
+    界面勾选 = 显示，所以没勾的那些才是 hidden。顺序跟随 `names`，
+    不跟随 `checked`（集合清单的顺序由工程决定，稳定可比对）。
+    """
+    shown = set(checked or ())
+    return [str(n) for n in (names or ()) if str(n) not in shown]
+
+
+def checks_from_hidden(names, hidden):
+    """`(工程里的全部集合名, hidden 列表)` → 界面上该勾选的名字列表。
+
+    存档/队列项回填走这里：`cfg.hidden` 是隐藏列表，复选框要显示成反过来的勾选态。
+    """
+    hidden_set = set(str(n) for n in (hidden or ()))
+    return [str(n) for n in (names or ()) if str(n) not in hidden_set]
+
+
 def scene_to_config(label):
     """场景下拉的显示值 → `JobConfig.scene`。
 
@@ -273,6 +299,11 @@ def fields_from_detail(detail, blend=""):
     if detail.get("frame_step"):
         out["step"] = str(detail["frame_step"])
     engine = (detail.get("engine") or "").upper()
+    # 4.2+ 把 EEVEE 的 identifier 改成了 BLENDER_EEVEE_NEXT，而下拉里只有 EEVEE 一项
+    # （driver.ENGINE_ALIASES 讲的是同一件事，但那是渲染侧脚本，界面模型不该反过来依赖它）。
+    # 不归一化的话读出来的引擎会被当成"不认识"丢掉，界面继续显示上一个值。
+    if engine == "BLENDER_EEVEE_NEXT":
+        engine = "BLENDER_EEVEE"
     if engine in [v for _, v in ENGINES]:
         out["engine"] = engine
     if detail.get("samples") is not None:
@@ -513,6 +544,11 @@ AFTERMATH_NOTHING = "nothing"
 AFTERMATH_SHUTDOWN = "shutdown"
 AFTERMATH_SLEEP = "sleep"
 AFTERMATH_VALUES = (AFTERMATH_NOTHING, AFTERMATH_SHUTDOWN, AFTERMATH_SLEEP)
+#: 下拉显示文案 ↔ 实际值（单一来源，界面层只拿它填 Combobox）
+AFTERMATH_LABELS = [("什么都不做", AFTERMATH_NOTHING),
+                    ("关机（60 秒倒计时，可取消）", AFTERMATH_SHUTDOWN),
+                    ("睡眠", AFTERMATH_SLEEP)]
+AFTERMATH_BY_LABEL = {label: value for label, value in AFTERMATH_LABELS}
 
 
 def aftermath_plan(choice, ok, cancelled):
@@ -567,7 +603,9 @@ class FormModel(object):
         #: 与 `file_format` 联动：格式是 KEEP 时这里恒为空，由 `to_config` 保证。
         self.color_depth = kw.get("color_depth", KEEP)
         self.scene = kw.get("scene", SCENE_DEFAULT_LABEL)   # 场景名，或占位文案
-        #: 要隐藏的集合名列表（每个工程各自一份，读工程配置后用户勾选）
+        #: **要隐藏**的集合名列表（与界面勾选相反：勾上=显示，不勾=隐藏）。
+        #: 字段名与存储语义都不能改 —— 断点签名/driver 都按 hidden 列表解释它。
+        #: 界面勾选态用 hidden_from_checks()/checks_from_hidden() 在边界处转换。
         self.hidden_collections = list(kw.get("hidden_collections") or ())
         self.resume = kw.get("resume", True)
         #: 重试策略**只有一个字段**（下拉的文案）：选「一直重复」= 重启与单帧尝试都不限；

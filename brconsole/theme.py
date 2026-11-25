@@ -4,26 +4,38 @@
 tkinter 默认的 ttk 主题（Windows 上是 `vista`）**不接受颜色配置**，改背景色一律无效；
 所以这里强制切到 `clam`（可完全自定义），再逐类控件配深色。
 
-配色取自 VS Code 深色：
-    背景 #1e1e1e · 面板 #252526 · 输入框/边框 #3c3c3c
-    正文 #d4d4d4 · 次要文字 #9aa0a6 · 强调蓝 #0e639c / #4a9eff
+配色由界面定稿（`brc-ui-final.html`）锁定，别在这里另起一套：
+    背景 #171719 · 面板 #252526 / #2b2b30 · 输入框 #34343a · 边框 #454550
+    正文 #e6e6e6 · 次要文字 #9aa0a6 · 主色 #ff9292（按下 #e57979，其上文字 #2d1a1a）
+    成功 #4ec9b0 · 提醒 #f48771 · 日志底 #181818
 """
 
-BG = "#1e1e1e"
+BG = "#171719"
 PANEL = "#252526"
-FIELD = "#3c3c3c"
-BORDER = "#454545"
-FG = "#d4d4d4"
+PANEL2 = "#2b2b30"
+FIELD = "#34343a"
+BORDER = "#454550"
+FG = "#e6e6e6"
 MUTED = "#9aa0a6"
-ACCENT = "#0e639c"
-ACCENT_HOVER = "#1177bb"
+ACCENT = "#ff9292"
+ACCENT_HOVER = "#ffb3b3"
+ACCENT_PRESSED = "#e57979"
+ACCENT_STRONG = "#ffa6a6"
+ACCENT_SOFT = "#3a2a2a"        # rgba(255,146,146,.14) 落在面板底上的近似实色
+ON_ACCENT = "#2d1a1a"          # 主色按钮上的文字（深棕比白字更清楚）
+BRIGHT = "#e8e8e8"             # 标题/队列名用的亮字
+NAV_BG = "#202024"             # 左栏 / 标题栏底色
+LOG_PANEL_BG = "#1c1c1f"       # 日志区底色
+FOOT_BG = "#1d1d20"            # 底部说明条底色
 OK = "#4ec9b0"
 #: 需要用户注意的那类提示（帧范围填错了之类）—— 深色底上要够亮才看得清
 WARN = "#f48771"
 
 # 日志区（等宽字体，比正文更暗一点）
 LOG_BG = "#181818"
-LOG_FG = "#cfcfcf"
+#: 模块之间的 1px 分隔线（比 BORDER 暗，只为断开而不是画边框）
+LINE = "#33333a"
+LOG_FG = "#e6e6e6"
 
 #: 滚动条两种样式：常态（看得见滑块）与"空闲态"（滑块与槽同色，等于看不见）。
 #: 内容装得下的时候 ttk 会把滑块拉满整条槽 —— 那会变成一条常驻的亮灰色长条，
@@ -43,8 +55,8 @@ SCROLL_THUMB_PRESSED = "#8a8a8a"
 CHECK_BASE_PX = 13
 #: 未选中时的框线色（比 BORDER 亮一点，否则深色底上根本看不见框）
 CHECK_BORDER = "#6e6e6e"
-#: 选中时的对勾颜色（压在 ACCENT 蓝底上，要用白色才够亮）
-CHECK_ON = "#ffffff"
+#: 选中时的对勾颜色（压在主色粉底上，用深棕才够清楚）
+CHECK_ON = ON_ACCENT
 
 #: 自绘指示器元素的名字（`element_create` 用）。带前缀避免和主题自带的撞名。
 CHECK_ELEMENT = "Brc.Check.indicator"
@@ -202,8 +214,15 @@ def install_scrollbar(style, thickness=None):
     """
     thick = SCROLL_BASE_PX if thickness is None else thickness
     for prefix, stick in (("Vertical", "ns"), ("Horizontal", "we")):
-        for flat, thumb in ((False, SCROLL_THUMB), (True, LOG_BG)):
-            name = "%s%s.TScrollbar" % ("Flat." if flat else "", prefix)
+        # 槽色跟所在的底走：日志框内是 LOG_BG，模块区是 PANEL。
+        # 槽色写死一个的后果是：在另一种底色上，那 10px 就是一条深色竖带（像边框）。
+        for flat, thumb, trough in (
+                (False, SCROLL_THUMB, LOG_BG), (True, LOG_BG, LOG_BG),
+                (False, SCROLL_THUMB, PANEL), (True, PANEL, PANEL)):
+            if trough == PANEL:
+                name = "%sPanel.%s.TScrollbar" % ("Flat." if flat else "", prefix)
+            else:
+                name = "%s%s.TScrollbar" % ("Flat." if flat else "", prefix)
             style.layout(name, [
                 ("%s.Scrollbar.trough" % prefix, {"sticky": stick, "children": [
                     ("%s.Scrollbar.thumb" % prefix, {"expand": "1", "sticky": "nswe"}),
@@ -213,14 +232,14 @@ def install_scrollbar(style, thickness=None):
             # 只设 background 的话，细杆上那两条棱线正好占满宽度 —— 就是旧样式看着
             # "断成两截"的原因。三色相同 = 纯色平杆。
             # gripcount=0 关掉滑块中间那几道防滑横线：10px 的杆上它看起来像个小梯子。
-            style.configure(name, troughcolor=LOG_BG, background=thumb,
-                            bordercolor=LOG_BG, lightcolor=thumb, darkcolor=thumb,
-                            arrowcolor=LOG_BG, arrowsize=thick, gripcount=0,
+            style.configure(name, troughcolor=trough, background=thumb,
+                            bordercolor=trough, lightcolor=thumb, darkcolor=thumb,
+                            arrowcolor=trough, arrowsize=thick, gripcount=0,
                             borderwidth=0, relief="flat")
             if flat:
                 # 空闲态不需要任何反馈（滑块本来就看不见），状态全保持同色，
                 # 否则鼠标扫过日志区时那条"隐形的杆"会突然亮一下
-                style.map(name, background=[("pressed", LOG_BG), ("active", LOG_BG)])
+                style.map(name, background=[("pressed", trough), ("active", trough)])
             else:
                 style.map(name, background=[("pressed", SCROLL_THUMB_PRESSED),
                                             ("active", SCROLL_THUMB_HOVER)])
@@ -241,47 +260,123 @@ def apply(root):
     style.configure(".", background=PANEL, foreground=FG,
                     fieldbackground=FIELD, bordercolor=BORDER,
                     lightcolor=PANEL, darkcolor=PANEL, troughcolor=FIELD,
-                    selectbackground=ACCENT, selectforeground="#ffffff",
+                    selectbackground=ACCENT, selectforeground=ON_ACCENT,
                     focuscolor=ACCENT)
 
     style.configure("TFrame", background=PANEL)
     style.configure("TLabel", background=PANEL, foreground=FG)
     style.configure("Muted.TLabel", background=PANEL, foreground=MUTED)
-    style.configure("Accent.TLabel", background=PANEL, foreground="#8ab4f8")
+    style.configure("Accent.TLabel", background=PANEL, foreground=ACCENT)
     style.configure("OK.TLabel", background=PANEL, foreground=OK)
     style.configure("Warn.TLabel", background=PANEL, foreground=WARN)
 
+    # 两栏布局 / 可折叠模块：卡片与外层底色要有层次，标题行比正文略亮
+    style.configure("Side.TFrame", background=PANEL2)
+    style.configure("Main.TFrame", background=BG)
+    style.configure("Card.TFrame", background=PANEL)
+    style.configure("CardHead.TFrame", background=PANEL2)
+    style.configure("Header.TFrame", background=PANEL2)
+    style.configure("Logo.TLabel", background=ACCENT, foreground=ON_ACCENT,
+                    font=("TkDefaultFont", 12, "bold"))
+    style.configure("Title.TLabel", background=PANEL2, foreground=FG,
+                    font=("TkDefaultFont", 14, "bold"))
+    style.configure("Section.TLabel", background=PANEL2, foreground=FG,
+                    font=("TkDefaultFont", 10, "bold"))
+    style.configure("Icon.TLabel", background=PANEL2, foreground=ACCENT)
+    style.configure("Badge.TLabel", background=PANEL2, foreground=ACCENT,
+                    font=("TkDefaultFont", 9, "bold"))
+    style.configure("Value.TLabel", background=PANEL, foreground=FG)
+
     style.configure("TLabelframe", background=PANEL, bordercolor=BORDER,
                     relief="solid", borderwidth=1)
-    style.configure("TLabelframe.Label", background=PANEL, foreground="#9cdcfe")
+    style.configure("TLabelframe.Label", background=PANEL, foreground=ACCENT)
 
-    style.configure("TButton", background=FIELD, foreground=FG,
+    style.configure("TButton", background=PANEL2, foreground=FG,
                     bordercolor=BORDER, relief="flat", padding=(10, 4))
     style.map("TButton",
-              background=[("pressed", "#2a2d2e"), ("active", "#4a4a4a"),
+              background=[("pressed", ACCENT_PRESSED), ("active", FIELD),
                           ("disabled", "#2d2d2d")],
               foreground=[("disabled", "#6e6e6e")])
-    style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff")
-    style.map("Accent.TButton",
-              background=[("pressed", "#0a4d78"), ("active", ACCENT_HOVER),
-                          ("disabled", "#2d2d2d")])
-
-    style.configure("TEntry", fieldbackground=FIELD, foreground=FG,
-                    insertcolor=FG, bordercolor=BORDER, relief="flat")
-    style.map("TEntry", fieldbackground=[("disabled", "#2d2d2d")],
+    style.configure("RowButton.TButton", background=FIELD, foreground=FG,
+                    bordercolor="#565660", relief="raised", padding=(7, 5))
+    style.map("RowButton.TButton",
+              background=[("pressed", "#2a2d2e"), ("active", "#484850")],
+              bordercolor=[("active", "#777780")])
+    style.configure("Action.TButton", background=FIELD, foreground=FG,
+                    bordercolor="#565660", relief="raised", padding=(7, 3))
+    style.map("Action.TButton",
+              background=[("pressed", "#2a2d2e"), ("active", "#484850")],
+              bordercolor=[("active", "#777780")])
+    style.configure("PrimarySm.TButton", background=ACCENT,
+                    foreground=ON_ACCENT, bordercolor=ACCENT,
+                    relief="flat", padding=(8, 3),
+                    font=("Microsoft YaHei", 9, "bold"))
+    style.map("PrimarySm.TButton",
+              background=[("pressed", ACCENT_PRESSED), ("active", ACCENT_HOVER)],
+              bordercolor=[("active", ACCENT_HOVER)],
               foreground=[("disabled", "#6e6e6e")])
+    style.configure("Small.TButton", background=PANEL2, foreground=FG,
+                    bordercolor=BORDER, relief="flat", padding=(6, 2))
+    style.map("Small.TButton",
+              background=[("pressed", ACCENT_PRESSED), ("active", FIELD),
+                          ("disabled", "#2d2d2d")],
+              foreground=[("disabled", "#6e6e6e")])
+    style.configure("Step.TButton", background=FIELD, foreground=FG,
+                    bordercolor="#565660", relief="raised",
+                    padding=(2, 0), font=("Segoe UI Symbol", 7))
+    style.map("Step.TButton",
+              background=[("pressed", "#2a2d2e"), ("active", "#484850")],
+              bordercolor=[("active", "#777780")],
+              foreground=[("disabled", "#6e6e6e")])
+    style.configure("Ghost.TButton", background=PANEL2, foreground=ACCENT,
+                    bordercolor=ACCENT, relief="groove", padding=(8, 3))
+    style.map("Ghost.TButton",
+              background=[("active", ACCENT_SOFT), ("pressed", ACCENT_SOFT)])
+    style.configure("Icon.TButton", background=PANEL2, foreground=FG,
+                    bordercolor=BORDER, relief="flat", padding=(1, 1))
+    style.map("Icon.TButton",
+              background=[("pressed", ACCENT_PRESSED), ("active", FIELD),
+                          ("disabled", "#2d2d2d")])
+    style.configure("Accent.TButton", background=ACCENT, foreground=ON_ACCENT,
+                    font=("TkDefaultFont", 9, "bold"))
+    style.map("Accent.TButton",
+              background=[("pressed", ACCENT_PRESSED), ("active", ACCENT_HOVER),
+                          ("disabled", "#3a3a40")],
+              foreground=[("disabled", "#6e6e6e")])
+
+    # 定稿 input/select：height 30px、padding 5px 9px、bg #34343a、border #454550
+    style.configure("TEntry", fieldbackground=FIELD, foreground=FG,
+                    insertcolor=FG, bordercolor=BORDER, relief="flat",
+                    borderwidth=1, padding=(8, 6))
+    style.map("TEntry",
+              fieldbackground=[("disabled", "#2d2d2d")],
+              foreground=[("disabled", "#6e6e6e")],
+              bordercolor=[("focus", ACCENT)])
 
     style.configure("TCombobox", fieldbackground=FIELD, background=FIELD,
                     foreground=FG, arrowcolor=FG, bordercolor=BORDER,
-                    selectbackground=FIELD, selectforeground=FG)
+                    selectbackground=FIELD, selectforeground=FG,
+                    borderwidth=1, padding=(8, 5))
     style.map("TCombobox",
               fieldbackground=[("readonly", FIELD), ("disabled", "#2d2d2d")],
-              foreground=[("readonly", FG), ("disabled", "#6e6e6e")])
+              foreground=[("readonly", FG), ("disabled", "#6e6e6e")],
+              bordercolor=[("focus", ACCENT)])
+
+    # 步长 Spinbox：箭头颜色跟正文一致，不要 Tk 默认的白色箭头
+    style.configure("TSpinbox", fieldbackground=FIELD, background=FIELD,
+                    foreground=FG, arrowcolor=FG, bordercolor=BORDER,
+                    lightcolor=FIELD, darkcolor=FIELD,
+                    borderwidth=1, padding=(6, 5))
+    style.map("TSpinbox",
+              fieldbackground=[("disabled", "#2d2d2d")],
+              foreground=[("disabled", "#6e6e6e")],
+              arrowcolor=[("active", ACCENT), ("disabled", "#6e6e6e")],
+              bordercolor=[("focus", ACCENT)])
     # 下拉列表是 Tk 的 Listbox，不走 ttk 样式，只能走 option 数据库
     root.option_add("*TCombobox*Listbox.background", FIELD)
     root.option_add("*TCombobox*Listbox.foreground", FG)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*TCombobox*Listbox.selectForeground", ON_ACCENT)
 
     # ⚠️ 这里**不要**配 `indicatorcolor`：clam 的指示器元素不认这个选项，
     #    配了会被 ttk 静默忽略（曾经就是这么白配了一年多，见 unsupported_options 的说明）。

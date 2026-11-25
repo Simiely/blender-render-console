@@ -313,5 +313,42 @@ class TestDescribe(Base):
         self.assertIn("无法解析", taskstore.describe({"config": {"blend": ""}}))
 
 
+class TestStoreDirOverride(unittest.TestCase):
+    """`BRC_STORE_DIR` 整体重定向存档（demo/自检隔离用）。
+
+    demo 曾把示例项连同 python.exe 假 Blender 路径写进用户真实 queue.json，
+    用户后续读取全跑在 python.exe 上 —— 所以 demo 必须能把存档整个关进临时目录。
+    """
+
+    def test_override_redirects_pending_and_queue(self):
+        d = tempfile.mkdtemp(prefix="brc-store-override-")
+        old = os.environ.get("BRC_STORE_DIR")
+        os.environ["BRC_STORE_DIR"] = d
+        try:
+            self.assertEqual(taskstore.store_dir(), d)
+            self.assertEqual(taskstore.pending_path(),
+                             os.path.join(d, taskstore.FILENAME))
+            # 写 pending 必须落在重定向目录里（真实目录里那点是用户自己的存档，别动）
+            cfg = JobConfig(blend="x.blend", frames=[1],
+                            output_template=os.path.join(d, "o_####"))
+            taskstore.save(cfg, "blender.exe")
+            self.assertTrue(os.path.exists(taskstore.pending_path()))
+        finally:
+            if old is None:
+                os.environ.pop("BRC_STORE_DIR", None)
+            else:
+                os.environ["BRC_STORE_DIR"] = old
+
+    def test_no_override_uses_localappdata(self):
+        old = os.environ.pop("BRC_STORE_DIR", None)
+        try:
+            base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            self.assertEqual(taskstore.store_dir(),
+                             os.path.join(base, taskstore.APP_DIRNAME))
+        finally:
+            if old is not None:
+                os.environ["BRC_STORE_DIR"] = old
+
+
 if __name__ == "__main__":
     unittest.main()
