@@ -115,19 +115,6 @@ class RenderModule(uikit.ModuleCard):
         cb.display_var = disp
         return cb
 
-    def _on_format_changed(self, _event=None):
-        label = self.vars["format"].get()
-        ident = FORMATS[0][0]
-        for item in FORMATS:
-            if format_label(item[0]) == label:
-                ident = item[0]
-                break
-        choices = depth_choices(ident)
-        self.depth_combo.configure(
-            values=choices, state="readonly" if len(choices) > 1 else "disabled")
-        if self.vars["depth"].get() not in choices and choices:
-            self.vars["depth"].set(choices[0])
-
     def _field(self, parent, row, col, span, caption, factory):
         cell = ttk.Frame(parent, style="Card.TFrame")
         cell.grid(row=row, column=col, columnspan=span, sticky="ew",

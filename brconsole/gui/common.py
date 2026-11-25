@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from .. import (applock, autostart, diskspace, locate, notify, power,
-               queue_store, taskstore, theme, uikit, gui_view)
+               queue_store, taskstore, theme, uikit)
 from .. import __version__
 from ..layout import FROZEN_SUBDIR
 from ..core import JobConfig, RenderJob

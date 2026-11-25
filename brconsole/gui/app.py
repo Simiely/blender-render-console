@@ -2,7 +2,6 @@
 """主窗口薄壳：装配状态、视图与控制器 mixin，保留事件循环入口。
 """
 
-from .. import gui_view
 from ..gui_view_new import TkView
 from .common import *  # noqa: F401,F403
 from .common import _apply_icon, _stamp  # noqa: F401
@@ -54,11 +53,6 @@ class App(FormControllerMixin, InspectControllerMixin,
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _build(self, root):
-        if os.environ.get("BRC_OLD_UI") == "1":
-            gui_view.build(self, root)
-            self.view = None          # 旧视图没有实现新契约，保留兼容分支
-            return
-        from ..gui_view_new import TkView
         self.view = TkView(self, root)
 
     def _on_mousewheel(self, event):

@@ -75,8 +75,17 @@ class _ComboProxy(object):
         self.kind = kind
 
     def configure(self, **kw):
-        if "values" in kw and self.kind == "version":
-            self.panel.set_versions(kw["values"])
+        if self.kind == "version":
+            if "values" in kw:
+                self.panel.set_versions(kw["values"])
+            if "width" in kw:
+                self.panel.set_version_width(kw["width"])
+            return
+        if self.kind == "retry":
+            if "values" in kw:
+                self.panel.set_retry_values(kw["values"])
+            if "width" in kw:
+                self.panel.set_retry_width(kw["width"])
 
     def cget(self, key):
         if key == "values":

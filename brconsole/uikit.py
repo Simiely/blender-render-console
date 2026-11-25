@@ -543,8 +543,9 @@ class ScrollArea(tk.Frame):
         self.inner.bind("<Configure>", on_inner)
         self.canvas.bind("<Configure>", on_canvas)
 
-        # 鼠标滚轮：只滚动指针所在的那个 ScrollArea，避免多个滚动区互相抢
-        self.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        # 鼠标滚轮：只滚动指针所在的那个 ScrollArea，避免多个滚动区互相抢。
+        # 记住绑定 id，销毁时只解掉自己那一条 —— unbind_all 会把别的模块的绑定一起清掉。
+        self._wheel_bind_id = self.bind_all("<MouseWheel>", self._on_wheel, add="+")
         self.bind("<Destroy>", self._on_destroy)
 
     def _on_wheel(self, event):
@@ -563,8 +564,8 @@ class ScrollArea(tk.Frame):
 
     def _on_destroy(self, _event=None):
         try:
-            self.unbind_all("<MouseWheel>")
-        except tk.TclError:
+            self.unbind_all("<MouseWheel>", self._wheel_bind_id)
+        except (tk.TclError, AttributeError):
             pass
 
 
