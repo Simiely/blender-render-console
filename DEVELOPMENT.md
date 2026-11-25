@@ -12,7 +12,7 @@
 
 1. **界面勾选与存储字段必须只反转一次**。「集合显示」勾选＝渲染显示；但
    `JobConfig/state/driver` 的 `hidden_collections` 一直是「要隐藏的名字」，断点签名也靠它。
-   反转只放在 `guimodel.hidden_from_checks()/checks_from_hidden()`，`gui.py` 只管把结果贴到
+   反转只放在 `guimodel.form.hidden_from_checks()/checks_from_hidden()`，`gui/` 控制器只管把结果贴到
    复选框上。`inspect` 脚本额外回读 `collection.hide_render` 作为默认勾选态。
    如果哪天有人"顺手把存储也反过来"，断点会悄悄串任务，而且测试不一定立刻红——
    所以新增了 5 条转换语义单测。
@@ -23,11 +23,11 @@
 3. **「开始渲染」现在是批量入口**。它按 `queue.json` 快照逐项跑，`set_current()` 负责写
    `pending.json`（开机续跑逻辑一行没改）；坏项标 failed 跳过，停止则整队列暂停、
    当前项回 pending 保留断点。关机/睡眠从"每个 job 完成"移到"整个队列结束"才判。
-   队列旗标与 `taskstore` 同步：用户取消「启动时自动续跑」时，两个存储一起改，
-   否则下一项 `set_current()` 又把 `True` 写回 pending（坑 35 的同款）。
+   autoresume 旗标唯一来源是 `taskstore.preferences.json`；`queue.json` 不再存第二份，
+   用户取消「启动时自动续跑」只写一处（坑 35 的同款已修）。
 
-验证边界要写清楚：全量单测（当前 492 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
-均通过；**真机 Blender 渲染、打包 exe、高 DPI/窄窗口截图尚未回归**。
+验证边界要写清楚：全量单测（当前 500 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
+均通过；真机 Blender 冒烟 7/7 已回归；**打包 exe、高 DPI/窄窗口截图尚未回归**。
 
 ---
 
@@ -240,10 +240,10 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 
 ```
 ┌─────────────────────────────────────────────┐
-│  gui.py（tkinter）/ cli.py                    │
-│  只做展示与交互，业务逻辑在 guimodel.py        │
+│  gui/ 包（tkinter 控制器）/ cli.py             │
+│  只做展示与交互，业务逻辑在 guimodel/ 包        │
 │  帧范围是「段列表」（多段不连续 + 每段步长）：  │
-│  段数据与展开在 guimodel，区间原语在 core      │
+│  段数据与展开在 guimodel.frames，原语在 core    │
 └──────────────────┬──────────────────────────┘
                    │ on_event(kind, payload)
 ┌──────────────────▼──────────────────────────┐

@@ -26,3 +26,4 @@ related: []
 - [能力清单](walkthrough/capabilities.md)：按真实入口盘点的能力（C-ID）
 - [走查场景](walkthrough/scenarios.md)：场景与能力覆盖矩阵
 - [第一轮走查报告](walkthrough/report-r1.md)：发现、证据与修复结论
+- [UI 契约与重做指南](walkthrough/ui-contract.md)：控制器 ↔ 视图边界与 FakeView 测试范式

@@ -2,6 +2,19 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]（refactor/split-gui-model-0.11.2）
+
+按"除明确不拆的文件外都要拆"继续整备 GUI 与纯逻辑层：
+
+- **`guimodel.py` 拆为包**：`constants / frames / form / events / progress / logs / stateinfo` 按变更原因分居，`__init__.py` 只做 83 个历史符号的 re-export；旧 import 路径完全兼容。
+- **新增视图契约**：`view_contract.py` 定义 `ViewProtocol`、19 个状态变量、20 个回调与 `FakeView`；`gui_view_new.TkView` 是唯一 Tk 实现，`App._build()` 统一走契约。新增 8 条契约单测。
+- **`gui.py` 拆为 `gui/` 包**：`app` 薄壳 + `app_state` + 8 个 controller mixin（form/inspect/queue/render/log/event/aftermath/refresh）+ 共享 `common`。旧 `App` 已不存在。
+- **删除旧视图与死代码**：移除 `BRC_OLD_UI` 分支、`gui_view.py`、`ui_topbar.py` 与 `ui_render._on_format_changed`；边界白名单同步收敛。
+- **修复实测 UI 问题**：概览 4 列宽度适配 692px 视口；`ScrollArea` 销毁时只解自己的滚轮绑定，不再清全局；retry 下拉的 `values/width` 不再被代理吞掉；三个 `tk.Checkbutton` 改为统一主题的 `ttk.Checkbutton`。
+- **文档改为以脚本为准**：架构说明指出 `guimodel` 门面与 `gui/common` 的 SDP 违规是兼容层/同层共享，不代表领域依赖反向。
+
+验证：500 条单测、边界 7 条、0 环、repo-kit PASS、真机 Blender 冒烟 7/7、demo 真窗口无 traceback。
+
 ## [未发布]（refactor/program-contract-0.11.1）
 
 程序侧收口，为后续 UI 规范落地做准备：

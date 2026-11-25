@@ -237,8 +237,10 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ├── main.py                  # 入口：无参数 → GUI，带参数 → CLI（PyInstaller 也从这里打包）
 ├── brconsole/
 │   ├── layout.py            # 打包布局常量（_brc）—— 叶子模块，单一来源，谁都能依赖它
-│   ├── gui.py               # tkinter 界面：控件 + 后台线程 + 事件队列
-│   ├── guimodel.py          # 界面逻辑层（表单校验 / 事件→状态 / 日志缓冲，可单测）
+│   ├── gui/                 # 界面控制包：app 薄壳 + app_state + 8 个 controller mixin
+│   ├── gui_view_new.py      # 唯一 Tk 视图实现（TkView）+ ui_* 模块装配
+│   ├── view_contract.py     # 控制器 ↔ 视图的语义契约（无 tkinter，FakeView 可单测）
+│   ├── guimodel/            # 界面纯逻辑包：frames/form/events/progress/logs/stateinfo
 │   ├── theme.py             # 深色主题（ttk 必须切 clam 才接受配色）
 │   ├── inspect.py           # 读取 .blend 里已有的渲染配置（一次读回**所有场景**）
 │   ├── tkboot.py            # 缺 tkinter 时带 sidecar 自举重启
