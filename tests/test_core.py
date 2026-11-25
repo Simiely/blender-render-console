@@ -64,8 +64,8 @@ class _Base(unittest.TestCase):
             return []
         return sorted(f for f in os.listdir(d) if f.startswith("frame_"))
 
-    def run_job(self, job, events):
-        return job.run(on_event=lambda kind, ev: events.append((kind, ev)))
+    def run_job(self, job, events, **kw):
+        return job.run(on_event=lambda kind, ev: events.append((kind, ev)), **kw)
 
 
 class TestHappyPath(_Base):
@@ -96,6 +96,16 @@ class TestHappyPath(_Base):
         self.assertIn("native", kinds)          # 原生行兜底通道真的收到了东西
         self.assertNotIn("stall", kinds)        # 快任务不该误报静默
         self.assertNotIn("crash", kinds)
+
+    def test_stall_event_reports_first_frame(self):
+        """慢任务触发 stall 时要带上 first_frame —— 界面据此提示"别急着停"。"""
+        job, cfg, events = self.make_job(extra=["--sleep", "0.6"])
+        self.run_job(job, events, stall_after=0.05)
+        stalls = [ev for k, ev in events if k == "stall"]
+        self.assertTrue(stalls, "慢任务应触发 stall 事件")
+        self.assertTrue(all("first_frame" in ev for ev in stalls))
+        self.assertTrue(stalls[0]["first_frame"], "第一帧还没完成时必须是 True")
+        self.assertTrue(stalls[0]["phase"], "阶段文案不能为空（旧版会显示『未知阶段』）")
 
     def test_native_channel_parses_phase_and_saved(self):
         """原生行通道要能给出「阶段文案」和「已落盘」——这是没有百分比时的唯一信号。"""

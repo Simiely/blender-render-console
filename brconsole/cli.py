@@ -12,6 +12,7 @@ import sys
 import time
 
 from . import locate, power
+from .guimodel import NativeLineFilter
 from .core import (JobConfig, RenderJob, complete_output_template, parse_frames,
                    parse_restart_limit)
 from .eta import fmt_clock, fmt_duration
@@ -81,6 +82,14 @@ class ConsoleReporter(object):
         self.stream = stream or sys.stdout
         self.last_len = 0
         self.last_phase = None
+        # 与 GUI 共用同一套原生行折叠规则（单一实现，别在这里另写一份正则）：
+        # 工程缺贴图那几条每帧重复，390 帧能刷近 2000 行，把真正的错误冲走。
+        self.native_filter = NativeLineFilter()
+
+    def _flush_native(self):
+        """任务收尾时把折叠掉的原生行账目交代掉（静默吞日志 = 静默丢证据）。"""
+        for text in self.native_filter.flush():
+            self._line("  %s" % text)
 
     def _clear(self):
         if self.last_len:
@@ -105,7 +114,8 @@ class ConsoleReporter(object):
                 self.last_phase = phase
                 self._line("  · %s" % phase)
             if self.verbose:
-                self._line("  | %s" % ev.get("line", ""))
+                for text in self.native_filter.feed(ev.get("line", "")):
+                    self._line("  | %s" % text)
             return
         if kind == "frame_done":
             eta = fmt_duration(ev.get("eta_sec"))
@@ -131,8 +141,12 @@ class ConsoleReporter(object):
             self._line("  ! %s" % ev.get("msg", ""))
             return
         if kind == "stall":
-            self._line("  … 已 %ss 无输出（当前：%s），大场景同步属于正常现象"
-                       % (ev.get("idle_sec"), ev.get("phase")))
+            head = "首帧准备" if ev.get("first_frame") else "渲染"
+            msg = ("  … %s已 %ss 无输出（当前：%s）" % (head, ev.get("idle_sec"),
+                                                       ev.get("phase")))
+            if ev.get("first_frame"):
+                msg += " —— 大工程加载贴图/上传场景可能要 1～3 分钟，正常现象，请勿停止"
+            self._line(msg)
             return
         if kind == "resume":
             self._line("  断点续跑：已完成 %s/%s 帧 - %s"
@@ -159,8 +173,11 @@ class ConsoleReporter(object):
                        % (ev.get("blend"), ev.get("total"), ev.get("output"),
                           ev.get("state_path"), policy,
                           ev.get("scene") or "（工程默认）"))
+            self._line("  提示：首帧准备（读工程/加载贴图/上传场景）大工程可能要 1～3 分钟，"
+                       "期间无进度输出属正常，请勿此时停止")
             return
         if kind == "job_done":
+            self._flush_native()
             self._line("任务结束：完成 %d/%d 帧 | 失败 %d | 放弃 %d | 重启 %d 次 | 用时 %s | 完成于 %s"
                        % (len(ev.get("done") or []), ev.get("total", 0),
                           len(ev.get("failed") or {}), len(ev.get("exhausted") or []),
@@ -176,6 +193,7 @@ class ConsoleReporter(object):
                 self._line("  未完成 —— 再次执行同一条命令即可从断点继续")
             return
         if kind == "job_error":
+            self._flush_native()
             self._line("  × %s" % ev.get("error"))
             return
         if kind == "give_up":

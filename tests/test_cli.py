@@ -3,13 +3,34 @@
 "不限"的约定，负数一路传下去会静默翻转语义（GUI 有钳 0 + 警告，CLI 是无人值守
 脚本，必须当场报错）。"""
 
+import io
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from brconsole.cli import build_parser  # noqa: E402
+from brconsole.cli import ConsoleReporter, build_parser  # noqa: E402
+
+
+class TestConsoleReporterNativeFilter(unittest.TestCase):
+    """CLI --verbose 与 GUI 共用折叠规则：工程贴图告警不刷屏，但留汇总账。"""
+
+    def test_benign_warnings_are_folded_and_summarised(self):
+        stream = io.StringIO()
+        r = ConsoleReporter(verbose=True, stream=stream)
+        for _ in range(5):
+            r("native", {"line": "WARNING Image file E:\\proj\\x.png does not exist."})
+        r("native", {"line": "ERROR Failed to load 2 image files"})
+        self.assertNotIn("does not exist", stream.getvalue())
+        r._flush_native()
+        self.assertIn("已折叠 6 行工程贴图/色彩空间告警", stream.getvalue())
+
+    def test_real_error_passes_through(self):
+        stream = io.StringIO()
+        r = ConsoleReporter(verbose=True, stream=stream)
+        r("native", {"line": "Error: Texture not found"})
+        self.assertIn("Error: Texture not found", stream.getvalue())
 
 
 class TestParserValidation(unittest.TestCase):

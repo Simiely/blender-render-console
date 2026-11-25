@@ -15,6 +15,7 @@ probes/*.png
 probes/*.blend
 probes/*.exr
 probe.blend
+*.blend1
 drv_*.png
 probe_*.png
 

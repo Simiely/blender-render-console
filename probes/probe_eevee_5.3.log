@@ -1,0 +1,16 @@
+CMD: C:\Program Files\Blender Foundation\Blender\blender.exe -b D:\temp\blender-render-console-src\tools\probe.blend -E BLENDER_EEVEE -s 1 -e 1 -a
+RC: 0   WALL: 6.34s   LINES: 13
+======================================================================
+[    1.55s] 00:01.500  blend            | Read blend: "D:\temp\blender-render-console-src\tools\probe.blend"
+[    1.56s] 00:01.500  render           | Rendering single frame
+[    1.56s] 00:01.500  render           | Rendering frame 1
+[    1.74s] 00:01.687  render           | Start rendering: Scene, ViewLayer
+[    1.74s] 00:01.687  render           | Engine: EEVEE
+[    5.56s] 00:05.515  render           | Fra: 1 | Rendering 1 / 64 samples
+[    5.56s] Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)
+[    5.69s] 00:05.640  render           | Fra: 1 | Rendering 25 / 64 samples
+[    5.84s] 00:05.781  render           | Fra: 1 | Rendering 50 / 64 samples
+[    5.92s] 00:05.859  render           | Fra: 1 | Rendering 64 / 64 samples
+[    6.05s] 00:06.000  render           | Saved: 'D:\temp\blender-render-console-src\tools\probe_0001.png'
+[    6.05s] 00:06.000  render           | Time: 00:04.49 (Saving: 00:00.11)
+[    6.27s] Blender quit

@@ -801,8 +801,12 @@ class RenderJob(object):
                     idle = time.time() - self._last_line_at
                     if idle >= stall_after:
                         self._stall_notified = True
+                        # 把"是不是还没渲出第一帧"告诉界面/终端：首帧前的长时间静默
+                        # 几乎总是在读工程 / 加载贴图 / 上传场景，属于正常现象，
+                        # 但旧文案只说"未知阶段"，用户最容易在这时误判卡死而点停止。
                         emit("stall", idle_sec=round(idle, 1),
-                             phase=self.parser.phase or "未知阶段")
+                             phase=self.parser.phase or "读取工程 / 加载贴图",
+                             first_frame=self._fed_first_frame)
                 continue
             if item is _SENTINEL:
                 break

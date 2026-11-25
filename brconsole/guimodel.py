@@ -860,7 +860,7 @@ class ProgressModel(object):
             return "正在渲染帧 %s · 已完成 %d/%d%s" % (
                 self.current_frame, self.done, self.total, self._elapsed_suffix())
         if self.stalled:
-            return "%s（已有一会儿没有新输出，属于正常现象）%s" % (
+            return "%s（较久没有新输出，首帧准备/场景同步属正常）%s" % (
                 self.phase or "正在渲染", self._elapsed_suffix())
         if self.phase:
             return "%s%s" % (self.phase, self._elapsed_suffix())
@@ -920,6 +920,21 @@ class NativeLineFilter(object):
                         re.I)
     FRAME = re.compile(r"Fra:\s*(-?\d+)")
 
+    # 工程自身资源引用问题产生的**已知无害**告警。每一帧都会重复一次，
+    # 390 帧能刷近 2000 行，把真正的 traceback 冲走 —— 但直接删又违反
+    # 「静默吞异常必须留痕」的规矩，所以折叠成一条汇总（见 _benign_summary）。
+    #
+    # 正则刻意写得很窄，只匹配这三种精确文案：
+    #   1) Blender 找不到贴图文件（路径是工程自己的，工具改不了）
+    #   2) 上一条的每帧汇总 "Failed to load N image files"
+    #   3) 贴图缺失连带出来的色彩空间告警（colorspace 为空）
+    # 不属于这三类的一律照常显示 —— 真正的 Error / Traceback 绝不能被吞。
+    BENIGN = re.compile(
+        r"WARNING Image file .*? does not exist\."
+        r"|ERROR Failed to load \d+ image files"
+        r"|WARNING Colorspace .*?(?:not found|can't be converted)",
+        re.I)
+
     def __init__(self, interval=1.0, clock=None):
         self.interval = interval
         # 注入时钟是为了能单测：不真的 sleep，直接把时间"往前拨"
@@ -927,12 +942,19 @@ class NativeLineFilter(object):
         self._key = None
         self._last_emit = 0.0
         self._suppressed = 0
+        self._benign = 0          # 折叠掉的无害告警行数（留痕用）
 
     def reset(self):
         """新任务开始时清账（否则上一轮漏下的折叠数会算到这一轮头上）。"""
         self._key = None
         self._last_emit = 0.0
         self._suppressed = 0
+        self._benign = 0
+
+    def _benign_summary(self):
+        n, self._benign = self._benign, 0
+        return ("… 已折叠 %d 行工程贴图/色彩空间告警（工程自身资源缺失，不影响渲染；"
+                "完整的原始输出见 --log 指定的日志文件）" % n)
 
     def _collapse_key(self, line):
         """同类行的判据；返回 None = 这一行不参与折叠。"""
@@ -943,15 +965,24 @@ class NativeLineFilter(object):
 
     def _take_summary(self, lines):
         """把待交代的折叠数拼到这批输出最前面。"""
+        out = lines
+        if self._benign:
+            out = [self._benign_summary()] + out
         if not self._suppressed:
-            return lines
+            return out
         n, self._suppressed = self._suppressed, 0
-        return ["… 上一段进度已折叠 %d 行（同类进度行只保留最新）" % n] + lines
+        return ["… 上一段进度已折叠 %d 行（同类进度行只保留最新）" % n] + out
 
     def feed(self, line):
         """消化一行原生输出 → 该显示的行（可能为空列表 = 被折掉了）。"""
         line = (line or "").rstrip()
         if not line:
+            return []
+        # ⓪ 已知无害的工程资源告警：累计折叠，不逐行刷屏。
+        #    必须放在 IMPORTANT 之前 —— 这几条本身含 warning/error，
+        #    但只匹配精确文案，别的 Error / Traceback 都落不到这里。
+        if self.BENIGN.search(line):
+            self._benign += 1
             return []
         # ① 错误/警告：原样放行（即使和上一行一模一样也要放，重复的 traceback 也是证据）
         if self.IMPORTANT.search(line):
@@ -971,7 +1002,10 @@ class NativeLineFilter(object):
 
     def flush(self):
         """任务结束时把最后一段的表达清楚（不然尾部折叠数就丢了）。"""
-        return self._take_summary([])
+        out = []
+        if self._benign:
+            out.append(self._benign_summary())
+        return out + self._take_summary([])
 
 
 class LogModel(object):
@@ -1040,8 +1074,13 @@ def event_line(kind, ev):
         return "启动 Blender（第 %s 轮，待渲染 %s 帧）" % (
             ev.get("restart_index"), len(ev.get("pending") or []))
     if kind == "stall":
-        return "… 已 %ss 没有新输出（%s），大场景同步属于正常现象" % (
-            ev.get("idle_sec"), ev.get("phase"))
+        # 首帧前 Blender 要先读 .blend、加载全部贴图、把场景搬上 GPU ——
+        # 大工程这一步几分钟没有输出都正常。旧文案只说"未知阶段"，
+        # 用户最容易在这里误判卡死而点停止（实测量级：110s 加载 + 0.4s 渲染）。
+        head = ("首帧准备中" if ev.get("first_frame") else "渲染中")
+        return ("… %s已 %ss 没有新输出（%s）" % (head, ev.get("idle_sec"), ev.get("phase"))
+                + ("：大工程加载贴图/上传场景可能要 1～3 分钟，请耐心等待，不要停止"
+                   if ev.get("first_frame") else "：若阶段持续不变再检查工程/显存"))
     if kind == "warn":
         return "! %s" % ev.get("msg", "")
     if kind == "give_up":

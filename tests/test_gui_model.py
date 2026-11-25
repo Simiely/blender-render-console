@@ -768,6 +768,39 @@ class TestNativeLineFilter(unittest.TestCase):
         self.assertEqual(self.f.flush(), [])
         self.assertEqual(len(self.f.feed(self._sample(1, 3))), 1)
 
+    def test_benign_project_asset_warnings_are_folded(self):
+        """工程缺贴图每帧刷一次，390 帧能刷近 2000 行 —— 折叠成一条汇总。"""
+        lines = ["WARNING Image file E:\\proj\\2e2fa701.png does not exist.",
+                 "WARNING Image file E:\\proj\\fbb23225.png does not exist.",
+                 "ERROR Failed to load 2 image files",
+                 "WARNING Colorspace  not found, using scene linear instead",
+                 "WARNING Colorspace can't be converted to scene_linear: empty name"]
+        for line in lines:
+            self.assertEqual(self.f.feed(line), [], line)
+        tail = self.f.flush()
+        self.assertEqual(len(tail), 1)
+        self.assertIn("已折叠 5 行", tail[0])
+        self.assertIn("不影响渲染", tail[0])
+        self.assertEqual(self.f.flush(), [])    # 只交代一次
+
+    def test_benign_filter_does_not_swallow_real_errors(self):
+        """精确匹配才折叠 —— 长得像但不属于这三类的错误必须原样放行。"""
+        real = ["Error: Texture not found",
+                "ERROR Failed to load scene file",      # 不是 image files
+                "Traceback (most recent call last):",
+                "WARNING Colorspace conversion failed",  # 不是 not found/can't be converted
+                "WARNING: Cannot read file"]
+        for line in real:
+            self.assertEqual(self.f.feed(line), [line], line)
+
+    def test_benign_summary_precedes_next_real_line(self):
+        """折叠账要在下一条真输出前面交代，不能拖到任务结束。"""
+        self.f.feed("WARNING Image file E:\\proj\\x.png does not exist.")
+        out = self.f.feed("Saved: 'C:/out/f_0001.png'")
+        self.assertEqual(len(out), 2)
+        self.assertIn("已折叠 1 行", out[0])
+        self.assertIn("Saved:", out[1])
+
     def test_blank_input_is_ignored(self):
         self.assertEqual(self.f.feed(""), [])
         self.assertEqual(self.f.feed(None), [])
@@ -792,6 +825,21 @@ class TestEventLine(unittest.TestCase):
     def test_crash_line(self):
         self.assertIn("退出", event_line("crash", {"rc": 1, "done": 2, "total": 6,
                                                    "restart_index": 1}))
+
+    def test_first_frame_stall_tells_user_to_wait(self):
+        """首帧前的长时间静默最容易让人误判卡死 —— 文案必须明确"不要停止"。"""
+        line = event_line("stall", {"idle_sec": 62.0, "phase": "读取工程 / 加载贴图",
+                                    "first_frame": True})
+        self.assertIn("首帧准备", line)
+        self.assertIn("不要停止", line)
+        self.assertIn("62", line)
+
+    def test_later_stall_does_not_repeat_first_frame_advice(self):
+        """非首帧 stall 不该再说"首帧准备"，否则用户分不清当前处于哪个阶段。"""
+        line = event_line("stall", {"idle_sec": 70.0, "phase": "正在构建 BVH",
+                                    "first_frame": False})
+        self.assertIn("渲染中", line)
+        self.assertNotIn("不要停止", line)
 
 
 class TestStateHelpers(unittest.TestCase):

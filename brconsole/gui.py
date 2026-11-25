@@ -1089,6 +1089,10 @@ class App(object):
                   % (cfg.blend, "（场景 %s）" % cfg.scene if cfg.scene else "",
                      len(self.form.segments), len(cfg.frames),
                      self.lbl_frames.cget("text")))
+        # 首帧准备提示前置：大工程读 .blend + 加载贴图 + 上传 GPU 实测可达 110s，
+        # 这段时间 Blender 没有任何 stdout，用户最容易误判卡死而点停止（本项目真实事故）。
+        self._log("  提示：首帧准备（读工程/加载贴图/上传场景）大工程可能要 1～3 分钟，"
+                  "期间无进度输出属正常，请先耐心等待再决定是否停止")
 
     def _scene_conflict(self):
         """选了场景、但该工程里没这个名字 → 拦下来。
