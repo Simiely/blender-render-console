@@ -98,7 +98,11 @@ class MinGUI(object):
         # --- 工程 / 场景 / 读取 ---
         label("工程 .blend")
         self.blend = tk.StringVar(value=preset or "")
-        ttk.Entry(f, textvariable=self.blend, width=52).grid(row=r, column=1, sticky="ew")
+        self.blend_entry = ttk.Entry(f, textvariable=self.blend, width=52)
+        self.blend_entry.grid(row=r, column=1, sticky="ew")
+        # 手输路径后回车/失焦也自动读（粘贴一个路径就能直接看到配置）
+        self.blend_entry.bind("<Return>", lambda _e: self.auto_read())
+        self.blend_entry.bind("<FocusOut>", lambda _e: self.auto_read())
         ttk.Button(f, text="选择", command=self._pick).grid(row=r, column=2)
         self.btn_read = ttk.Button(f, text="读取配置", command=self.on_read)
         self.btn_read.grid(row=r, column=3)
@@ -271,6 +275,9 @@ class MinGUI(object):
         self.reading = False
         self.info = None
         self.last_result = None
+        #: 自动读取去重：同一路径只读一次；令牌用于丢弃过期的读取结果
+        self._last_read_path = ""
+        self._read_token = 0
         # 队列模式：点「开始渲染」= 按队列顺序跑完（空队列时把当前表单入队）
         self.queue_mode = False
         self.current_item = None
@@ -280,7 +287,7 @@ class MinGUI(object):
         self.refresh_queue()
         root.after(80, self._poll)
         if preset:
-            root.after(200, self.on_read)
+            root.after(200, self.auto_read)     # 命令行带工程启动时也自动读
 
     # ---------------- 控件动作 ----------------
     def _pick(self):
@@ -288,6 +295,22 @@ class MinGUI(object):
         p = filedialog.askopenfilename(filetypes=[("Blender 工程", "*.blend")])
         if p:
             self.blend.set(p)
+            self.auto_read()          # 选完就自动读，不用再点按钮
+
+    def auto_read(self):
+        """工程路径变了就自动读一次配置（选文件、手输后回车/失焦都走这里）。
+
+        同一路径不重复读 —— 失焦事件会反复触发，每次都起一个无头 Blender 太贵。
+        读取失败也记下路径，避免"一直失败一直重试"打转；要重试就点「读取配置」。
+        """
+        if self.reading:
+            return
+        blend = self.blend.get().strip()
+        if not blend or blend == self._last_read_path:
+            return
+        if not os.path.exists(blend):
+            return                    # 手输到一半的路径不触发
+        self.on_read()
 
     def _choose_dir(self):
         from tkinter import filedialog
@@ -533,14 +556,19 @@ class MinGUI(object):
             self._say("! blender.exe 不存在：%s" % blender)
             return
         self.reading = True
+        self._last_read_path = blend
+        self._read_token += 1
+        token = self._read_token
         self.btn_read.configure(state="disabled")
         self.status.set("读取工程配置中…")
 
         def work():
             try:
-                self.q.put(("inspect_done", read_blend_info(blender, blend)))
+                info = read_blend_info(blender, blend)
+                self.q.put(("inspect_done", {"info": info, "token": token}))
             except Exception as exc:
-                self.q.put(("inspect_error", {"error": "%s: %s" % (type(exc).__name__, exc)}))
+                self.q.put(("inspect_error", {
+                    "error": "%s: %s" % (type(exc).__name__, exc), "token": token}))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -654,12 +682,17 @@ class MinGUI(object):
             except queue.Empty:
                 break
             if kind == "inspect_done":
-                self._on_inspect(ev)
+                if ev.get("token") != self._read_token:
+                    continue          # 过期的读取结果（用户已切到别的工程）
+                self._on_inspect(ev.get("info"))
                 continue
             if kind == "inspect_error":
+                if ev.get("token") != self._read_token:
+                    continue
                 self.reading = False
                 self.btn_read.configure(state="normal")
                 self._say("! 读取失败：%s" % ev.get("error"))
+                self.root.after(50, self.auto_read)
                 continue
             text = event_text(kind, ev)
             if kind == "frame_done":
@@ -684,6 +717,8 @@ class MinGUI(object):
     def _on_inspect(self, info):
         self.reading = False
         self.btn_read.configure(state="normal")
+        # 读取期间用户可能又换了工程：读完立刻补读新路径（不并发起两个 Blender）
+        self.root.after(50, self.auto_read)
         if not info or not info.get("ok"):
             self.status.set("读取失败")
             self._say("! %s" % ((info or {}).get("error") or "未知错误"))
