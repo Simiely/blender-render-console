@@ -7,7 +7,7 @@
 
 import os
 
-from brconsole import diskspace
+from brconsole import diskspace, queue_store
 from brconsole.core import JobConfig, parse_frames
 from brconsole.guimodel.form import (depth_value, fields_from_detail,
                                      format_from_label, format_label, retry_plan)
@@ -85,6 +85,20 @@ def build_config(values):
 def check_disk(cfg):
     """开工前磁盘预检，返回 (level, message)。"""
     return diskspace.check(cfg)
+
+
+def queue_status_after(kind, ev):
+    """一轮任务结束 → 该项在队列里的状态（与完整界面同一套判定）。
+
+    - 渲完（`ok`）→ done
+    - 用户主动停止 → pending（保留断点，点开始可续）
+    - 其它（失败/放弃）→ failed
+    """
+    if kind == "job_done" and ev.get("ok"):
+        return queue_store.STATUS_DONE
+    if ev.get("cancelled"):
+        return queue_store.STATUS_PENDING
+    return queue_store.STATUS_FAILED
 
 
 def fill_from_detail(values, detail, blend=""):
