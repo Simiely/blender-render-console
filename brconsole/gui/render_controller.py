@@ -4,8 +4,15 @@
 由 `brconsole/gui.py` 按变更原因抽出；方法体保持原样，便于逐步迁移到 view 契约。
 """
 
-from .common import *  # noqa: F401,F403
-from .common import _stamp  # noqa: F401
+import os
+import threading
+from tkinter import messagebox
+
+from .. import diskspace, power, queue_store, taskstore
+from ..core import JobConfig, RenderJob
+from ..guimodel.form import FormModel, scene_to_config
+from ..inspect import scene_names
+from .common import fit_combobox  # noqa: F401
 
 
 class RenderControllerMixin(object):

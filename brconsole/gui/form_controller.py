@@ -4,8 +4,15 @@
 由 `brconsole/gui.py` 按变更原因抽出；方法体保持原样，便于逐步迁移到 view 契约。
 """
 
-from .common import *  # noqa: F401,F403
-from .common import _stamp  # noqa: F401
+from tkinter import messagebox
+
+from .. import autostart, taskstore
+from ..guimodel.constants import DEPTH_KEEP_LABEL, RETRY_CHOICES
+from ..guimodel.form import (coerce_depth, depth_choices, depth_value,
+                             format_ext_for, format_from_label, format_label,
+                             retarget_extension, retry_note)
+from ..guimodel.frames import frames_preview, normalise_segment
+from .common import fit_combobox
 
 
 class FormControllerMixin(object):

@@ -4,8 +4,21 @@
 由 `brconsole/gui.py` 按变更原因抽出；方法体保持原样，便于逐步迁移到 view 契约。
 """
 
-from .common import *  # noqa: F401,F403
-from .common import _stamp  # noqa: F401
+import os
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+from .. import locate
+from ..guimodel.constants import SCENE_NEED_READ_LABEL, SCENE_PLACEHOLDERS
+from ..guimodel.form import (FormModel, checks_from_hidden, fields_from_detail,
+                             format_from_label, format_label,
+                             hidden_from_checks)
+from ..guimodel.frames import new_segment
+from ..guimodel.stateinfo import guess_state_path
+from ..inspect import (read_blend_info, scene_detail, scene_names,
+                       summarize as summarize_blend)
+from .common import fit_combobox
 
 
 class InspectControllerMixin(object):

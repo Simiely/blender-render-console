@@ -8,7 +8,9 @@
 
 import queue
 
-from ..guimodel import FormModel, LogModel, NativeLineFilter, ProgressModel
+from ..guimodel.form import FormModel
+from ..guimodel.logs import LogModel, NativeLineFilter
+from ..guimodel.progress import ProgressModel
 
 
 class AppState(object):
