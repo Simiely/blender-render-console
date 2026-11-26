@@ -15,18 +15,22 @@ import os
 import queue
 import sys
 import threading
-import tkinter as tk
-from tkinter import ttk
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 from brconsole import tkboot  # noqa: E402
 
-# 本机 Python 无 tkinter —— 必须先用 sidecar 自举重启，再 import 任何 GUI 模块
+# ⚠️ 顺序不能反：打包后 exe 里的 Python 也没有 tkinter，必须先把它自带的
+#    `_brc/{DLLs,Lib/tkinter,tcl}` 挂回运行环境，再 import tkinter。
+#    源码方式则靠 bootstrap 带 sidecar 重启自己一次。
+tkboot.apply_frozen_env()
 if not tkboot.bootstrap(ROOT, list(sys.argv[1:])) and not tkboot.has_tkinter():
     sys.stderr.write("缺 tkinter 且无 sidecar。先跑：python tools/build_tkinter.py\n")
     sys.exit(2)
+
+import tkinter as tk  # noqa: E402
+from tkinter import ttk  # noqa: E402
 
 from brconsole import autostart, notify, power  # noqa: E402
 from brconsole.core import RenderJob, state_file_for  # noqa: E402
