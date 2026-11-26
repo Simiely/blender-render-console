@@ -54,6 +54,24 @@ class ViewProtocol(Protocol):
 
     def text(self, key): ...
 
+    def set_disabled(self, key, disabled): ...
+
+    def set_overview(self, key, value): ...
+
+    def set_overview_head(self, name, status="pending"): ...
+
+    def set_summary(self, key, text): ...
+
+    def rebuild_collections(self, collections, hidden=(), on_toggle=None): ...
+
+    def collection_hidden(self): ...
+
+    def expand_log(self): ...
+
+    def set_clear_state_enabled(self, enabled): ...
+
+    def set_metrics(self, elapsed, per_frame, speed, eta, finish): ...
+
     def set_versions(self, values): ...
 
     def set_retry_values(self, values): ...
@@ -80,11 +98,25 @@ class ViewProtocol(Protocol):
 
     def set_segments(self, segments, focus=False): ...
 
+    def add_segment(self, start="", end="", step="1", focus=False): ...
+
+    def remove_segment(self, handle): ...
+
     def read_segments(self): ...
 
     def segment_count(self): ...
 
     def refresh_segments(self): ...
+
+    def clear_queue(self): ...
+
+    def add_queue_item(self, text, status="pending"): ...
+
+    def set_queue_count(self, text): ...
+
+    def set_queue_summary(self, text): ...
+
+    def select_queue(self, index): ...
 
     def set_module_expanded(self, key, expanded): ...
 
@@ -164,6 +196,44 @@ class FakeView(object):
         self._record("text", key)
         return self.texts.get(key, "")
 
+    def set_disabled(self, key, disabled):
+        self._record("set_disabled", key, disabled)
+        self.configure(key, state="disabled" if disabled else "normal")
+
+    def set_overview(self, key, value):
+        self._record("set_overview", key, value)
+        self.texts["overview." + key] = str(value)
+
+    def set_overview_head(self, name, status="pending"):
+        self._record("set_overview_head", name, status)
+        self.texts["overview_head"] = name
+        self.texts["overview_status"] = status
+
+    def set_summary(self, key, text):
+        self._record("set_summary", key, text)
+        self.texts["summary." + key] = text
+
+    def rebuild_collections(self, collections, hidden=(), on_toggle=None):
+        self._record("rebuild_collections", collections, hidden)
+        self.collections = list(collections or [])
+        self.collection_hidden_names = list(hidden or [])
+        self.collection_on_toggle = on_toggle
+
+    def collection_hidden(self):
+        self._record("collection_hidden")
+        return list(getattr(self, "collection_hidden_names", []))
+
+    def expand_log(self):
+        self._record("expand_log")
+
+    def set_clear_state_enabled(self, enabled):
+        self._record("set_clear_state_enabled", enabled)
+        self.configure("clear_state", state="normal" if enabled else "disabled")
+
+    def set_metrics(self, elapsed, per_frame, speed, eta, finish):
+        self._record("set_metrics", elapsed, per_frame, speed, eta, finish)
+        self.metrics = (elapsed, per_frame, speed, eta, finish)
+
     def set_versions(self, values):
         self._record("set_versions", values)
         self.configure("blender_ver", values=list(values))
@@ -226,6 +296,20 @@ class FakeView(object):
         self.segments = list(segments or [])
         self._segment_count = len(self.segments)
 
+    def add_segment(self, start="", end="", step="1", focus=False):
+        self._record("add_segment", start, end, step, focus)
+        self.segments.append({"start": start, "end": end, "step": step})
+        self._segment_count = len(self.segments)
+        return self.segments[-1]
+
+    def remove_segment(self, handle):
+        self._record("remove_segment", handle)
+        try:
+            self.segments.remove(handle)
+        except ValueError:
+            pass
+        self._segment_count = len(self.segments)
+
     def read_segments(self):
         self._record("read_segments")
         return list(self.segments)
@@ -237,6 +321,27 @@ class FakeView(object):
     def refresh_segments(self):
         self._record("refresh_segments")
         self._segment_count = len(self.segments)
+
+    def clear_queue(self):
+        self._record("clear_queue")
+        self.queue_items = []
+        self.queue_selected = ()
+
+    def add_queue_item(self, text, status="pending"):
+        self._record("add_queue_item", text, status)
+        self.queue_items.append({"text": text, "status": status})
+
+    def set_queue_count(self, text):
+        self._record("set_queue_count", text)
+        self.set_text("queue_count", text)
+
+    def set_queue_summary(self, text):
+        self._record("set_queue_summary", text)
+        self.set_text("queue", text)
+
+    def select_queue(self, index):
+        self._record("select_queue", index)
+        self.queue_selected = (int(index),)
 
     def set_module_expanded(self, key, expanded):
         self._record("set_module_expanded", key, expanded)

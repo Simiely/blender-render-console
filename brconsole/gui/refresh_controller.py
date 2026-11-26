@@ -13,20 +13,17 @@ from ..guimodel.stateinfo import guess_state_path, state_summary
 class RefreshControllerMixin(object):
     def _refresh(self):
         p = self.prog
-        self.pb["value"] = p.fraction * 100
+        self.view.set_progress(p.fraction * 100)
         # 状态 · ETA · 单帧 全在一行里 —— 不再另贴一个右对齐 Label
         tail = " · ".join(x for x in (p.eta_text(), p.per_frame_text()) if x)
         text = p.status_text()
         if self._queue_mode and self._queue_total:
             text = "队列 %d/%d · %s" % (self._queue_index, self._queue_total, text)
-        self.lbl_status.configure(text=("%s　|　%s" % (text, tail)) if tail else text)
+        self.view.set_text("status", ("%s　|　%s" % (text, tail)) if tail else text)
         self._refresh_metrics(p)
 
     def _refresh_metrics(self, p):
         """把用时 / 单帧 / 速度 / ETA / 预计完成换算成给人看的一行。"""
-        panel = getattr(self, "log_panel", None)
-        if panel is None:
-            return
         if p.started_at is None:
             elapsed = "—"
         elif p.running:
@@ -39,12 +36,12 @@ class RefreshControllerMixin(object):
         eta = fmt_duration(p.eta_sec) if p.eta_sec else "—"
         finish = (fmt_clock(time.time() + p.eta_sec)
                   if (p.eta_sec and p.running) else "—")
-        panel.set_metrics(elapsed, per_frame, speed, eta, finish)
+        self.view.set_metrics(elapsed, per_frame, speed, eta, finish)
 
     def _refresh_state_label(self):
-        info = state_summary(guess_state_path(self.v_output.get()))
+        info = state_summary(guess_state_path(self.view.get("output")))
         if info:
-            self.lbl_state.configure(text="断点：已完成 %d/%d 帧"
-                                          % (info["done"], info["total"]))
+            self.view.set_text("state", "断点：已完成 %d/%d 帧"
+                               % (info["done"], info["total"]))
         else:
-            self.lbl_state.configure(text="断点：无")
+            self.view.set_text("state", "断点：无")

@@ -22,7 +22,7 @@ class AftermathControllerMixin(object):
         """
         if kind != "job_done" or self.demo:
             return
-        plan = aftermath_plan(AFTERMATH_BY_LABEL.get(self.v_aftermath.get()),
+        plan = aftermath_plan(AFTERMATH_BY_LABEL.get(self.view.get("aftermath")),
                               bool(ev.get("ok")), bool(ev.get("cancelled")))
         if plan == AFTERMATH_SHUTDOWN:
             self._countdown("关机", power.SHUTDOWN_COUNTDOWN_SECONDS,

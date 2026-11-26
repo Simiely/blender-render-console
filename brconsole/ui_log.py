@@ -11,36 +11,6 @@ from tkinter import ttk
 from . import theme, uikit
 
 
-class _ProgressProxy(object):
-    def __init__(self, panel):
-        self.panel = panel
-
-    def __setitem__(self, key, value):
-        if key == "value":
-            self.panel.set_progress(value)
-
-
-class _LabelProxy(object):
-    def __init__(self, panel, kind):
-        self.panel = panel
-        self.kind = kind
-
-    def configure(self, **kw):
-        text = kw.get("text")
-        if text is None:
-            return
-        if self.kind == "status":
-            self.panel.status_var.set(text)
-        else:
-            self.panel.set_breakpoint(text)
-
-    def cget(self, key):
-        if key != "text":
-            return ""
-        return (self.panel.status_var.get() if self.kind == "status"
-                else self.panel.breakpoint_var.get())
-
-
 class LogPanel(uikit.ModuleCard):
     def __init__(self, master, on_start=None, on_stop=None, on_open=None,
                  on_clear_state=None, on_clear_log=None, demo=False, **kw):
@@ -98,10 +68,6 @@ class LogPanel(uikit.ModuleCard):
         self._tags()
         if demo:
             self._demo_log()
-        self.txt = self.text
-        self.pb = _ProgressProxy(self)
-        self.lbl_status = _LabelProxy(self, "status")
-        self.lbl_state = _LabelProxy(self, "state")
         self.btn_start = self.buttons["start"]
         self.btn_stop = self.buttons["stop"]
         self.btn_clear_state = self.buttons["clear_state"]

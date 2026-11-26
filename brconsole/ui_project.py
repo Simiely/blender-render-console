@@ -91,7 +91,7 @@ class ProjectModule(uikit.ModuleCard):
         self.scene_combo.configure(values=names, state="readonly")
         self.scene_var.set(active if active in names else names[0])
 
-    def set_collections(self, collections, hidden=()):
+    def set_collections(self, collections, hidden=(), on_toggle=None):
         """collections: [{name, objects}]；hidden 是要隐藏的名字（勾选＝显示）。"""
         for w in self.collections_box.winfo_children():
             w.destroy()
@@ -102,6 +102,8 @@ class ProjectModule(uikit.ModuleCard):
             nobj = item.get("objects") if isinstance(item, dict) else None
             text = "%s（%s 个对象）" % (name, nobj) if nobj is not None else name
             var = tk.BooleanVar(value=(name not in hidden))
+            if on_toggle:
+                var.trace_add("write", lambda *_a: on_toggle())
             cb = ttk.Checkbutton(self.collections_box, text=text, variable=var)
             cb.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 12), pady=2)
             self.collection_vars[name] = var

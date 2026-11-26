@@ -39,19 +39,19 @@ class AppState(object):
         self._inspect_item_id = None
         self._scene_info = None
         self._scene_info_cache = {}
+        self._blender_by_label = {}
+        self._blender_candidates = []
+        self._collection_objects = {}
+        self.hidden_collections = []
+        self._pending_countdown = None
 
-        self._queue_refreshing = False
         self._frame_preview = []
-        self._seg_rows = []
         self._queue_mode = False
         self._current_queue_item = None
         self._selected_queue_id = None
         self._last_queue_event = None
         self._queue_total = 0
         self._queue_index = 0
-
-        self._modules = {}
-        self._overview_tags = {}
 
     def apply_to(self, app):
         """摊平到 App，保持旧方法体可用；新增状态请先加在这里。"""

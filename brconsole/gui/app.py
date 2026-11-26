@@ -51,30 +51,16 @@ class App(FormControllerMixin, InspectControllerMixin,
         elif autostart_mode:
             self.root.after(200, self.try_autostart_resume)
         elif preset_blend:
-            self.v_blend.set(preset_blend)
-            self.v_output.set(FormModel.complete_output("", preset_blend))
+            self.view.set("blend", preset_blend)
+            self.view.set("output", FormModel.complete_output("", preset_blend))
             self.root.after(200, self.on_inspect)
         # 手填/粘贴 Blender 路径时清掉版本下拉的旧选择 —— 界面不能说谎
-        self.v_blender.trace_add("write", self._on_blender_var_changed)
+        self.view.trace("blender", "write", self._on_blender_var_changed)
         self.root.after(POLL_MS, self._poll)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _build(self, root):
         self.view = TkView(self, root)
-
-    def _on_mousewheel(self, event):
-        w = self.root.winfo_containing(event.x_root, event.y_root)
-        path = str(w) if w else ""
-        for canvas in (self.prog_canvas, self.right_canvas):
-            if canvas is not None and path.startswith(str(canvas)):
-                canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
-                return
-
-    def _toggle_module(self, key):
-        m = self._modules.get(key)
-        if m and m.get("card"):
-            m["card"].toggle_card()
-            m["expanded"] = m["card"].expanded
 
     def _setup_demo(self):
         """自检：用假 Blender 顺序跑两个示例队列项（含多段不连续帧）。
@@ -89,8 +75,8 @@ class App(FormControllerMixin, InspectControllerMixin,
         queue_store.save([])
         # demo 走假 Blender，这里只需一个"存在"的可执行文件满足 core 的校验
         exe = sys.executable
-        if not self.v_blender.get():
-            self.v_blender.set(exe)
+        if not self.view.get("blender"):
+            self.view.set("blender", exe)
         specs = (("demo_a", [new_segment("1", "4"), new_segment("9", "10")]),
                  ("demo_b", [new_segment("2", "3")]))
         first_blend = ""
@@ -112,9 +98,10 @@ class App(FormControllerMixin, InspectControllerMixin,
         self._selected_queue_id = q["items"][0]["id"]
         self._apply_queue_item(q["items"][0])
         self._inspected_path = first_blend   # 假工程，别真去调 Blender 读配置
-        self.lbl_state.configure(
-            text="demo 模式：假 Blender 顺序跑 %d 项（第一项分 1-4、9-10 两段）"
-                 % len(q["items"]))
+        self.view.set_text(
+            "state",
+            "demo 模式：假 Blender 顺序跑 %d 项（第一项分 1-4、9-10 两段）"
+            % len(q["items"]))
         self.root.after(300, self.on_start)
 
 

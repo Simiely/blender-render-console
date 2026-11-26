@@ -7,7 +7,7 @@
 import os
 from tkinter import messagebox
 
-from .. import queue_store, theme
+from .. import queue_store
 from ..guimodel.constants import DEFAULT_RETRY, DEPTH_KEEP_LABEL, DEVICES, ENGINES
 from ..guimodel.form import FormModel, format_from_label
 from ..guimodel.frames import segment_label, segments_to_frames
@@ -31,7 +31,7 @@ class QueueControllerMixin(object):
         """重画左栏队列，并把选中项铺到右侧模块（含概览与标题摘要）。"""
         q = queue_store.load()
         items = (q or {}).get("items", [])
-        self.lst_queue.delete(0, "end")
+        self.view.clear_queue()
         for it in items:
             cfg = it.get("config") or {}
             name = os.path.basename(cfg.get("blend") or "?")
@@ -44,30 +44,22 @@ class QueueControllerMixin(object):
             done = ""
             if bp and frames and bp.get("total") == len(frames):
                 done = "已完成 %d/%d" % (bp["done"], bp["total"])
-            self.lst_queue.insert(
-                "end", " %s | %s | %s | %s" % (
-                    name, ("%d 帧" % len(frames)) if frames else "?",
-                    it.get("status", queue_store.STATUS_PENDING), done))
             status = it.get("status")
-            if status == queue_store.STATUS_DONE:
-                self.lst_queue.itemconfig("end", foreground=theme.MUTED)
-            elif status == queue_store.STATUS_FAILED:
-                self.lst_queue.itemconfig("end", foreground=theme.WARN)
-        self.lbl_queue_count.configure(text="%d 项" % len(items))
-        self.lbl_queue.configure(text=queue_store.summary(q))
+            self.view.add_queue_item(
+                " %s | %s | %s | %s" % (
+                    name, ("%d 帧" % len(frames)) if frames else "?",
+                    status or queue_store.STATUS_PENDING, done),
+                status)
+        self.view.set_queue_count("%d 项" % len(items))
+        self.view.set_queue_summary(queue_store.summary(q))
         ids = [it.get("id") for it in items]
         if self._selected_queue_id not in ids:
             self._selected_queue_id = ids[0] if ids else None
         if self._selected_queue_id:
-            idx = ids.index(self._selected_queue_id)
-            self._queue_refreshing = True
-            self.lst_queue.selection_clear(0, "end")
-            self.lst_queue.selection_set(idx)
-            self.lst_queue.see(idx)
-            self._queue_refreshing = False
+            self.view.select_queue(ids.index(self._selected_queue_id))
         # 启动/没有任何编辑时：把选中项的配置铺到右侧，别让左边高亮一项、
-        # 右边却全是「—」。用户一旦自己填过（v_blend 非空）就不再覆盖。
-        if items and not str(self.v_blend.get() or "").strip():
+        # 右边却全是「—」。用户一旦自己填过（blend 非空）就不再覆盖。
+        if items and not str(self.view.get("blend") or "").strip():
             self._apply_queue_item(self._selected_item())
         self._sync_overview()
 
@@ -99,65 +91,59 @@ class QueueControllerMixin(object):
 
     def _sync_overview(self):
         """概览与四个标题摘要：标题栏永远显示当前值，不用展开模块去找。"""
-        if not self._overview_tags:
-            return
         self._collect_form()
         segs = self._read_segments()
         frames, _errors = segments_to_frames(segs)
-        hidden = [n for n, v in self._collection_vars.items() if not v.get()]
-        cfg = (self._selected_item() or {}).get("config") or {}
-        bp = state_summary(guess_state_path(self.v_output.get()))
+        hidden = self.view.collection_hidden()
+        bp = state_summary(guess_state_path(self.view.get("output")))
         bp_text = ("%d/%d" % (bp["done"], bp["total"])) if bp else "无"
-        samples = str(self.v_samples.get() or "").strip()
-        engine = self._short_choice(ENGINES, self.v_engine.get())
-        fmt_ident = format_from_label(self.v_format.get())
+        samples = str(self.view.get("samples") or "").strip()
+        engine = self._short_choice(ENGINES, self.view.get("engine"))
+        fmt_ident = format_from_label(self.view.get("format"))
         fmt = fmt_ident.upper() if fmt_ident else "随工程"
-        depth = str(self.v_depth.get() or "").strip()
+        depth = str(self.view.get("depth") or "").strip()
         if fmt != "随工程" and depth and depth != DEPTH_KEEP_LABEL:
             fmt = "%s · %s 位" % (fmt, depth)
-        w, h = str(self.v_w.get() or "").strip(), str(self.v_h.get() or "").strip()
+        w, h = str(self.view.get("width") or "").strip(), str(self.view.get("height") or "").strip()
         values = {
-            "blend": os.path.basename(self.v_blend.get() or "—") or "—",
+            "blend": os.path.basename(self.view.get("blend") or "—") or "—",
             "frames": " · ".join(segment_label(s) for s in segs if s.get("start") or s.get("end")) or "—",
             "count": "%d 帧" % len(frames),
             "engine": ("%s · 采样 %s" % (engine, samples)) if samples else engine,
-            "device": self._short_choice(DEVICES, self.v_device.get()),
-            "res": ("%s×%s @%s%%" % (w, h, self.v_pct.get() or "100")
+            "device": self._short_choice(DEVICES, self.view.get("device")),
+            "res": ("%s×%s @%s%%" % (w, h, self.view.get("pct") or "100")
                     if (w and h) else "随工程"),
             "format": fmt,
-            "output": self._short_path(self.v_output.get() or "") or "—",
+            "output": self._short_path(self.view.get("output") or "") or "—",
             "hidden": ("、".join(hidden[:2]) + ("　等 %d 个" % len(hidden)
                                               if len(hidden) > 2 else ""))
                       if hidden else "（无）",
             "retry": "%s · 断点 %s" % (
-                "一直重试" if self.v_retry.get() == DEFAULT_RETRY
-                else (self.v_retry.get() or "—"), bp_text),
+                "一直重试" if self.view.get("retry") == DEFAULT_RETRY
+                else (self.view.get("retry") or "—"), bp_text),
         }
-        for key, var in self._overview_tags.items():
-            var.set(values.get(key, "—"))
-        overview = getattr(self, "overview", None)
-        if overview is not None:
-            sel = self._selected_item() or {}
-            name = os.path.basename((sel.get("config") or {}).get("blend")
-                                    or self.v_blend.get() or "")
-            overview.set_head(name or "未选工程",
-                              sel.get("status") or queue_store.STATUS_PENDING)
-        try:
-            self.lbl_sum_overview.configure(
-                text="%s · %d 帧" % (values["blend"], len(frames)))
-            self.lbl_sum_project.configure(
-                text=os.path.basename(self.v_blend.get() or "") or "未选工程")
-            self.lbl_sum_frames.configure(text="%d 段 · %d 帧" % (len(segs), len(frames)))
-            self.lbl_sum_render.configure(
-                text="%s · %s · %sx%s" % (
-                    self._choice_label(ENGINES, self.v_engine.get()),
-                    self._choice_label(DEVICES, self.v_device.get()),
-                    self.v_w.get() or "?", self.v_h.get() or "?"))
-            self.lbl_sum_program.configure(
-                text=os.path.basename(self.v_blender_ver.get()
-                                      or self.v_blender.get() or "—"))
-        except AttributeError:
-            pass                                  # 初始化过程中摘要 Label 还没建全
+        for key, value in values.items():
+            self.view.set_overview(key, value)
+        sel = self._selected_item() or {}
+        name = os.path.basename((sel.get("config") or {}).get("blend")
+                                or self.view.get("blend") or "")
+        self.view.set_overview_head(
+            name or "未选工程",
+            sel.get("status") or queue_store.STATUS_PENDING)
+        self.view.set_summary("overview", "%s · %d 帧" % (values["blend"], len(frames)))
+        self.view.set_summary("project",
+                              os.path.basename(self.view.get("blend") or "")
+                              or "未选工程")
+        self.view.set_summary("frames", "%d 段 · %d 帧" % (len(segs), len(frames)))
+        self.view.set_summary("render",
+                              "%s · %s · %sx%s" % (
+                                  self._choice_label(ENGINES, self.view.get("engine")),
+                                  self._choice_label(DEVICES, self.view.get("device")),
+                                  self.view.get("width") or "?",
+                                  self.view.get("height") or "?"))
+        self.view.set_summary("program",
+                              os.path.basename(self.view.get("blender_ver")
+                                               or self.view.get("blender") or "—"))
 
     def _apply_queue_item(self, item):
         """把某一项的配置快照铺到右侧表单（切队列项 / 渲染下一项都走它）。"""
@@ -174,10 +160,10 @@ class QueueControllerMixin(object):
             self._update_scene_combo(scene_names(cached), cached.get("scene") or "")
             self._rebuild_collection_ui(cached.get("collections") or [],
                                         fm.hidden_collections)
-            self.btn_inspect.configure(text="重新读取工程配置", state="normal")
+            self.view.configure("inspect", text="重新读取工程配置", state="normal")
         else:
             self._scene_info = None
-            self.btn_inspect.configure(text="读取工程配置", state="normal")
+            self.view.configure("inspect", text="读取工程配置", state="normal")
         self._refresh_state_label()
         self._sync_overview()
 
@@ -190,7 +176,7 @@ class QueueControllerMixin(object):
         cfg, errors, _warns = self.form.to_config()
         if errors:
             return                       # 半填状态别写坏快照
-        blender = self.v_blender.get().strip() or item.get("blender_exe") or ""
+        blender = self.view.get("blender").strip() or item.get("blender_exe") or ""
         if not self.demo and not self._plausible_blender(blender):
             blender = ""                 # 别把 python.exe 之类的假路径写回存档
         queue_store.update_config(item["id"], cfg, blender)
@@ -199,7 +185,7 @@ class QueueControllerMixin(object):
     def _on_queue_select(self, _event=None):
         if getattr(self, "_queue_refreshing", False):
             return
-        sel = self.lst_queue.curselection()
+        sel = self.view.queue_selection()
         if not sel:
             return
         q = queue_store.load()
@@ -208,17 +194,13 @@ class QueueControllerMixin(object):
         item = q["items"][sel[0]]
         if item.get("id") == self._selected_queue_id:
             # 点的就是当前项：配置不用重铺，但"点条目"本身仍是要看它，日志跟着展开
-            panel = getattr(self, "log_panel", None)
-            if panel is not None:
-                panel.expand()
+            self.view.expand_log()
             return
         self._snapshot_selected_item()   # 先把旧项的修改存回去
         self._selected_queue_id = item.get("id")
         self._apply_queue_item(item)
         # 切到某一项＝要看这一项的情况，日志/进度面板跟着展开
-        panel = getattr(self, "log_panel", None)
-        if panel is not None:
-            panel.expand()
+        self.view.expand_log()
         self.on_inspect()                 # 新工程自动读配置与集合状态
 
     def on_queue_reorder(self, src, dst):
@@ -235,7 +217,7 @@ class QueueControllerMixin(object):
         self._refresh_queue()
 
     def _on_queue_drag_start(self, event):
-        self._drag_from = self.lst_queue.nearest(event.y)
+        self._drag_from = self.view.queue_nearest(event.y)
 
     def _on_queue_drag_move(self, _event):
         return                            # 只在松手时真正移动，避免抖来抖去
@@ -245,7 +227,7 @@ class QueueControllerMixin(object):
         self._drag_from = None
         if src is None:
             return
-        dst = self.lst_queue.nearest(event.y)
+        dst = self.view.queue_nearest(event.y)
         if src == dst:
             return
         q = queue_store.load()
@@ -292,7 +274,7 @@ class QueueControllerMixin(object):
         return item
 
     def on_queue_remove(self):
-        sel = self.lst_queue.curselection()
+        sel = self.view.queue_selection()
         if not sel:
             return
         q = queue_store.load()
@@ -308,7 +290,7 @@ class QueueControllerMixin(object):
             self._apply_queue_item(nxt)
 
     def on_queue_move(self, delta):
-        sel = self.lst_queue.curselection()
+        sel = self.view.queue_selection()
         if not sel:
             return
         q = queue_store.load()

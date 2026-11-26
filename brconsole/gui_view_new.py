@@ -7,92 +7,17 @@
 
 import time
 import tkinter as tk
-from tkinter import ttk
 
 from . import theme, uikit
 from .guimodel import (AFTERMATH_LABELS, DEFAULT_RETRY, DEPTH_KEEP_LABEL,
-                       DEVICES, ENGINES, FORMATS, RETRY_CHOICES,
-                       SCENE_NEED_READ_LABEL, depth_choices, format_label,
-                       retry_note)
+                       DEVICES, ENGINES, FORMATS,
+                       SCENE_NEED_READ_LABEL, format_label, retry_note)
 from .ui_frames import FramesModule
 from .ui_leftqueue import LeftQueuePanel
 from .ui_log import LogPanel
 from .ui_overview import OverviewModule
 from .ui_project import ProjectModule
 from .ui_render import RenderModule
-
-
-class _LabelProxy(object):
-    def __init__(self, panel, kind):
-        self.panel = panel
-        self.kind = kind
-
-    def configure(self, **kw):
-        text = kw.get("text")
-        if text is None:
-            return
-        if self.kind == "retry":
-            self.panel.set_retry_note(text)
-        else:
-            self.panel.set_autostart_note(text)
-
-    def cget(self, _key):
-        if _key == "text":
-            return (self.panel.retry_note_text if self.kind == "retry"
-                    else self.panel.autostart_note_text)
-        return ""
-
-
-class _StatusProxy(object):
-    """业务的 configure(text=) 落到模块里的一个 StringVar（提示行随之更新）。"""
-
-    def __init__(self, var):
-        self.var = var
-
-    def configure(self, **kw):
-        text = kw.get("text")
-        if text is not None:
-            self.var.set(text)
-
-    def cget(self, _key):
-        return self.var.get() if _key == "text" else ""
-
-
-class _CheckProxy(object):
-    def __init__(self, panel, key):
-        self.panel = panel
-        self.key = key
-
-    def configure(self, **kw):
-        if "state" in kw:
-            # 置灰只影响弹窗里那个勾选框，别顺手把存档状态改掉
-            self.panel.set_disabled(self.key, kw["state"] == "disabled")
-
-
-class _ComboProxy(object):
-    def __init__(self, panel, kind):
-        self.panel = panel
-        self.kind = kind
-
-    def configure(self, **kw):
-        if self.kind == "version":
-            if "values" in kw:
-                self.panel.set_versions(kw["values"])
-            if "width" in kw:
-                self.panel.set_version_width(kw["width"])
-            return
-        if self.kind == "retry":
-            if "values" in kw:
-                self.panel.set_retry_values(kw["values"])
-            if "width" in kw:
-                self.panel.set_retry_width(kw["width"])
-
-    def cget(self, key):
-        if key == "values":
-            return self.panel.version_values if self.kind == "version" else list(RETRY_CHOICES)
-        if key == "font":
-            return ("Microsoft YaHei", 9)
-        return ""
 
 
 def _init_vars(app):
@@ -115,20 +40,6 @@ def _init_vars(app):
     app.v_auto_resume = tk.BooleanVar(value=True)
     app.v_aftermath = tk.StringVar(value=AFTERMATH_LABELS[0][0])
     app.v_blender_ver = tk.StringVar()
-    app._blender_by_label = {}
-    app._blender_candidates = []
-    app._collection_vars = {}
-    app._collection_objects = {}
-    app.hidden_collections = []
-    app._pending_countdown = None
-    app.right_canvas = None
-    app.prog_canvas = None
-
-
-def _hidden(parent, text=""):
-    lbl = ttk.Label(parent, text=text, style="Muted.TLabel")
-    lbl.pack_forget()
-    return lbl
 
 
 def _stack(content, module, first=False, last=False):
@@ -165,10 +76,8 @@ def build(app, root):
         on_autostart=app.on_toggle_autostart,
         on_auto_resume=app.on_toggle_auto_resume)
     left.grid(row=0, column=0, sticky="nsw")
-    app.lst_queue = left
-    app.lbl_queue_count = left.count
-    app.lbl_queue = _hidden(root)
-    app.lst_queue.bind("<<ListboxSelect>>", app._on_queue_select)
+    app.left = left
+    left.bind("<<ListboxSelect>>", app._on_queue_select)
 
     # ---------------- 右栏 ----------------
     right = tk.Frame(main, bg=theme.PANEL)
@@ -181,44 +90,22 @@ def build(app, root):
         on_clear_log=app.clear_log, demo=getattr(app, "demo", False))
     log.pack(side="bottom", fill="x")
     app.log_panel = log
-    # 旧业务直接用这几个句柄：Text / 进度 / 状态行 / 断点行 / 三个按钮
-    app.txt = log.text
-    app.pb = log.pb
-    app.prog_canvas = log.track
-    app.lbl_status = log.lbl_status
-    app.lbl_state = log.lbl_state
-    app.btn_start = log.btn_start
-    app.btn_stop = log.btn_stop
-    app.btn_clear_state = log.btn_clear_state
 
     scroll = uikit.ScrollArea(right)
     scroll.pack(fill="both", expand=True)
-    app.right_canvas = scroll.canvas
     content = scroll.inner
 
     overview = _stack(content, OverviewModule(content), first=True)
     app.overview = overview
-    app._overview_tags = dict(overview.fields)
-    app._overview_tags["frames"] = overview.fields["range"]
 
     project = _stack(content, ProjectModule(
         content, on_browse=app.pick_blend, on_inspect=app.on_inspect,
         on_scene_change=app.on_scene_change, on_blend_commit=app.maybe_inspect,
         blend_var=app.v_blend, scene_var=app.v_scene))
     app.project = project
-    app.ent_blend = project.blend_entry
-    app.cmb_scene = project.scene_combo
-    app.btn_inspect = project.actions["inspect"]
-    app.col_box = project.collections_box
-    # 「集合显示」下的提示行是模块真实控件：业务 configure(text=) 写进它的变量
-    app.lbl_collections = _StatusProxy(project.collection_status)
-    app.lbl_inspect = _hidden(root)
-    app.lbl_scene = _hidden(root)
 
     frames = _stack(content, FramesModule(content, on_add=app.on_add_segment))
     app.frames_module = frames
-    app.seg_rows = frames.grid
-    app.lbl_frames = _hidden(root)
 
     render = _stack(content, RenderModule(
         content, on_choose_dir=app.pick_output,
@@ -230,8 +117,6 @@ def build(app, root):
     render.format_combo.bind("<<ComboboxSelected>>", app._on_format_changed,
                              add="+")
     app.render = render
-    app.cmb_format = render.format_combo
-    app.cmb_depth = render.depth_combo
 
     prog = left.program
     app.program = prog
@@ -242,24 +127,6 @@ def build(app, root):
     app.v_autostart = prog.vars["autostart"]
     app.v_auto_resume = prog.vars["auto_resume"]
     app.v_aftermath = prog.vars["aftermath"]
-    app.cmb_blender_ver = _ComboProxy(prog, "version")
-    app.cmb_retry = _ComboProxy(prog, "retry")
-    app.chk_autostart = _CheckProxy(prog, "autostart")
-    app.chk_auto_resume = _CheckProxy(prog, "auto_resume")
-    app.lbl_retry_note = _LabelProxy(prog, "retry")
-    app.lbl_autostart = _LabelProxy(prog, "autostart")
-
-    # 旧业务仍会 configure 摘要 Label；新界面不显示摘要，用隐藏 Label 吸收。
-    app._modules = {
-        "overview": {"card": overview, "expanded": True, "summary": None},
-        "project": {"card": project, "expanded": True, "summary": None},
-        "frames": {"card": frames, "expanded": True, "summary": None},
-        "render": {"card": render, "expanded": True, "summary": None},
-        "program": {"card": prog, "expanded": False, "summary": None},
-    }
-    for key in ("overview", "project", "frames", "render", "program"):
-        setattr(app, "lbl_sum_" + key, _hidden(root))
-    app.lbl_sum_program.configure(text="")
 
     # 初始化控件状态（业务方法依赖这些）
     app.program.set_versions([])
@@ -277,37 +144,16 @@ _VAR_ATTRS = {
     "blender_ver": "v_blender_ver",
 }
 
-_CONTROL_ATTRS = {
-    "blender_ver": "cmb_blender_ver", "retry": "cmb_retry",
-    "depth": "cmb_depth", "scene": "cmb_scene", "inspect": "btn_inspect",
-    "start": "btn_start", "stop": "btn_stop",
-    "clear_state": "btn_clear_state",
-    "status": "lbl_status", "state": "lbl_state",
-    "retry_note": "lbl_retry_note", "autostart_note": "lbl_autostart",
-    "collection_status": "lbl_collections", "inspect_note": "lbl_inspect",
-    "scene_note": "lbl_scene", "frames_preview": "lbl_frames",
-    "queue_count": "lbl_queue_count", "queue": "lbl_queue",
-}
-
-_TEXT_KEYS = {
-    "status": "lbl_status", "state": "lbl_state",
-    "retry_note": "lbl_retry_note", "autostart_note": "lbl_autostart",
-    "collection_status": "lbl_collections", "inspect_note": "lbl_inspect",
-    "scene_note": "lbl_scene", "frames_preview": "lbl_frames",
-    "queue_count": "lbl_queue_count", "queue": "lbl_queue",
-}
-
-
 class TkView(object):
     """`brconsole.view_contract.ViewProtocol` 的 Tk 实现。
 
-    旧业务仍可直接读 `app.v_*` / `app.lbl_*`（兼容期），但新控制器只走这里。
-    `build()` 保持原样：它仍然把控件别名挂到 app 上，避免一次性大改。
+    控制器只通过语义方法访问界面；`build()` 里不再挂旧控件别名。
     """
 
     def __init__(self, app, root):
         self.app = app
         self.root = root
+        self._texts = {}
         build(app, root)
 
     # ---------- 变量 ----------
@@ -324,31 +170,105 @@ class TkView(object):
         return self.var(name).trace_add(mode, callback)
 
     # ---------- 控件 ----------
+    def _control(self, name):
+        return {
+            "depth": self.app.render.depth_combo,
+            "scene": self.app.project.scene_combo,
+            "inspect": self.app.project.actions["inspect"],
+            "start": self.app.log_panel.btn_start,
+            "stop": self.app.log_panel.btn_stop,
+            "clear_state": self.app.log_panel.btn_clear_state,
+        }[name]
+
     def configure(self, name, **kw):
-        getattr(self.app, _CONTROL_ATTRS.get(name, name)).configure(**kw)
+        if name == "blender_ver":
+            if "values" in kw:
+                self.app.program.set_versions(kw["values"])
+            if "width" in kw:
+                self.app.program.set_version_width(kw["width"])
+            return
+        if name == "retry":
+            if "values" in kw:
+                self.app.program.set_retry_values(kw["values"])
+            if "width" in kw:
+                self.app.program.set_retry_width(kw["width"])
+            return
+        if name == "retry_note":
+            self.app.program.set_retry_note(kw.get("text"))
+            return
+        if name == "autostart_note":
+            self.app.program.set_autostart_note(kw.get("text"))
+            return
+        self._control(name).configure(**kw)
 
     def cget(self, name, key):
-        return getattr(self.app, _CONTROL_ATTRS.get(name, name)).cget(key)
-
-    def _text_widget(self, key):
-        if key.startswith("summary."):
-            return getattr(self.app, "lbl_sum_" + key.split(".", 1)[1])
-        if key.startswith("overview."):
-            return self.app._overview_tags[key.split(".", 1)[1]]
-        return getattr(self.app, _TEXT_KEYS[key])
+        return self._control(name).cget(key)
 
     def set_text(self, key, text, **kw):
-        self._text_widget(key).configure(text=text, **kw)
+        if key == "status":
+            self.app.log_panel.status_var.set(text)
+        elif key == "state":
+            self.app.log_panel.set_breakpoint(text)
+        elif key == "collection_status":
+            self.app.project.collection_status.set(text)
+        elif key == "inspect_note":
+            self.app.project.inspect_status.set(text)
+        elif key == "retry_note":
+            self.app.program.set_retry_note(text)
+        elif key == "autostart_note":
+            self.app.program.set_autostart_note(text)
+        elif key == "queue_count":
+            self.app.left.count.configure(text=text)
+        else:
+            self._texts[key] = text
 
     def text(self, key):
-        return self._text_widget(key).cget("text")
+        if key == "status":
+            return self.app.log_panel.status_var.get()
+        if key == "state":
+            return self.app.log_panel.breakpoint_var.get()
+        if key == "collection_status":
+            return self.app.project.collection_status.get()
+        if key == "inspect_note":
+            return self.app.project.inspect_status.get()
+        if key == "queue_count":
+            return self.app.left.count.cget("text")
+        return self._texts.get(key, "")
+
+    def set_disabled(self, key, disabled):
+        self.app.program.set_disabled(key, disabled)
+
+    def set_overview(self, key, value):
+        field = self.app.overview.fields["range" if key == "frames" else key]
+        field.set(str(value))
+
+    def set_overview_head(self, name, status="pending"):
+        self.app.overview.set_head(name, status)
+
+    def set_summary(self, key, text):
+        self._texts["summary." + key] = text
+
+    def rebuild_collections(self, collections, hidden=(), on_toggle=None):
+        self.app.project.set_collections(collections, hidden, on_toggle=on_toggle)
+
+    def collection_hidden(self):
+        return self.app.project.hidden_collections()
+
+    def expand_log(self):
+        self.app.log_panel.expand()
+
+    def set_clear_state_enabled(self, enabled):
+        self.configure("clear_state", state="normal" if enabled else "disabled")
+
+    def set_metrics(self, elapsed, per_frame, speed, eta, finish):
+        self.app.log_panel.set_metrics(elapsed, per_frame, speed, eta, finish)
 
     # ---------- 下拉 ----------
     def set_versions(self, values):
-        self.configure("blender_ver", values=list(values))
+        self.app.program.set_versions(values)
 
     def set_retry_values(self, values):
-        self.configure("retry", values=list(values))
+        self.app.program.set_retry_values(values)
 
     def set_depth_values(self, values, disabled=False):
         self.configure("depth", values=list(values),
@@ -367,11 +287,11 @@ class TkView(object):
         self.configure("stop", state="normal" if running else "disabled")
 
     def set_progress(self, value):
-        self.app.pb["value"] = value
+        self.app.log_panel.set_progress(value)
 
     # ---------- 日志 ----------
     def append_log(self, lines):
-        text = self.app.txt
+        text = self.app.log_panel.text
         text.configure(state="normal")
         for line in (lines if isinstance(lines, (list, tuple)) else [lines]):
             text.insert("end", "[%s] %s\n" % (
@@ -383,9 +303,10 @@ class TkView(object):
         text.configure(state="disabled")
 
     def clear_log(self):
-        self.app.txt.configure(state="normal")
-        self.app.txt.delete("1.0", "end")
-        self.app.txt.configure(state="disabled")
+        text = self.app.log_panel.text
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        text.configure(state="disabled")
 
     # ---------- 队列 ----------
     def set_queue(self, items, selected_id=None):
@@ -396,19 +317,46 @@ class TkView(object):
                 if item.get("id") == selected_id:
                     selected = i
                     break
-        self.app.lst_queue.set_items(items, selected)
+        self.app.left.set_items(items, selected)
 
     def queue_selection(self):
-        return tuple(self.app.lst_queue.curselection())
+        return tuple(self.app.left.curselection())
 
     def queue_nearest(self, y):
-        return self.app.lst_queue.nearest(y)
+        return self.app.left.nearest(y)
+
+    def clear_queue(self):
+        self.app.left.delete(0, "end")
+
+    def add_queue_item(self, text, status="pending"):
+        self.app.left.insert("end", text)
+        if status == "done":
+            self.app.left.itemconfig("end", foreground=theme.MUTED)
+        elif status == "failed":
+            self.app.left.itemconfig("end", foreground=theme.WARN)
+
+    def set_queue_count(self, text):
+        self.app.left.count.configure(text=text)
+
+    def set_queue_summary(self, text):
+        self._texts["queue"] = text
+
+    def select_queue(self, index):
+        self.app.left.selection_clear(0, "end")
+        self.app.left.selection_set(index)
+        self.app.left.see(index)
 
     # ---------- 帧段 ----------
     def set_segments(self, segments, focus=False):
         self.app.frames_module.set_segments(segments)
         if focus and self.app.frames_module.rows:
             self.app.frames_module.rows[-1]["start"].focus_set()
+
+    def add_segment(self, start="", end="", step="1", focus=False):
+        return self.app.frames_module.add_segment(start, end, step, focus=focus)
+
+    def remove_segment(self, handle):
+        self.app.frames_module.remove_handle(handle)
 
     def read_segments(self):
         return self.app.frames_module.read_segments()
