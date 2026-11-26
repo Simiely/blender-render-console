@@ -32,7 +32,7 @@ class EventControllerMixin(object):
             self.native_filter.reset()   # 新任务重新记账，别把上一轮的折叠数带过来
         self.prog.on_event(kind, ev)
         if kind == "native":
-            if self.v_native.get() and ev.get("line"):
+            if self.view.get("native") and ev.get("line"):
                 # 默认开启 + 折叠：采样进度一秒最多留一条，被折掉的数量会附在下一条前面
                 for text in self.native_filter.feed(ev["line"]):
                     self.log.add("  | %s" % text)
@@ -46,9 +46,8 @@ class EventControllerMixin(object):
             # 任务收尾：把最后一段的折叠数交代清楚，否则尾部那截等于被静默吞掉
             for text in self.native_filter.flush():
                 self.log.add("  | %s" % text)
-            self.btn_start.configure(state="normal")
-            self.btn_stop.configure(state="disabled")
-            self.btn_clear_state.configure(state="normal")
+            self.view.set_running(False)
+            self.view.set_clear_state_enabled(True)
             self.worker = None
             self._refresh_state_label()
             self._settle_task(kind, ev)

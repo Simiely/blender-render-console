@@ -171,17 +171,16 @@ class RenderControllerMixin(object):
         self.job = RenderJob(cfg, blender, cmd_factory=self.cmd_factory,
                              power_guard=(power.keep_awake, power.allow_sleep))
         self.stopping = False
-        self.btn_start.configure(state="disabled")
-        self.btn_stop.configure(state="normal")
+        self.view.set_running(True)
         # 模型必须在这里就复位：`job_start` 事件要等后台线程跑起来才到（中间还有
         # 建目录、读/写断点这些磁盘 IO），而 `_refresh` 每 80ms 就用模型刷一次界面 ——
         # 不复位的话，进度条会先跳回上一轮的百分比再归零，状态栏也会闪一下旧文案。
         self.prog.reset()
-        self.pb["value"] = 0
+        self.view.set_progress(0)
         self._refresh()
         # 这次从哪个断点开始，开始前就说清楚（否则"看着像从零开始"）
         self._refresh_state_label()
-        self.btn_clear_state.configure(state="disabled")
+        self.view.set_clear_state_enabled(False)
         self.worker = threading.Thread(target=self._worker, daemon=True)
         self.worker.start()
         # 把"哪几段、共几帧"写进日志：过夜挂机时回头查日志，得能一眼看出这次渲的是什么
@@ -189,7 +188,7 @@ class RenderControllerMixin(object):
         self._log("开始渲染：%s%s（%d 段，%d 帧 —— %s）"
                   % (cfg.blend, "（场景 %s）" % cfg.scene if cfg.scene else "",
                      nseg, len(cfg.frames),
-                     self.lbl_frames.cget("text")))
+                     self.view.text("frames_preview")))
         # 首帧准备提示前置：大工程读 .blend + 加载贴图 + 上传 GPU 实测可达 110s，
         # 这段时间 Blender 没有任何 stdout，用户最容易误判卡死而点停止（本项目真实事故）。
         self._log("  提示：首帧准备（读工程/加载贴图/上传场景）大工程可能要 1～3 分钟，"
@@ -201,11 +200,11 @@ class RenderControllerMixin(object):
         为什么要在界面拦：命令行 `-S 不存在的场景` 时 Blender **只打一行英文提示就
         照常渲染默认场景、退出码还是 0**（实测 5.2.2），不拦就会静默渲出一整套错图。
         """
-        scene = scene_to_config(self.v_scene.get())
+        scene = scene_to_config(self.view.get("scene"))
         info = self._scene_info
         if not scene or not info:
             return ""
-        if os.path.abspath(info.get("blend") or "") != os.path.abspath(self.v_blend.get().strip()):
+        if os.path.abspath(info.get("blend") or "") != os.path.abspath(self.view.get("blend").strip()):
             return ""                      # 配置是上一个工程读的，别拿它下判断
         names = scene_names(info)
         if names and scene not in names:
@@ -225,7 +224,7 @@ class RenderControllerMixin(object):
             return
         self.stopping = True
         self.job.cancel()
-        self.btn_stop.configure(state="disabled")
+        self.view.configure("stop", state="disabled")
         self._log("正在停止…（已完成的部分已保存，下次可从断点继续）")
         # 主动停止 = "我知道，别自己跑"：撤掉自动续跑标记，但断点文件原样留着。
         # 改标记而不是删存档 —— 删了断点就成了"没跑过"，用户还得从头来。
