@@ -197,18 +197,13 @@ class MinGUI(object):
         label("重试")
         row5 = ttk.Frame(f)
         row5.grid(row=r, column=1, columnspan=3, sticky="w")
+        # 只有这一个下拉：选中的次数**同时**管「崩溃后重启」与「单帧尝试」，
+        # 「连续无进展轮数」固定 3（内核唯一的防死循环闸门，不开放让用户填 0）。
+        # 别再拆成「下拉 + 三个数字框」——那是项目早就合并掉的设计。
         self.retry = tk.StringVar(value=RETRY_CHOICES[0])
         ttk.Combobox(row5, textvariable=self.retry, width=24, state="readonly",
                      values=RETRY_CHOICES).pack(side="left")
-        ttk.Label(row5, text=" 覆盖: 重启 ").pack(side="left", padx=(8, 0))
-        self.restarts_ov = tk.StringVar()
-        ttk.Entry(row5, textvariable=self.restarts_ov, width=6).pack(side="left")
-        ttk.Label(row5, text=" 单帧 ").pack(side="left")
-        self.attempts_ov = tk.StringVar()
-        ttk.Entry(row5, textvariable=self.attempts_ov, width=6).pack(side="left")
-        ttk.Label(row5, text=" 无进展 ").pack(side="left")
-        self.noprogress_ov = tk.StringVar()
-        ttk.Entry(row5, textvariable=self.noprogress_ov, width=6).pack(side="left")
+        ttk.Label(row5, text="  （同时管重启与单帧尝试；无进展固定 3 轮）").pack(side="left")
         r += 1
 
         # --- 开关 ---
@@ -560,9 +555,6 @@ class MinGUI(object):
             "height": self.height.get(), "pct": self.pct.get(),
             "format": self.fmt.get(), "depth": self.depth.get(),
             "output": self.output.get(), "retry": self.retry.get(),
-            "restarts_override": self.restarts_ov.get(),
-            "attempts_override": self.attempts_ov.get(),
-            "no_progress_override": self.noprogress_ov.get(),
             "resume": bool(self.resume.get()),
             "hidden": self._hidden(),
         }
