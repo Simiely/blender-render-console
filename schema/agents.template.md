@@ -21,7 +21,7 @@
 
 - **Blender 5.2.2 LTS**，内置 Python 3.13.13，引擎 Cycles / EEVEE，渲染设备 OptiX 或 CUDA
 - **宿主 Python 3.13.12**（托管版，**不含 tkinter**）——靠 `sidecar/` 提供（`tools/build_tkinter.py` 生成，`tkboot.py` 负责自举）
-- 交付产物：PyInstaller **单文件** exe（`dist/blender-render-console.exe` 界面版 / `dist/brc.exe` 命令行版）
+- 交付产物：PyInstaller **单文件** exe（`dist/blender-render-console.exe` 界面版，唯一交付物；命令行源码保留但不再产出 brc.exe）
 - **图标**：`assets/app.ico`（`tools/make_icon.py` 纯标准库生成，**不需要 Pillow**）
 - **版本号唯一来源**：`brconsole/__init__.py` 的 `__version__`（打包时现读，别在别处再写一份）
 - 平台：Windows（bash 走 Git Bash）
@@ -61,8 +61,8 @@ python -m unittest discover -s tests -t tests -p "test_*.py"
 python tools/smoke_real_blender.py
 python tools/smoke_real_blender.py --only 7     # 只跑多段不连续帧那一场
 
-# 打包成两个单文件 exe（产出后自动跑 5 项自检：--help / 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
-python tools/build_exe.py --both
+# 打包成唯一的 GUI 单文件 exe（自检临时打 console exe 到 build/_selftest/，跑完即删，不进 dist/）
+python tools/build_exe.py
 
 # 重新生成应用图标；**改完图标先扫一眼跨尺寸对照图再打包**（16px 才是任务栏里看到的那个）
 python tools/make_icon.py

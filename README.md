@@ -25,7 +25,7 @@
 > 关键语义：界面「集合显示」**勾选＝渲染时显示**，取消勾选＝渲染时隐藏；底层
 > `hidden_collections` 仍存「要隐藏的名字」，命令行 `--hide-collection` 语义不变。
 > 队列项各自带断点，停止后点「开始渲染」可继续；开机自启仍认领当前项的任务存档。
-> 单文件 exe 仍可用：`dist/blender-render-console.exe`（双击即界面）/ `dist/brc.exe`（命令行）。
+> 单文件 exe：`dist/blender-render-console.exe`（双击即界面）。交付只含 GUI 版；命令行源码保留供源码方式调用。
 
 | 能力 | 状态 |
 |---|---|
@@ -82,7 +82,6 @@
 dist/blender-render-console.exe              # 双击也行：打开界面
 dist/blender-render-console.exe --gui 工程.blend
 dist/blender-render-console.exe --autostart  # 开机自启项用的就是这条（一般不用手敲）
-dist/brc.exe 工程.blend -s 1 -e 240 -o out/frame_####   # 命令行版，保留终端输出
 ```
 
 想开机自动接着渲：打开界面 → 勾上「**开机自动启动**」（旁边会显示登记到注册表的命令原文）。
@@ -94,7 +93,7 @@ exe 已经把 tcl/tk 与驱动脚本一并打包（单文件、免安装、不�
 
 ```bash
 python tools/build_tkinter.py        # 只在第一次需要：生成 sidecar/（本机 Python 没有 tkinter）
-python tools/build_exe.py --both     # 产出 dist/ 下两个 exe，并自动跑一遍打包后自检
+python tools/build_exe.py            # 产出 dist/ 下唯一的 GUI exe，并自动跑一遍打包后自检
 ```
 
 ### 图形界面（源码方式）
@@ -311,8 +310,8 @@ python tools/smoke_real_blender.py
 #   6/7 多场景 -S 选场景（以产物尺寸为证）+ 场景名写错时的告警
 #   7/7 多段不连续帧（-f 1-3x2,5，比对三张图的 sha256）
 
-# 打包（产出后自动跑 5 项自检：--help / exe 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
-python tools/build_exe.py --both
+# 打包（只产出 GUI exe；自检临时打一个 console exe 到 build/_selftest/，跑完即删）
+python tools/build_exe.py
 
 # 改图标后先扫一眼跨尺寸对照图（16px 才是任务栏里真正看到的那个）
 python tools/make_icon.py --sheet sheet.png

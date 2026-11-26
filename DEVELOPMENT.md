@@ -256,7 +256,8 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 取不到空间信息一律放行；宽高留空时只有水位那档生效。真机 17 项核对全通过，
 含真实弹框截图（`tmp_probe/gui_diskspace.py`）。
 
-`dist/` 下有两个可直接分发的单文件 exe（图形界面版 / 命令行版），带图标与版本信息。
+`dist/` 下只有一个可交付的单文件 exe（图形界面版），带图标与版本信息。
+命令行源码保留（`python main.py <blend> ...`），但不再打包 brc.exe。
 第四节待办清单已全部完成。
 
 ---
@@ -943,8 +944,9 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 4. ~~**崩溃续跑实测**~~ —— ✅ 2026-10-04 完成（`tools/smoke_real_blender.py`）：渲染中途 `taskkill` 掉 Blender，退出码 1 → 第 1 次重启 → 只渲染剩余帧 `[6]` → 最终 6/6。
 5. ~~**编写 GUI**~~ —— ✅ 2026-10-04 完成（`gui.py` / `guimodel.py` / `theme.py` / `inspect.py` / `tkboot.py`）。
    任务配置 + 进度条 + ETA + 日志面板 + 深色主题 + **选中工程自动读配置**，真窗口截图验证通过。
-6. ~~**PyInstaller 打包**~~ —— ✅ 2026-10-04 完成（`tools/build_exe.py`），`dist/` 下产出两个单文件 exe：
-   `blender-render-console.exe`（`--windowed`，双击即界面）与 `brc.exe`（保留控制台输出，排错用）。要点：
+6. ~~**PyInstaller 打包**~~ —— ✅ 2026-10-04 完成（`tools/build_exe.py`），`dist/` 下只交付一个单文件 exe：
+   `blender-render-console.exe`（`--windowed`，双击即界面）。命令行源码保留供源码调用，不再打包 brc.exe；
+   自检用的 console exe 临时打在 `build/_selftest/`（跑完即删）。要点：
    - driver 与 inspect 脚本本就以**源码字符串内嵌**、运行时释放到临时目录（onefile 下包内文件不在磁盘上）
    - sidecar **整棵 `tcl` 目录**进包 → `_MEIPASS/_brc/{DLLs,Lib/tkinter,tcl}`，运行时由 `tkboot.apply_frozen_env()` 挂回
    - 打包用 **spec 文件 + `Tree()`**，不能用命令行 `--add-data`：sidecar 有几百个文件，
@@ -991,7 +993,7 @@ Temp 全写不进去；Run 项本身是登录后才执行的，拦不住开机�
 | `tools/build_tkinter.py` | tkinter 提取与拼装（GUI 阶段用） |
 | `tools/make_icon.py` | **生成应用图标**（纯标准库 + 4× 超采样，手写 ICO 容器，不需要 Pillow）；`--sheet` 出跨尺寸/跨明暗底对照图 |
 | `assets/app.ico` | 图标本体：16/24/32/48/64/128/256 七层，≤128 用 BMP、256 用 PNG 编码 |
-| `tools/build_exe.py` | PyInstaller 打包（spec + `Tree()`），写图标与版本资源，产出两个单文件 exe，并**默认跑一遍打包后自检** |
+| `tools/build_exe.py` | PyInstaller 打包（spec + `Tree()`），写图标与版本资源，只产出 GUI 单文件 exe，并**默认跑一遍打包后自检**（临时 console exe 在 `build/_selftest/`，跑完即删） |
 | `tools/smoke_real_blender.py` | **真机冒烟 7 场景**：渲染 6 帧 → 杀掉 Blender → 续跑 → EEVEE 引擎切换 → 读工程配置 → 多场景 `-S` 选场景 → 多段不连续帧 → 「一直重启」A/B 对照 |
 | `tools/capture_screen.py` | 抓窗口/全屏 PNG（ctypes 调 GDI + PrintWindow），用于核对界面布局与配色；`--probe x,y` 采样像素；`--list` 列窗口标题 |
 | `tools/arch_metrics.py` | **架构度量**：解析 import 建依赖图，输出 Ca/Ce/I 耦合表、依赖环（文件级）、SDP 违规、扇入榜；运行时 / `TYPE_CHECKING` / 函数体惰性三类依赖分开统计。**改依赖后重跑** |

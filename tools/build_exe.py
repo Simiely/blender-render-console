@@ -2,13 +2,14 @@
 r"""打包成单个 exe（PyInstaller）。
 
     python tools/build_exe.py                # 打 GUI 版（--windowed，双击用界面）
-    python tools/build_exe.py --console      # 打命令行版（保留控制台输出）
-    python tools/build_exe.py --both         # 两个都打
     python tools/build_exe.py --keep-build   # 保留 build/ 便于排错
 
 产出在 `dist/`：
     blender-render-console.exe   图形界面版（--windowed）
-    brc.exe                      命令行版（--console，输出能打到终端）
+
+**只交付 GUI 版**。命令行源码（brconsole/cli.py）保留，供源码方式调用与自检使用，
+但不再产出 brc.exe。打包后自检仍需要控制台输出（`--help` / `##PROG##`），
+因此会临时打一个 console exe 到 build/_selftest/，自检完即删，不进 dist/。
 
 图标与版本信息：
 - `assets/app.ico` 由 `tools/make_icon.py` 生成（纯标准库，**不需要 Pillow**），
@@ -60,7 +61,10 @@ VENV_CANDIDATES = [
 ]
 
 GUI_NAME = "blender-render-console"
-CLI_NAME = "brc"
+#: 自检专用的临时 console exe —— 只为拿到 stdout 跑 verify()，放 build/_selftest/，
+#: 自检结束即删，绝不进 dist/（交付只有 GUI 版）
+SELFTEST_NAME = "brc_selftest"
+SELFTEST_DIR = os.path.join(ROOT, "build", "_selftest")
 
 
 def log(msg):
@@ -467,25 +471,26 @@ exe = EXE(
     return path
 
 
-def build(python, console=False, keep_build=False):
-    name = CLI_NAME if console else GUI_NAME
+def build(python, console=False, keep_build=False, dist_dir=None, name=None):
+    name = name or (SELFTEST_NAME if console else GUI_NAME)
+    dist_dir = dist_dir or os.path.join(ROOT, "dist")
     ver_file = write_version_file(
         os.path.join(ROOT, "build", name + "_version.txt"), name)
     spec = write_spec(os.path.join(ROOT, "build", name + ".spec"), name, console,
                       ver_file)
     args = [
         python, "-m", "PyInstaller", "--noconfirm", "--clean",
-        "--distpath", os.path.join(ROOT, "dist"),
+        "--distpath", dist_dir,
         "--workpath", os.path.join(ROOT, "build", name),
         spec,
     ]
-    log("打包 %s（%s）…" % (name, "console" if console else "windowed"))
+    log("打包 %s（%s）→ %s" % (name, "console" if console else "windowed", dist_dir))
     p = subprocess.run(args, cwd=ROOT)
     if p.returncode != 0:
         log("打包失败（rc=%s）" % p.returncode)
         return False
 
-    exe = os.path.join(ROOT, "dist", name + ".exe")
+    exe = os.path.join(dist_dir, name + ".exe")
     if not os.path.exists(exe):
         log("没找到产物：%s" % exe)
         return False
@@ -504,10 +509,11 @@ def verify(exe_dir):
 
     这里查的正是踩过的坑：sidecar 的 tcl 目录、内置假 Blender 到底有没有真的解包出来。
     （datas 条目顺序写反时，TOC 里照样有记录、构建也照样"成功"，但运行时找不到文件。）
-    两个 exe 的数据一致，查保留控制台输出的那个就够。
+    自检用的是与 GUI 版同 spec 的临时 console exe（build/_selftest/，跑完即删）——
+    `--windowed` 的 exe 抓不到 stdout，拿不到 `--help` 与 `##PROG##` 的证据。
     """
     exe_dir = os.path.abspath(exe_dir)      # 见 _exe_file_version 的注释：Win32 资源 API 只认绝对路径
-    exe = os.path.join(exe_dir, CLI_NAME + ".exe")
+    exe = os.path.join(exe_dir, SELFTEST_NAME + ".exe")
     if not os.path.exists(exe):
         log("  ✗ 自检跳过：没找到 %s" % exe)
         return False
@@ -575,8 +581,6 @@ def verify(exe_dir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--console", action="store_true", help="只打命令行版")
-    ap.add_argument("--both", action="store_true", help="GUI 版 + 命令行版都打")
     ap.add_argument("--keep-build", action="store_true", help="保留 build/ 便于排错")
     ap.add_argument("--no-verify", action="store_true",
                     help="跳过打包后自检（默认会跑一遍，确认 sidecar 与内置假 Blender 真的解包出来了）")
@@ -602,22 +606,23 @@ def main():
         if not os.path.exists(need):
             raise SystemExit("缺 %s —— %s" % (need, why))
 
-    ok = True
-    if args.console:
-        ok = build(python, console=True, keep_build=args.keep_build)
-    elif args.both:
-        ok = build(python, console=False, keep_build=args.keep_build)
-        ok &= build(python, console=True, keep_build=args.keep_build)
-    else:
-        ok = build(python, console=False, keep_build=args.keep_build)
+    ok = build(python, console=False, keep_build=args.keep_build)
 
     if ok and not args.no_verify:
-        log("\n打包后自检：")
-        ok &= verify(os.path.join(ROOT, "dist"))
+        # 自检需要控制台输出（--help / ##PROG## / core 流水线 rc），
+        # 所以临时打一个同 spec 的 console exe 到 build/_selftest/，跑完删除。
+        log("\n自检准备：临时打 console exe 到 build/_selftest/（不进 dist/）…")
+        ok = build(python, console=True, keep_build=True,
+                   dist_dir=SELFTEST_DIR, name=SELFTEST_NAME)
+        if ok:
+            log("\n打包后自检：")
+            ok &= verify(SELFTEST_DIR)
+        # 无论自检结果如何都清掉临时产物；--keep-build 是给排错留 build/ 的，
+        # 但自检 exe 不该留在里面冒充交付物。
+        shutil.rmtree(SELFTEST_DIR, ignore_errors=True)
 
     if ok:
-        log("\n产物在 dist/ —— 界面版双击即可，命令行版示例：")
-        log('  brc.exe 工程.blend -s 1 -e 240 -o out/frame_####')
+        log("\n产物在 dist/ —— 双击 blender-render-console.exe 即可用界面版。")
     return 0 if ok else 1
 
 

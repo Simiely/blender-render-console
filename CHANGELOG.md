@@ -37,7 +37,9 @@
   只收一个参数，窗口关闭时抛 `TypeError: Misc.unbind_all() takes 2 positional arguments but 3 were given`。
   改为在 Tcl 绑定脚本层按 funcid 摘掉自己那行，既不误清 `ui_leftqueue` 的全局滚轮绑定，
   也不抛异常；新增 `tests/test_uikit.py` 两条钉住"只删自己的行"。
-- **打包 exe 回归**：`python tools/build_exe.py --both` 产出两个单文件 exe，5 项自检全过
+- **只交付 GUI exe**：`python tools/build_exe.py` 现在只产出 `dist/blender-render-console.exe`，
+  不再打包 `brc.exe`（命令行源码保留供源码调用）。自检需要的控制台输出改由**临时 console exe**
+  提供（打在 `build/_selftest/`，跑完即删，不进 dist/）；5 项自检全过
   （`--help` / 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）。
 - **高 DPI + 窄窗口截图回归**：真实 TkView 窗口在 1000x840 与 900x700 两种尺寸下截图核对，
   两栏布局、模块留白、折叠日志条与底部操作条均正常，无裁切/重叠/异常 traceback。
