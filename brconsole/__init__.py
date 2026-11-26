@@ -50,4 +50,4 @@
 #    共用常量放**叶子模块**：打包布局见 `layout.py`。
 #    这条由 `tools/check_boundaries.py` 的 `init-stays-leaf` 规则守着。
 
-__version__ = "0.11.2"
+__version__ = "0.12.0"

@@ -28,6 +28,7 @@ related: []
 | C-03 | 开机自启认领未完成任务 | `main.py --autostart` | `main.py:101` → `gui.try_autostart_resume`（`gui.py:941`） |
 | C-04 | 自检 demo（假 Blender，不吃 GPU） | `main.py --demo` | `main.py:73` `_demo_cmd_factory` |
 | C-05 | 单实例互斥（第二次启动聚焦已有窗口） | 隐式 | `applock.py:35` `acquire` / `applock.py:62` `focus_window` |
+| C-06 | 最简测试界面（功能对齐、不依赖 GUI 契约层；排错用） | `min_gui.py` / `dist/min_gui.exe` | `min_gui.py`（`MinGUI`）；纯逻辑 `min_gui_model.py`；`build_exe.py --min-gui` |
 
 ## 1. 任务表单（GUI「任务」区）
 

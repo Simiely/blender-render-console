@@ -1,10 +1,11 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-26 · v0.11.2 视图契约迁移 + 长期维护治理 + 收尾回归（规范 2.1.4；62 条关键坑见 `rules/关键坑.md`）
-> 上一基线：2026-11-25 · `4186344` · v0.11.0 两栏界面重构 + 队列顺序渲染 + demo 存档隔离
-> 再上一基线：2026-11-25 · `cfbfcce` · v0.10.0 多工程队列 + 隐藏集合
-> 再上一基线：2026-11-25 · `ee1bb89` · v0.9.4 首帧提示 + 贴图告警折叠 + 5.3 探针
-> 上一基线：2026-11-18 · `aa50c1a` · 规范 2.1.4 拆分：59 条关键坑迁入 `rules/关键坑.md`，AGENTS 226→125 行
+> 📌 **文档基线**：2026-11-26 · v0.12.0 最简测试界面（排错用）+ 两类回填缺陷修正（规范 2.1.4；64 条关键坑见 `rules/关键坑.md`）
+> 上一基线：2026-11-26 · v0.11.2 视图契约迁移 + 长期维护治理 + 收尾回归
+> 再上一基线：2026-11-25 · `4186344` · v0.11.0 两栏界面重构 + 队列顺序渲染 + demo 存档隔离
+> 更早基线：2026-11-25 · `cfbfcce` · v0.10.0 多工程队列 + 隐藏集合
+> 更早基线：2026-11-25 · `ee1bb89` · v0.9.4 首帧提示 + 贴图告警折叠 + 5.3 探针
+> 更早基线：2026-11-18 · `aa50c1a` · 规范 2.1.4 拆分：59 条关键坑迁入 `rules/关键坑.md`，AGENTS 226→125 行
 > （本机无 git，经 Git Data API 推送，commit `fc967c5`。上一基线：v0.8.4 重试合并成**一个下拉**（次数同时管重启与单帧尝试，默认「一直重复」）；
 > 再上：v0.8.3 收成一个「尽力渲完」勾选 —— **那一版读偏了用户意思，已被 v0.8.4 取代**；
 > v0.8.2 场景名对不上→立刻失败 + 停止不再吃重试额度；v0.8.1 自绘 ✔ + 原生输出默认开）
@@ -21,12 +22,12 @@
 
 - **Blender 5.2.2 LTS**，内置 Python 3.13.13，引擎 Cycles / EEVEE，渲染设备 OptiX 或 CUDA
 - **宿主 Python 3.13.12**（托管版，**不含 tkinter**）——靠 `sidecar/` 提供（`tools/build_tkinter.py` 生成，`tkboot.py` 负责自举）
-- 交付产物：PyInstaller **单文件** exe（`dist/blender-render-console.exe` 界面版，唯一交付物；命令行源码保留但不再产出 brc.exe）
+- 交付产物：PyInstaller **单文件** exe —— `dist/blender-render-console.exe`（界面版，主交付）+ `dist/min_gui.exe`（最简测试界面，排错用）；命令行源码保留但不再产出 brc.exe
 - **图标**：`assets/app.ico`（`tools/make_icon.py` 纯标准库生成，**不需要 Pillow**）
 - **版本号唯一来源**：`brconsole/__init__.py` 的 `__version__`（打包时现读，别在别处再写一份）
 - 平台：Windows（bash 走 Git Bash）
 
-## 关键坑（最高频 8 条；完整 59 条见 @rules/关键坑.md）
+## 关键坑（最高频 8 条；完整 64 条见 @rules/关键坑.md）
 
 1. **Blender 5.2 的进度输出格式与 4.x 完全不同**：网上 4.x 的 `Fra:1 Mem:... | Remaining:...` 正则匹配不到任何东西。任何解析改动先跑 `tools/probe_render.py` 对照 `probes/` 的真实样本。
 2. **必须加 `--python-exit-code 1`**：否则 Blender 吞掉脚本异常并返回 0，外层误判"渲染成功"。
@@ -37,7 +38,7 @@
 7. **上游算出来、下游没人接 = 死字段**（坑 56）：grep 只命中生产侧等于没做；测试要断言**结论**，不能只断言**标识**。
 8. **测试替身与真实现的常量表会分叉，且分叉时全绿**（坑 44）：需要一条"逐项相等"的契约用例把它们锁在一起。
 
-> 完整清单（59 条：ttk 样式 / 打包 / exe / 续跑 / 输出格式位数…）见 @rules/关键坑.md。
+> 完整清单（64 条：ttk 样式 / 打包 / exe / 续跑 / 输出格式位数…）见 @rules/关键坑.md。
 
 ## 约定
 - 命令一律用**绝对路径**调 `blender.exe`，不依赖 PATH
@@ -53,7 +54,7 @@
 # 必须显式指定 openssl 后端，否则 push 报错
 git -c http.sslBackend=openssl push origin main
 
-# 单测（523 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
+# 单测（538 条，不依赖 Blender；只用标准库 unittest，**别去装 pytest**）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 真机冒烟 7 场景：渲染 → 杀掉 Blender → 续跑 → EEVEE 切换 → 读工程配置 → 「一直重启」A/B → 多场景
@@ -63,6 +64,8 @@ python tools/smoke_real_blender.py --only 7     # 只跑多段不连续帧那一
 
 # 打包成唯一的 GUI 单文件 exe（自检临时打 console exe 到 build/_selftest/，跑完即删，不进 dist/）
 python tools/build_exe.py
+# 另打最简测试界面 → dist/min_gui.exe（独立产物，与完整版并存）
+python tools/build_exe.py --min-gui
 
 # 重新生成应用图标；**改完图标先扫一眼跨尺寸对照图再打包**（16px 才是任务栏里看到的那个）
 python tools/make_icon.py

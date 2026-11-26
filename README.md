@@ -18,19 +18,22 @@
 
 ## 当前状态
 
-> **v0.11.2：视图契约迁移 + 两栏界面 + 多工程队列顺序渲染** —— 左侧是渲染队列，右侧展开当前工程的
+> **v0.12.0：新增最简测试界面 + 两栏界面 + 多工程队列顺序渲染** —— 左侧是渲染队列，右侧展开当前工程的
 > 概览 / 工程 / 帧范围 / 渲染参数，右下角进度与日志常显。点「开始渲染」会**按队列顺序
 > 跑完所有工程**（不再有单独的「跑队列」按钮）；队列为空时直接跑当前表单。
 >
 > 关键语义：界面「集合显示」**勾选＝渲染时显示**，取消勾选＝渲染时隐藏；底层
 > `hidden_collections` 仍存「要隐藏的名字」，命令行 `--hide-collection` 语义不变。
 > 队列项各自带断点，停止后点「开始渲染」可继续；开机自启仍认领当前项的任务存档。
-> 单文件 exe：`dist/blender-render-console.exe`（双击即界面）。交付只含 GUI 版；命令行源码保留供源码方式调用。
+> 单文件 exe：`dist/blender-render-console.exe`（双击即界面）；
+> 另有独立的最简测试界面 `dist/min_gui.exe`（排错用，功能对齐但不依赖 GUI 契约层）。
+> 命令行源码保留供源码方式调用，不再产出 brc.exe。
 
 | 能力 | 状态 |
 |---|---|
 | **单文件 exe**（PyInstaller onefile，内含 tcl/tk） | ✅ 打包后自检 + 真窗口截图验证 |
 | 图形界面（tkinter，深色主题，两栏 + 可折叠模块 + 常显日志） | ✅ v0.11.2 视图契约迁移后，1000x840 / 900x700 截图回归通过 |
+| **最简测试界面**（`min_gui.exe`，功能对齐但不依赖 GUI 契约层） | ✅ v0.12.0 队列/自动读配置/设备回填端到端通过 |
 | **多工程队列顺序渲染**（「开始渲染」跑完整队列，各自独立断点） | ✅ 假 Blender 端到端 2 项 done/done + 真 Blender 5.3 实测 2 项各 2 帧 done/done |
 | **选中工程自动读取渲染配置** | ✅ 真机实测：引擎 / 采样 / 设备 / 分辨率 / 帧范围 / 输出路径一次填好 |
 | **多场景工程选场景渲染** | ✅ 真机实测：双场景（64x48 / 128x96）分别渲出，**以产物尺寸为证**；场景名写错有明确告警 |
@@ -94,6 +97,7 @@ exe 已经把 tcl/tk 与驱动脚本一并打包（单文件、免安装、不�
 ```bash
 python tools/build_tkinter.py        # 只在第一次需要：生成 sidecar/（本机 Python 没有 tkinter）
 python tools/build_exe.py            # 产出 dist/ 下唯一的 GUI exe，并自动跑一遍打包后自检
+python tools/build_exe.py --min-gui  # 另打最简测试界面 → dist/min_gui.exe（与完整版并存）
 ```
 
 ### 图形界面（源码方式）
@@ -275,9 +279,9 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 523 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 538 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
-│   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
+│   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），--min-gui 可另打最简界面；默认跑打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
 │   ├── build_tkinter.py     # 从官方安装包提取 tcl/tk（本机 Python 无 tkinter）
 │   ├── smoke_real_blender.py  # 真机冒烟 7 场景：渲染 → 杀进程 → 续跑 → EEVEE → 读配置 → 多场景 → 多段不连续帧 → 「一直重启」A/B
@@ -297,7 +301,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（523 条，不依赖 Blender，约 16s）
+# 单测（538 条，不依赖 Blender，约 15s）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 架构度量：耦合（Ca/Ce/I）、依赖环、SDP 违规、扇入榜。**改依赖后重跑它**
@@ -329,6 +333,8 @@ python tools/smoke_real_blender.py
 
 # 打包（只产出 GUI exe；自检临时打一个 console exe 到 build/_selftest/，跑完即删）
 python tools/build_exe.py
+# 另打最简测试界面（独立产物，不覆盖完整版）
+python tools/build_exe.py --min-gui
 
 # 改图标后先扫一眼跨尺寸对照图（16px 才是任务栏里真正看到的那个）
 python tools/make_icon.py --sheet sheet.png

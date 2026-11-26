@@ -5,6 +5,38 @@
 
 ---
 
+## v0.12.0 · 最简测试界面（排错用）与两类回填缺陷（2026-11-26）
+
+完整界面（8 个控制器 + 视图契约）在实际使用中问题较多，新增 `min_gui.py` 作为
+**对照实验**：同样的 `core` / `inspect` / `guimodel` 规则，但界面只有一层直白的 ttk
+控件。跑通 → 问题在完整 GUI 层；跑不通 → 问题在 core 或 Blender 调用链。
+留下三条痕：
+
+1. **`frozen` 下 `import tkinter` 必须先挂 `_brc`**。`min_gui.py` 最初把
+   `apply_frozen_env()` 放在 import 之后，源码方式正常、打包后 exe 直接
+   `ModuleNotFoundError: No module named 'tkinter'`。exe 自带的 Python 与宿主一样没有
+   tkinter，tcl/tk 是 `_MEIPASS/_brc` 里的数据文件，必须先由 `tkboot.apply_frozen_env()`
+   挂回 `sys.path` / `TCL_LIBRARY`。`main.py` 一直是对的，新入口抄漏了顺序。
+   **判据**：任何新 GUI 入口，`apply_frozen_env()` 必须在**第一个** `import tkinter` 之前。
+2. **Cycles 的"设备"是两段信息，别只读一段**。`scene.cycles.device` 只有 `CPU`/`GPU`
+   两值；用户真正选的后端（CUDA/OptiX/HIP/oneAPI）在
+   `preferences.addons["cycles"].preferences.compute_device_type`。只读前者 → GPU 工程在
+   下拉里显示空白（`GPU` 不在候选里）。修正方式不是再写一遍判定，而是直接复用
+   `guimodel.form.fields_from_detail()` —— 它是完整界面与最简界面**唯一**的回填出口。
+   另注：`inspect` **不能**加 `--factory-startup`，否则用户偏好不加载，
+   `compute_device_type` 恒为 `NONE`（本机实测：带用户配置读到 `CUDA`，加该参数读到 `NONE`）。
+3. **自动读取必须有去重与令牌**。选完工程即读配置，但 `<FocusOut>` 会反复触发，每次
+   起一个无头 Blender 太贵 → 用 `_last_read_path` 记住已读路径；读取要几秒，期间用户
+   可能切到别的工程 → 用自增 `_read_token` 丢弃过期结果，并在读完时检查"路径是否已变"
+   补读一次（不并发起两个 Blender）。
+   **判据**：凡是"用户操作触发的异步读取"，都要回答两个问题——重复触发怎么挡、结果过期
+   怎么丢。
+
+验证：538 条单测、边界 7/7、0 环、repo-kit PASS；`dist/min_gui.exe` 打包自检通过、
+真机启动无报错；队列端到端 2 项顺序跑完（各 2 帧）；自动读取三条断言（首读/不重读/重读）通过。
+
+---
+
 ## v0.11.0 · 界面定稿落地与队列渲染语义（2026-11-25）
 
 这一版把 `brc-ui-final.html` 的交互基准搬进 tkinter，并把「跑队列」合并进「开始渲染」。
