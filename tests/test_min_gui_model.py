@@ -26,7 +26,6 @@ class TestBuildConfig(unittest.TestCase):
             "width": "160", "height": "120", "pct": "100",
             "format": "PNG", "depth": "8", "output": os.path.join(self.d, "out", "f_####"),
             "retry": "3 次", "resume": True, "hidden": ["Secret"],
-            "restarts_override": "", "attempts_override": "", "no_progress_override": "",
         }
 
     def test_full_fields_reach_config(self):
@@ -62,12 +61,14 @@ class TestBuildConfig(unittest.TestCase):
         self.assertIsNone(cfg.file_format)
         self.assertIsNone(cfg.color_depth)
 
-    def test_overrides_win_over_retry_dropdown(self):
-        v = dict(self.base, restarts_override="7", attempts_override="0",
-                 no_progress_override="5")
-        cfg, err = build_config(v)
+    def test_retry_dropdown_drives_all_three_values(self):
+        """重试三值只由下拉决定：次数同时管重启与单帧，无进展恒为 3。"""
+        cfg, _err = build_config(dict(self.base, retry="10 次"))
         self.assertEqual((cfg.max_restarts, cfg.max_frame_attempts,
-                          cfg.max_no_progress_rounds), (7, 0, 5))
+                          cfg.max_no_progress_rounds), (10, 10, 3))
+        cfg, _err = build_config(dict(self.base, retry="一直重复，直到渲完"))
+        self.assertEqual((cfg.max_restarts, cfg.max_frame_attempts,
+                          cfg.max_no_progress_rounds), (-1, 0, 3))
 
     def test_missing_blend_reports_error(self):
         v = dict(self.base, blend="")
