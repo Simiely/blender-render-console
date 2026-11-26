@@ -2,14 +2,17 @@
 r"""打包成单个 exe（PyInstaller）。
 
     python tools/build_exe.py                # 打 GUI 版（--windowed，双击用界面）
+    python tools/build_exe.py --min-gui      # 打最简测试界面 → dist/min_gui.exe（独立产物）
     python tools/build_exe.py --keep-build   # 保留 build/ 便于排错
 
 产出在 `dist/`：
     blender-render-console.exe   图形界面版（--windowed）
+    min_gui.exe                  最简测试界面（--min-gui 时产出，与完整版并存）
 
 **只交付 GUI 版**。命令行源码（brconsole/cli.py）保留，供源码方式调用与自检使用，
 但不再产出 brc.exe。打包后自检仍需要控制台输出（`--help` / `##PROG##`），
 因此会临时打一个 console exe 到 build/_selftest/，自检完即删，不进 dist/。
+最简版是 windowed 无 stdout，自检只做静态项（图标/版本），运行靠人工验证。
 
 图标与版本信息：
 - `assets/app.ico` 由 `tools/make_icon.py` 生成（纯标准库，**不需要 Pillow**），
@@ -382,7 +385,7 @@ def check_version(exe):
     return ok
 
 
-def write_spec(path, name, console, version_file):
+def write_spec(path, name, console, version_file, entry=None):
     """生成 spec 文件。
 
     ⚠️ 不能用命令行拼 `--add-data`：sidecar 有几百个文件，命令行会超过 Windows 的
@@ -445,7 +448,7 @@ exe = EXE(
     version=%(version)r,
 )
 """ % {
-        "entry": ENTRY,
+        "entry": entry or ENTRY,
         "root": ROOT,
         "name": name,
         "console": bool(console),
@@ -471,13 +474,13 @@ exe = EXE(
     return path
 
 
-def build(python, console=False, keep_build=False, dist_dir=None, name=None):
+def build(python, console=False, keep_build=False, dist_dir=None, name=None, entry=None):
     name = name or (SELFTEST_NAME if console else GUI_NAME)
     dist_dir = dist_dir or os.path.join(ROOT, "dist")
     ver_file = write_version_file(
         os.path.join(ROOT, "build", name + "_version.txt"), name)
     spec = write_spec(os.path.join(ROOT, "build", name + ".spec"), name, console,
-                      ver_file)
+                      ver_file, entry=entry)
     args = [
         python, "-m", "PyInstaller", "--noconfirm", "--clean",
         "--distpath", dist_dir,
@@ -581,6 +584,8 @@ def verify(exe_dir):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--min-gui", action="store_true",
+                    help="打最简测试界面 min_gui.py → dist/min_gui.exe（与完整版并存）")
     ap.add_argument("--keep-build", action="store_true", help="保留 build/ 便于排错")
     ap.add_argument("--no-verify", action="store_true",
                     help="跳过打包后自检（默认会跑一遍，确认 sidecar 与内置假 Blender 真的解包出来了）")
@@ -605,6 +610,26 @@ def main():
                       (os.path.join(ROOT, "brconsole", "driver.py"), "注入给 Blender 的驱动脚本")):
         if not os.path.exists(need):
             raise SystemExit("缺 %s —— %s" % (need, why))
+
+    if args.min_gui:
+        # 最简测试界面：独立产物，不覆盖完整版；windowed 没有 stdout，
+        # 自检只做静态项（图标/版本），运行验证靠人工打开+截图。
+        entry = os.path.join(ROOT, "min_gui.py")
+        if not os.path.exists(entry):
+            raise SystemExit("缺 %s" % entry)
+        min_model = os.path.join(ROOT, "min_gui_model.py")
+        if not os.path.exists(min_model):
+            raise SystemExit("缺 %s（min_gui 的纯逻辑依赖）" % min_model)
+        ok = build(python, console=False, keep_build=args.keep_build,
+                   name="min_gui", entry=entry)
+        if ok and not args.no_verify:
+            log("\n打包后自检（最简版）：")
+            exe = os.path.join(ROOT, "dist", "min_gui.exe")
+            ok &= check_icon(exe)
+            ok &= check_version(exe)
+        if ok:
+            log("\n产物在 dist/min_gui.exe —— 双击即可打开最简测试界面。")
+        return 0 if ok else 1
 
     ok = build(python, console=False, keep_build=args.keep_build)
 
