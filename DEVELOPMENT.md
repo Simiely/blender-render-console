@@ -26,8 +26,33 @@
    autoresume 旗标唯一来源是 `taskstore.preferences.json`；`queue.json` 不再存第二份，
    用户取消「启动时自动续跑」只写一处（坑 35 的同款已修）。
 
-验证边界要写清楚：全量单测（当前 521 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
-均通过；真机 Blender 冒烟 7/7 已回归；**打包 exe、高 DPI/窄窗口截图尚未回归**。
+验证边界要写清楚：全量单测（当前 523 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
+均通过；真机 Blender 冒烟 7/7 已回归；**打包 exe、高 DPI/窄窗口截图尚未回归**（v0.11.2 已补齐，见下节）。
+
+---
+
+## v0.11.2 · 视图契约迁移收口与收尾回归（2026-11-26）
+
+0.11.1（程序侧收口）与 0.11.2（视图层拆分）以 PR #1 合并进主线，本版把"尚未回归"的三项补齐。
+留下三条痕：
+
+1. **Tk 8.6 的 `unbind_all` 只收 sequence，不接受 bind id**。v0.11.2 结构拆分时把
+   `ScrollArea` 的滚轮绑定改成"只解自己那条"，但实现调用的是 `unbind_all(seq, bind_id)` ——
+   窗口销毁时抛 `TypeError`，而"demo 真窗口无 traceback"的验证没覆盖 `root.destroy()` 路径。
+   改为在 Tcl 绑定脚本层按 funcid 摘掉自己那行，既不误清 `ui_leftqueue` 的全局绑定，也不抛异常。
+   新增 `tests/test_uikit.py` 两条守卫"只删自己的行"。
+   **通用教训**：声明"只解自己的绑定"之前，先看绑的是 `bind_all`（全局 tag）还是 `bind`（控件），
+   Tk 没有给 `bind_all` 的按 id 解绑 API。
+2. **真机回归要写具体版本与产物**。本机 Blender 已从 5.2 升到 5.3（根目录 `blender.exe`，
+   5.2 子目录无 exe），冒烟脚本的硬编码路径会失效 —— `--blender` 与自动探测的修正（0.11.1）
+   是必需的。队列真机验证用 5.3 跑 2 项各 2 帧，以产物 `frame_0001/0002.png` 与
+   queue.json 逐项 done 为证，不再只靠假 Blender 的 done/done。
+3. **截图回归要覆盖两种尺寸**。1000x840 与 900x700（minsize）各抓一张真实 TkView 窗口，
+   核对两栏布局、模块留白、折叠日志条和底部操作条。窗口在后台会话里被缩成 160x28 时，
+   要在脚本内同步建 Tk 窗口 + `update()` 再抓，不能拿错误的窗口尺寸当"界面回归了"。
+
+验证：523 条单测（skipped 1）、边界 7/7、0 环、repo-kit PASS、真机 Blender 冒烟 7/7、
+打包 5 项自检全过、两种尺寸截图无异常、窗口销毁无 traceback。
 
 ---
 

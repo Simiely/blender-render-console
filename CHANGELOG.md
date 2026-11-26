@@ -2,7 +2,10 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]（refactor/split-gui-model-0.11.2）
+## [0.11.2] - 2026-11-26
+
+视图契约迁移收口 + 长期维护治理。本版起 GUI 层可通过 `FakeView` 无窗口驱动；
+`__version__` 从 0.11.0 直接跨到 0.11.2（0.11.1 的改动以「未发布」段随本版一并交付）。
 
 ### 长期维护治理（2026-11-26）
 
@@ -26,6 +29,24 @@
 - **文档改为以脚本为准**：架构说明指出 `guimodel` 门面与 `gui/common` 的 SDP 违规是兼容层/同层共享，不代表领域依赖反向。
 
 验证：500 条单测、边界 7 条、0 环、repo-kit PASS、真机 Blender 冒烟 7/7、demo 真窗口无 traceback。
+
+### 收尾回归（2026-11-26）
+
+- **修复 `ScrollArea` 销毁时的 `TypeError`**：v0.11.2 声称"只解自己的滚轮绑定"，但
+  `_on_destroy()` 调用的是 `unbind_all(sequence, bind_id)` —— Tk 8.6 的 `unbind_all`
+  只收一个参数，窗口关闭时抛 `TypeError: Misc.unbind_all() takes 2 positional arguments but 3 were given`。
+  改为在 Tcl 绑定脚本层按 funcid 摘掉自己那行，既不误清 `ui_leftqueue` 的全局滚轮绑定，
+  也不抛异常；新增 `tests/test_uikit.py` 两条钉住"只删自己的行"。
+- **打包 exe 回归**：`python tools/build_exe.py --both` 产出两个单文件 exe，5 项自检全过
+  （`--help` / 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）。
+- **高 DPI + 窄窗口截图回归**：真实 TkView 窗口在 1000x840 与 900x700 两种尺寸下截图核对，
+  两栏布局、模块留白、折叠日志条与底部操作条均正常，无裁切/重叠/异常 traceback。
+- **队列顺序渲染真机验证**：此前 README 标注"真机待验证"，本次用真 Blender 5.3 按
+  「开始渲染」跑完整队列（2 项各 2 帧），两项均 done、产物齐全（`frame_0001/0002.png`），
+  自动进下一项、存档逐项更新。
+
+验证：**523 条单测**（skipped 1）、边界 7/7、0 环、repo-kit PASS、真机 Blender 冒烟 7/7、
+打包 5 项自检全过、两种窗口尺寸截图无异常、窗口销毁无 traceback。
 
 ## [未发布]（refactor/program-contract-0.11.1）
 

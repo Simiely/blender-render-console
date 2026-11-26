@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-> **v0.11.0：两栏界面 + 多工程队列顺序渲染** —— 左侧是渲染队列，右侧展开当前工程的
+> **v0.11.2：视图契约迁移 + 两栏界面 + 多工程队列顺序渲染** —— 左侧是渲染队列，右侧展开当前工程的
 > 概览 / 工程 / 帧范围 / 渲染参数，右下角进度与日志常显。点「开始渲染」会**按队列顺序
 > 跑完所有工程**（不再有单独的「跑队列」按钮）；队列为空时直接跑当前表单。
 >
@@ -30,8 +30,8 @@
 | 能力 | 状态 |
 |---|---|
 | **单文件 exe**（PyInstaller onefile，内含 tcl/tk） | ✅ 打包后自检 + 真窗口截图验证 |
-| 图形界面（tkinter，深色主题，两栏 + 可折叠模块 + 常显日志） | ✅ v0.11.0 布局与交互冒烟通过 |
-| **多工程队列顺序渲染**（「开始渲染」跑完整队列，各自独立断点） | ✅ 端到端假 Blender 冒烟：2 项 done/done；真机待验证 |
+| 图形界面（tkinter，深色主题，两栏 + 可折叠模块 + 常显日志） | ✅ v0.11.2 视图契约迁移后，1000x840 / 900x700 截图回归通过 |
+| **多工程队列顺序渲染**（「开始渲染」跑完整队列，各自独立断点） | ✅ 假 Blender 端到端 2 项 done/done + 真 Blender 5.3 实测 2 项各 2 帧 done/done |
 | **选中工程自动读取渲染配置** | ✅ 真机实测：引擎 / 采样 / 设备 / 分辨率 / 帧范围 / 输出路径一次填好 |
 | **多场景工程选场景渲染** | ✅ 真机实测：双场景（64x48 / 128x96）分别渲出，**以产物尺寸为证**；场景名写错有明确告警 |
 | **开机自启 + 任务存档，开机自动接着渲** | ✅ 真机实测：强杀进程树 → 存档原封不动 → 重启从第 662 帧接着跑到 1550/4000 |
@@ -259,7 +259,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 521 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 523 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
@@ -269,7 +269,8 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   ├── probe_render.py      # 探针：抓 Blender 原生进度输出
 │   ├── probe_driver.py      # 探针：验证驱动脚本 JSON 进度实时性
 │   ├── arch_metrics.py      # 架构度量：Ca/Ce/I、环、SDP 违规、扇入（改依赖后重跑它看数字）
-│   └── check_boundaries.py  # 边界检查：把评审抓到的越界固化成 5 条可执行规则（有违规退出码 1）
+│   ├── check_arch.py        # 架构守卫：依赖环 0 判定（CI 里与边界检查一起跑）
+│   └── check_boundaries.py  # 边界检查：7 条可执行规则（有违规退出码 1）
 ├── probes/                  # Blender 5.2 实测输出样本（正则的依据）
 ├── _tkbuild/                # build_tkinter.py 的中间产物（下载的安装包 / 解包结果），可删
 └── AGENTS.md / DEVELOPMENT.md / CHANGELOG.md
@@ -280,7 +281,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ## 验证
 
 ```bash
-# 单测（436 条，不依赖 Blender，约 34s）
+# 单测（523 条，不依赖 Blender，约 16s）
 python -m unittest discover -s tests -t tests -p "test_*.py"
 
 # 架构度量：耦合（Ca/Ce/I）、依赖环、SDP 违规、扇入榜。**改依赖后重跑它**
@@ -296,14 +297,19 @@ python -m ruff check brconsole main.py --select B,BLE,E7,F,PLW,C4,SIM,PIE,RET,TR
 # 资源泄漏：把 ResourceWarning 当错误跑一遍（全绿，代价是慢约 3 倍）
 python -W error::ResourceWarning -m unittest discover -s tests -t tests -p "test_*.py"
 
-# 真机冒烟（需要 Blender 5.2，约 120s）
+# 架构守卫：依赖环 0 判定 + 7 条边界规则（改依赖后两个都要跑）
+python tools/check_arch.py
+python tools/check_boundaries.py
+
+# 真机冒烟（需要 Blender 5.2/5.3，约 120s，支持 --blender 指定路径）
 python tools/smoke_real_blender.py
-#   1/6 完整渲染 6 帧
-#   2/6 中途杀掉 Blender → 续跑
-#   3/6 EEVEE 引擎切换 + 首帧预热
-#   4/6 读取工程配置（无头 Blender 读 .blend）
-#   5/6 「一直重启」A/B 对照：同一份"连崩 6 次"的启动器，5 次上限 vs 不限次数
-#   6/6 多场景 -S 选场景（以产物尺寸为证）+ 场景名写错时的告警
+#   1/7 完整渲染 6 帧
+#   2/7 中途杀掉 Blender → 续跑
+#   3/7 EEVEE 引擎切换 + 首帧预热
+#   4/7 读取工程配置（无头 Blender 读 .blend）
+#   5/7 「一直重启」A/B 对照：同一份"连崩 6 次"的启动器，5 次上限 vs 不限次数
+#   6/7 多场景 -S 选场景（以产物尺寸为证）+ 场景名写错时的告警
+#   7/7 多段不连续帧（-f 1-3x2,5，比对三张图的 sha256）
 
 # 打包（产出后自动跑 5 项自检：--help / exe 图标逐像素比对 / 版本资源 / 内置假 Blender / 完整 core 流水线）
 python tools/build_exe.py --both

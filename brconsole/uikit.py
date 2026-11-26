@@ -544,7 +544,9 @@ class ScrollArea(tk.Frame):
         self.canvas.bind("<Configure>", on_canvas)
 
         # 鼠标滚轮：只滚动指针所在的那个 ScrollArea，避免多个滚动区互相抢。
-        # 记住绑定 id，销毁时只解掉自己那一条 —— unbind_all 会把别的模块的绑定一起清掉。
+        # 记住绑定 id，销毁时只解掉自己那一条 —— unbind_all 会把别的模块
+        # （ui_leftqueue 也绑了 <MouseWheel>）的绑定一起清掉。Tk 8.6 没有按 id
+        # 解绑的 API，只能在 Tcl 脚本层把含自己 funcid 的那行摘掉。
         self._wheel_bind_id = self.bind_all("<MouseWheel>", self._on_wheel, add="+")
         self.bind("<Destroy>", self._on_destroy)
 
@@ -563,8 +565,16 @@ class ScrollArea(tk.Frame):
         return None
 
     def _on_destroy(self, _event=None):
+        # Tk 8.6 的 unbind_all(sequence) 只收一个参数，也没法按 bind id 精确解绑；
+        # 直接 unbind_all 又会连 ui_leftqueue 的全局滚轮绑定一起清掉。
+        # bind_all(..., add="+") 返回的 funcid 出现在 Tcl 绑定脚本的对应行里，
+        # 逐行摘掉自己那条即可，别的绑定原样保留。
         try:
-            self.unbind_all("<MouseWheel>", self._wheel_bind_id)
+            script = self.tk.call("bind", "all", "<MouseWheel>")
+            if script:
+                keep = [line for line in script.split("\n")
+                        if "[%s " % self._wheel_bind_id not in line]
+                self.tk.call("bind", "all", "<MouseWheel>", "\n".join(keep))
         except (tk.TclError, AttributeError):
             pass
 
