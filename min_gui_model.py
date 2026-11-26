@@ -68,17 +68,10 @@ def build_config(values):
         scene=str(values.get("scene") or "").strip() or None,
         resume=bool(values.get("resume", True)),
     )
-    restarts, attempts, no_progress = retry_plan(values.get("retry"))
-    # 命令行界面给了三个独立框时以它们为准（0 = 不限，保持内核既有约定）
-    if values.get("restarts_override") not in (None, ""):
-        restarts = int(values["restarts_override"])
-    if values.get("attempts_override") not in (None, ""):
-        attempts = int(values["attempts_override"])
-    if values.get("no_progress_override") not in (None, ""):
-        no_progress = int(values["no_progress_override"])
-    cfg.max_restarts = restarts
-    cfg.max_frame_attempts = attempts
-    cfg.max_no_progress_rounds = no_progress
+    # 重试三值只从下拉来（`retry_plan` 是唯一出口）：次数同时管重启与单帧尝试，
+    # 无进展轮数固定 3 —— 不给"单独覆盖"的入口，避免有人把防死循环闸门填成 0。
+    cfg.max_restarts, cfg.max_frame_attempts, cfg.max_no_progress_rounds = \
+        retry_plan(values.get("retry"))
     return cfg, ""
 
 
