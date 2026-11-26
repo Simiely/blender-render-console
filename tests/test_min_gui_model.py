@@ -5,8 +5,9 @@ import os
 import tempfile
 import unittest
 
+from brconsole import queue_store
 from brconsole.guimodel.constants import DEPTH_KEEP_LABEL, FORMAT_KEEP_LABEL
-from min_gui_model import build_config, fill_from_detail
+from min_gui_model import build_config, fill_from_detail, queue_status_after
 
 
 class TestBuildConfig(unittest.TestCase):
@@ -111,6 +112,24 @@ class TestFillFromDetail(unittest.TestCase):
     def test_unknown_fields_leave_values_untouched(self):
         v = fill_from_detail({"samples": "99"}, {"samples": None})
         self.assertEqual(v["samples"], "99")
+
+
+class TestQueueStatusAfter(unittest.TestCase):
+    def test_done_when_all_frames_rendered(self):
+        self.assertEqual(queue_status_after("job_done", {"ok": True}),
+                         queue_store.STATUS_DONE)
+
+    def test_pending_when_user_cancelled(self):
+        self.assertEqual(queue_status_after("job_done", {"ok": False, "cancelled": True}),
+                         queue_store.STATUS_PENDING)
+
+    def test_failed_when_frames_exhausted(self):
+        self.assertEqual(queue_status_after("job_done", {"ok": False, "cancelled": False}),
+                         queue_store.STATUS_FAILED)
+
+    def test_job_error_is_failed(self):
+        self.assertEqual(queue_status_after("job_error", {"error": "boom"}),
+                         queue_store.STATUS_FAILED)
 
 
 if __name__ == "__main__":
