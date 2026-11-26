@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """架构守卫必须"真的会红"：造一个环，确认 check_arch 能抓到。"""
 
-import os
 import pathlib
 import sys
 import tempfile

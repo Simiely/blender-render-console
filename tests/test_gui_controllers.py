@@ -7,7 +7,6 @@
 
 import os
 import queue
-import tempfile
 import unittest
 from unittest import mock
 

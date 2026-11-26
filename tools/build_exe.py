@@ -22,6 +22,8 @@ r"""打包成单个 exe（PyInstaller）。
 3. 用**装了 PyInstaller 的隔离 venv** 跑（脚本会自己找，找不到就报错，不会污染系统 Python）
 4. 主程序里 `tkboot.apply_frozen_env()` 必须在 `import tkinter` 之前执行 ——
    exe 里的 Python 同样没有 tkinter，得从 `<_MEIPASS>/_brc` 把 tcl/tk 挂回去
+5. 运行时要装 **Pillow**（`uikit` 的圆角按钮/卡片用它生成位图）；`make_icon.py`
+   本身不需要 Pillow，别把这两件事混成一句。`requirements.txt` 已列 `Pillow>=10.0`
 
 为什么手动 --add-data 而不是靠 PyInstaller 的 tkinter hook：
 宿主 Python 里根本没有 tkinter，Analysis 阶段找不到这个模块，hook 不会运行；

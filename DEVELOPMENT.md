@@ -26,7 +26,7 @@
    autoresume 旗标唯一来源是 `taskstore.preferences.json`；`queue.json` 不再存第二份，
    用户取消「启动时自动续跑」只写一处（坑 35 的同款已修）。
 
-验证边界要写清楚：全量单测（当前 500 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
+验证边界要写清楚：全量单测（当前 521 条，数量以运行时输出为准）+ tkinter 交互冒烟 + 假 Blender 端到端（2 项 done/done）
 均通过；真机 Blender 冒烟 7/7 已回归；**打包 exe、高 DPI/窄窗口截图尚未回归**。
 
 ---
