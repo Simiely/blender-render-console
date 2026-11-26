@@ -9,8 +9,8 @@ import os
 
 from brconsole import diskspace
 from brconsole.core import JobConfig, parse_frames
-from brconsole.guimodel.form import (depth_value, format_from_label, retry_plan,
-                                     format_label)
+from brconsole.guimodel.form import (depth_value, fields_from_detail,
+                                     format_from_label, format_label, retry_plan)
 from brconsole.guimodel.events import aftermath_plan, event_text
 from brconsole.inspect import output_template_from
 from brconsole.locate import resolve_blender
@@ -90,33 +90,32 @@ def check_disk(cfg):
 def fill_from_detail(values, detail, blend=""):
     """把一个场景的 inspect.detail 回填进控件值 dict（就地改，返回它）。
 
-    只写"拿得准"的字段；拿不准的不动控件（宁缺勿错）。规则复用 guimodel 的出口。
+    字段判定完全复用 `guimodel.form.fields_from_detail`（完整界面用的是同一个出口）——
+    尤其设备：`cycles_device` 只有 CPU/GPU 两值，GPU 时的后端名在 `compute_device_type`
+    里（CUDA/OPTIX/…）。早先这里只读 cycles_device，GPU 工程在下拉里显示空白。
+    拿不准的字段仍由那个函数负责不动控件（宁缺勿错）。
     """
-    if not detail:
-        return values
-    if detail.get("frame_start") is not None:
-        values["start"] = str(detail["frame_start"])
-    if detail.get("frame_end") is not None:
-        values["end"] = str(detail["frame_end"])
-    engine = str(detail.get("engine") or "").upper()
-    if engine == "BLENDER_EEVEE_NEXT":
-        engine = "BLENDER_EEVEE"
-    values["engine"] = engine
-    if detail.get("samples") is not None:
-        values["samples"] = str(detail["samples"])
-    dev = str(detail.get("cycles_device") or "").upper()
-    if dev in ("CPU", "CUDA", "OPTIX", "HIP", "ONEAPI"):
-        values["device"] = dev
-    res = detail.get("resolution") or []
-    if len(res) == 2:
-        values["width"], values["height"] = str(res[0]), str(res[1])
-    if detail.get("resolution_percentage"):
-        values["pct"] = str(detail["resolution_percentage"])
-    fmt = format_label(detail.get("file_format"))
-    values["format"] = fmt
-    dep = str(detail.get("color_depth") or "").strip()
-    values["depth"] = dep if dep else "随工程"
-    tpl = output_template_from(detail.get("output_path"), blend)
-    if tpl:
-        values["output"] = tpl
+    fields = fields_from_detail(detail, blend)
+    if "start" in fields:
+        values["start"] = fields["start"]
+    if "end" in fields:
+        values["end"] = fields["end"]
+    if "engine" in fields:
+        values["engine"] = fields["engine"]
+    if "samples" in fields:
+        values["samples"] = fields["samples"]
+    if "device" in fields:
+        values["device"] = fields["device"]
+    if "width" in fields:
+        values["width"] = fields["width"]
+    if "height" in fields:
+        values["height"] = fields["height"]
+    if "pct" in fields:
+        values["pct"] = fields["pct"]
+    if "file_format" in fields:
+        values["format"] = format_label(fields["file_format"])
+    if "color_depth" in fields:
+        values["depth"] = fields["color_depth"]
+    if "output" in fields:
+        values["output"] = fields["output"]
     return values
