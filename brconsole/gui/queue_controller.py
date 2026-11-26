@@ -4,8 +4,16 @@
 由 `brconsole/gui.py` 按变更原因抽出；方法体保持原样，便于逐步迁移到 view 契约。
 """
 
-from .common import *  # noqa: F401,F403
-from .common import _stamp  # noqa: F401
+import os
+from tkinter import messagebox
+
+from .. import queue_store, theme
+from ..guimodel.constants import DEFAULT_RETRY, DEPTH_KEEP_LABEL, DEVICES, ENGINES
+from ..guimodel.form import FormModel, format_from_label
+from ..guimodel.frames import segment_label, segments_to_frames
+from ..guimodel.stateinfo import guess_state_path, state_summary
+from ..inspect import scene_names
+from .common import fit_combobox  # noqa: F401
 
 
 class QueueControllerMixin(object):

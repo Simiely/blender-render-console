@@ -4,8 +4,13 @@
 由 `brconsole/gui/app.py` 按职责抽出；方法体保持原样。
 """
 
-from .common import *  # noqa: F401,F403
-from .common import _stamp  # noqa: F401
+import tkinter as tk
+from tkinter import ttk
+
+from .. import power
+from ..guimodel.constants import (AFTERMATH_SLEEP, AFTERMATH_SHUTDOWN)
+from ..guimodel.events import aftermath_plan
+from .common import AFTERMATH_BY_LABEL  # noqa: F401
 
 
 class AftermathControllerMixin(object):

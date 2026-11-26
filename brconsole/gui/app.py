@@ -2,9 +2,16 @@
 """主窗口薄壳：装配状态、视图与控制器 mixin，保留事件循环入口。
 """
 
+import os
+import sys
+import tkinter as tk
+from tkinter import messagebox
+
+from .. import applock, queue_store, theme
 from ..gui_view_new import TkView
-from .common import *  # noqa: F401,F403
-from .common import _apply_icon, _stamp  # noqa: F401
+from ..guimodel.form import FormModel
+from ..guimodel.frames import new_segment
+from .common import POLL_MS, WINDOW_TITLE, _apply_icon
 from .app_state import AppState
 from .form_controller import FormControllerMixin
 from .inspect_controller import InspectControllerMixin

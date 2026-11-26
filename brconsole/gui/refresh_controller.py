@@ -4,8 +4,10 @@
 由 `brconsole/gui/app.py` 按职责抽出；方法体保持原样。
 """
 
-from .common import *  # noqa: F401,F403
-from .common import _stamp  # noqa: F401
+import time
+
+from ..eta import fmt_clock, fmt_duration
+from ..guimodel.stateinfo import guess_state_path, state_summary
 
 
 class RefreshControllerMixin(object):
