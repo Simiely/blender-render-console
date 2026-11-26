@@ -259,7 +259,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 │   └── locate.py            # blender.exe 探测（文件系统扫描，不用注册表）
 ├── assets/
 │   └── app.ico              # 应用图标（16~256 七层），由 tools/make_icon.py 生成
-├── tests/                   # 450 条单测 + fake_blender.py（与真机同构的假进程）
+├── tests/                   # 521 条单测 + fake_blender.py（与真机同构的假进程）
 ├── tools/
 │   ├── build_exe.py         # PyInstaller 打包（spec + Tree()），写图标与版本资源，默认跑一遍打包后自检
 │   ├── make_icon.py         # 生成 app.ico（纯标准库自绘 + 手写 ICO 容器，不需要 Pillow）；--sheet 出自查图
