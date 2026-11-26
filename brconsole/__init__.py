@@ -36,8 +36,9 @@
 **组合根是 `main.py`**：只有它可以把上面这些拼起来（它天然"什么都知道"，
 所以它 import 界面层不算违规）。依赖方向必须指向更稳定的方向（SDP）。
 实测 0 环、`tools/check_boundaries.py` 的 7 条规则全过；SDP 的实测违规数以脚本为准。
-⚠️ `guimodel/__init__.py` 与 `gui/` 内 controller 经 `common` 共享导入会产生 SDP 违规：
-前者是兼容门面，后者是同层共享导入，都不是领域层耦合反了；判断架构仍以 0 环与边界规则为准。
+⚠️ 当前剩余 SDP 例外是：`guimodel` 的纯逻辑子模块直接依赖 `core` 的共用原语、
+`queue_store → taskstore`、`ui_leftqueue → ui_program`。这些是同层/上下层工具依赖，
+不是界面反向依赖；判断架构仍以 0 环、边界规则与 `tools/check_arch.py` 为准。
 """
 
 # ⚠️ 这个文件**只放文档和版本号，绝不 import 子模块、也不放共用常量**。

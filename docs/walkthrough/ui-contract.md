@@ -65,7 +65,10 @@ assert view.queue_selection() == (0,)
 3. 用 `FakeView` 先跑通控制器单测，再接真实 UI。
 4. 真窗口验收仍要跑 `python main.py --demo` 与 `tools/capture_screen.py --list`。
 
-## 5. 已知兼容债务
+## 5. 当前状态
 
-- `gui_view_new.py` 的 `_LabelProxy` / `_StatusProxy` / `_CheckProxy` / `_ComboProxy` 与隐藏 Label 仍在服务旧控制器方法体；等这些方法逐个迁到 `self.view.*` 后即可删除。
-- `uikit.QueueList.see()` 是语义上的空操作：左栏卡片区不滚动，没有"滚动到可见"的需求。
+- 控制器已经全部迁移到 `self.view.*`：旧 `self.v_*` / `lbl_*` / `cmb_*` / `chk_*` / `btn_*` / `txt` / `pb` / `lst_queue` / `frames_module` 访问已清零。
+- `gui_view_new.py` 的 `_LabelProxy` / `_StatusProxy` / `_CheckProxy` / `_ComboProxy` 与隐藏 Label 已删除；`ui_log` 的内部代理也已删除。
+- Tk 控件只在 `TkView` / `ui_*` / `theme` / `uikit` 内部出现，控制器不再直接访问控件。
+- 仍保留少量 tkinter 的模态交互（`messagebox` / `filedialog` / aftermath 的 `Toplevel` 倒计时）；下一步可收进 `ViewProtocol` 的 `error/warn/choose_file/countdown` 语义方法。
+- `uikit.QueueList.see()` 仍是语义上的空操作：左栏卡片区不滚动，没有"滚动到可见"的需求。

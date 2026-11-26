@@ -4,6 +4,18 @@
 
 ## [未发布]（refactor/split-gui-model-0.11.2）
 
+### 长期维护治理（2026-11-26）
+
+- **CI 架构守卫**：新增 `tools/check_arch.py`（0 环判定）与 3 条反向测试；GitHub Actions 现在同时跑 `check_boundaries.py` 和 `check_arch.py`，本地通过不再等于线上不退化。
+- **控制器特性测试**：新增 `tests/test_gui_controllers.py`，用 `FakeView` 锁住 form/inspect/queue/render 四组控制器的输入输出；新增 `tests/test_guimodel_facade.py` 守卫门面只许转发。
+- **拆薄 `gui/common.py`**：不再集中 re-export 业务模块，只留常量/时间戳/图标/下拉宽度工具；各 controller 直接 import 自己需要的纯逻辑子模块。运行时 SDP 从 14 条降到 6 条。
+- **旧控件别名清零**：controller 里 `self.v_* / lbl_* / cmb_* / chk_* / btn_* / txt / pb / lst_queue / frames_module` 访问从 210 处降到 0；`_LabelProxy` / `_StatusProxy` / `_CheckProxy` / `_ComboProxy` / `_hidden` 全部删除。
+- **Pillow 口径统一**：`tools/build_exe.py` 明确区分「图标生成不需要 Pillow」与「运行时圆角控件需要 Pillow」。
+
+验证：521 条单测、边界 7/7、0 环、repo-kit PASS、真机 Blender 冒烟 7/7、demo 真窗口无 traceback。
+
+### 结构拆分
+
 按"除明确不拆的文件外都要拆"继续整备 GUI 与纯逻辑层：
 
 - **`guimodel.py` 拆为包**：`constants / frames / form / events / progress / logs / stateinfo` 按变更原因分居，`__init__.py` 只做 83 个历史符号的 re-export；旧 import 路径完全兼容。
