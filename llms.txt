@@ -15,6 +15,7 @@
 - [文档索引](./docs/index.md) — blender-render-console 的文档入口：项目规则、开发环境、变更记录与走查文档。
 - [能力清单（走查步骤 1 产出）](./docs/walkthrough/capabilities.md) — 按真实入口盘点的能力清单（C-ID），供走查场景覆盖矩阵引用。
 - [走查素材剧本 + 覆盖矩阵（走查步骤 2 产出）](./docs/walkthrough/scenarios.md) — 走查场景与能力覆盖矩阵，逐项列出预期与实际结果。
+- [UI 契约与重做指南](./docs/walkthrough/ui-contract.md) — 控制器与视图的语义边界、FakeView 测试范式和未来重做 UI 的接入步骤。
 
 ## Reports
 

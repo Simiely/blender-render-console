@@ -25,6 +25,7 @@ related: []
 | [文档索引](../index.md) | index | active | @simiely | normal | `README.md` |
 | [能力清单（走查步骤 1 产出）](../walkthrough/capabilities.md) | note | active | @simiely | normal | `docs/walkthrough/capabilities.md` |
 | [走查素材剧本 + 覆盖矩阵（走查步骤 2 产出）](../walkthrough/scenarios.md) | note | active | @simiely | normal | `docs/walkthrough/scenarios.md` |
+| [UI 契约与重做指南](../walkthrough/ui-contract.md) | note | active | @simiely | normal | `docs/walkthrough/ui-contract.md` |
 
 ## Reports
 
@@ -40,3 +41,4 @@ related: []
 | `docs.walkthrough.capabilities` | [能力清单（走查步骤 1 产出）](../walkthrough/capabilities.md) | reference | note | active |
 | `docs.walkthrough.report-r1` | [33 条链路走查报告（第 1 轮）](../walkthrough/report-r1.md) | reference | report | resolved |
 | `docs.walkthrough.scenarios` | [走查素材剧本 + 覆盖矩阵（走查步骤 2 产出）](../walkthrough/scenarios.md) | reference | note | active |
+| `docs.walkthrough.ui-contract` | [UI 契约与重做指南](../walkthrough/ui-contract.md) | reference | note | active |
