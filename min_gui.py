@@ -32,8 +32,8 @@ if not tkboot.bootstrap(ROOT, list(sys.argv[1:])) and not tkboot.has_tkinter():
 import tkinter as tk  # noqa: E402
 from tkinter import ttk  # noqa: E402
 
-from brconsole import autostart, notify, power  # noqa: E402
-from brconsole.core import RenderJob, state_file_for  # noqa: E402
+from brconsole import autostart, notify, power, queue_store  # noqa: E402
+from brconsole.core import JobConfig, RenderJob, state_file_for  # noqa: E402
 from brconsole.eta import fmt_duration  # noqa: E402
 from brconsole.guimodel.constants import (AFTERMATH_LABELS, DEVICES, DEPTH_KEEP_LABEL,  # noqa: E402
                                           ENGINES, FORMATS, RETRY_CHOICES)
@@ -48,7 +48,7 @@ class MinGUI(object):
     def __init__(self, root, preset=None):
         self.root = root
         root.title("brc 最简测试界面（功能对齐）")
-        root.geometry("860x820")
+        root.geometry("900x860")
         root.minsize(760, 640)
 
         # 一个滚动画布装所有控件——功能多但不管视觉，宁可长也不要挤
@@ -72,10 +72,33 @@ class MinGUI(object):
             ttk.Label(f, text=text, width=12, anchor="w").grid(row=r, column=0, sticky="w")
             return r
 
+        # --- 队列（与完整界面共用 queue.json）---
+        label("队列")
+        qrow = ttk.Frame(f)
+        qrow.grid(row=r, column=1, columnspan=3, sticky="ew")
+        self.queue_box = tk.Listbox(qrow, height=5, exportselection=False)
+        self.queue_box.pack(side="left", fill="both", expand=True)
+        self.queue_box.bind("<<ListboxSelect>>", lambda _e: self._on_pick_queue_item())
+        qbtns = ttk.Frame(qrow)
+        qbtns.pack(side="left", padx=(6, 0), anchor="n")
+        ttk.Button(qbtns, text="入队", command=self.on_queue_add).pack(fill="x")
+        ttk.Button(qbtns, text="删除", command=self.on_queue_remove).pack(fill="x")
+        ttk.Button(qbtns, text="上移", command=lambda: self.on_queue_move(-1)).pack(fill="x")
+        ttk.Button(qbtns, text="下移", command=lambda: self.on_queue_move(1)).pack(fill="x")
+        ttk.Button(qbtns, text="清空", command=self.on_queue_clear).pack(fill="x")
+        ttk.Button(qbtns, text="刷新", command=self.refresh_queue).pack(fill="x")
+        r += 1
+
+        label("队列状态")
+        self.queue_summary = tk.StringVar(value="队列为空")
+        ttk.Label(f, textvariable=self.queue_summary, anchor="w").grid(
+            row=r, column=1, columnspan=3, sticky="w")
+        r += 1
+
         # --- 工程 / 场景 / 读取 ---
         label("工程 .blend")
         self.blend = tk.StringVar(value=preset or "")
-        ttk.Entry(f, textvariable=self.blend, width=64).grid(row=r, column=1, sticky="ew")
+        ttk.Entry(f, textvariable=self.blend, width=52).grid(row=r, column=1, sticky="ew")
         ttk.Button(f, text="选择", command=self._pick).grid(row=r, column=2)
         self.btn_read = ttk.Button(f, text="读取配置", command=self.on_read)
         self.btn_read.grid(row=r, column=3)
@@ -149,7 +172,7 @@ class MinGUI(object):
         # --- 输出 / Blender ---
         label("输出模板")
         self.output = tk.StringVar()
-        ttk.Entry(f, textvariable=self.output, width=64).grid(row=r, column=1, sticky="ew")
+        ttk.Entry(f, textvariable=self.output, width=52).grid(row=r, column=1, sticky="ew")
         ttk.Button(f, text="选择目录", command=self._choose_dir).grid(row=r, column=2)
         r += 1
 
@@ -253,8 +276,13 @@ class MinGUI(object):
         self.reading = False
         self.info = None
         self.last_result = None
+        # 队列模式：点「开始渲染」= 按队列顺序跑完（空队列时把当前表单入队）
+        self.queue_mode = False
+        self.current_item = None
+        self._queue_rows = []          # Listbox 行号 → 队列项
         self._on_fmt()
         self._refresh_versions()
+        self.refresh_queue()
         root.after(80, self._poll)
         if preset:
             root.after(200, self.on_read)
@@ -277,6 +305,169 @@ class MinGUI(object):
     def _say(self, text):
         self.log.insert("end", text + "\n")
         self.log.see("end")
+
+    # ---------------- 队列 ----------------
+    def refresh_queue(self):
+        """重画队列列表（每次操作后都从磁盘重读，保持与完整界面一致）。"""
+        q = queue_store.load()
+        items = (q or {}).get("items") or []
+        self._queue_rows = list(items)
+        self.queue_box.delete(0, "end")
+        for it in items:
+            cfg = it.get("config") or {}
+            name = os.path.basename(cfg.get("blend") or "?")
+            frames = cfg.get("frames") or []
+            mark = {"pending": "…", "running": "▶", "done": "✓", "failed": "✗"}.get(
+                it.get("status"), "?")
+            self.queue_box.insert("end", "%s %s（%d 帧）" % (mark, name, len(frames)))
+        self.queue_summary.set(queue_store.summary(q))
+        # 选中当前项（current）方便对照
+        if q and q.get("items"):
+            idx = min(q.get("current", 0), len(q["items"]) - 1)
+            self.queue_box.selection_clear(0, "end")
+            self.queue_box.selection_set(idx)
+            self.queue_box.see(idx)
+
+    def _selected_queue_item(self):
+        sel = self.queue_box.curselection()
+        if not sel:
+            return None
+        i = sel[0]
+        return self._queue_rows[i] if 0 <= i < len(self._queue_rows) else None
+
+    def _on_pick_queue_item(self):
+        """选中队列项 → 把它的配置快照回填到表单（与完整界面一致）。"""
+        it = self._selected_queue_item()
+        if not it:
+            return
+        cfg = it.get("config") or {}
+        self.blend.set(cfg.get("blend") or "")
+        if it.get("blender_exe"):
+            self.blender.set(it["blender_exe"])
+        frames = cfg.get("frames") or []
+        if frames:
+            self.start.set(str(min(frames)))
+            self.end.set(str(max(frames)))
+            # 非连续帧用帧列表表达，避免看起来像"整段重跑"
+            if len(frames) != max(frames) - min(frames) + 1:
+                self.frames_spec.set(",".join(str(f) for f in frames))
+        self.engine.set(cfg.get("engine") or ENGINES[0][1])
+        self.device.set(cfg.get("device") or "")
+        if cfg.get("samples") is not None:
+            self.samples.set(str(cfg["samples"]))
+        res = cfg.get("resolution") or []
+        if len(res) == 2:
+            self.width.set(str(res[0]))
+            self.height.set(str(res[1]))
+        self.pct.set("" if cfg.get("resolution_percentage") is None
+                     else str(cfg["resolution_percentage"]))
+        self.fmt.set(format_label(cfg.get("file_format")))
+        self._on_fmt()
+        self.depth.set(cfg.get("color_depth") or DEPTH_KEEP_LABEL)
+        self.output.set(cfg.get("output_template") or "")
+        self.scene.set(cfg.get("scene") or "")
+        self.resume.set(bool(cfg.get("resume", True)))
+
+    def on_queue_add(self):
+        """把当前表单的快照追加进队列。"""
+        cfg, err = model.build_config(self._values())
+        if err:
+            self._say("! 入队失败：%s" % err)
+            return
+        _q, item = queue_store.add(cfg, self.blender.get().strip())
+        self.refresh_queue()
+        self._say("已加入队列：%s（%d 帧）" % (
+            os.path.basename(cfg.blend), len(cfg.frames)))
+
+    def on_queue_remove(self):
+        it = self._selected_queue_item()
+        if not it:
+            self._say("! 先选中一个队列项")
+            return
+        if self.running and self.current_item and it.get("id") == self.current_item.get("id"):
+            self._say("! 正在跑这一项，先停止再删")
+            return
+        queue_store.remove(it["id"])
+        self.refresh_queue()
+        self._say("已从队列删除：%s" % os.path.basename(
+            (it.get("config") or {}).get("blend") or "?"))
+
+    def on_queue_move(self, delta):
+        it = self._selected_queue_item()
+        if not it:
+            self._say("! 先选中一个队列项")
+            return
+        if queue_store.move(it["id"], delta):
+            self.refresh_queue()
+        else:
+            self._say("! 已经到边界了")
+
+    def on_queue_clear(self):
+        if self.running:
+            self._say("! 渲染中，不能清空队列")
+            return
+        queue_store.clear()
+        self.refresh_queue()
+        self._say("队列已清空")
+
+    def _run_next_queue_item(self):
+        """取下一项启动渲染；没有待跑项就收尾。
+
+        每项用它**自己的配置快照**（`JobConfig.from_dict`）——不拿右侧当前表单覆盖别人，
+        这是队列与"直接跑表单"的关键区别。
+        """
+        item = queue_store.next_pending()
+        if item is None:
+            self._finish_queue()
+            return
+        cfg = JobConfig.from_dict(item.get("config") or {})
+        blender = (item.get("blender_exe") or "").strip()
+        bad = ""
+        if not blender or not os.path.exists(blender):
+            bad = "blender.exe 不存在：%s" % (blender or "未指定")
+        elif not cfg.blend or not os.path.exists(cfg.blend):
+            bad = "工程文件不存在：%s" % cfg.blend
+        elif not cfg.frames:
+            bad = "没有可渲染的帧"
+        if bad:
+            # 一项坏掉不拖住整个队列：标失败、说清楚，继续下一项
+            self._say("! 队列项跳过（%s）：%s" % (
+                os.path.basename(cfg.blend or "?"), bad))
+            queue_store.set_status(item["id"], queue_store.STATUS_FAILED)
+            self.refresh_queue()
+            self.root.after(100, self._run_next_queue_item)
+            return
+        queue_store.set_current(item["id"])     # 写 pending.json，供开机续跑认领
+        self.current_item = item
+        q = queue_store.load() or {"current": 0, "items": []}
+        self._say("队列：开始第 %d/%d 项 —— %s（%d 帧）" % (
+            q.get("current", 0) + 1, len(q["items"]),
+            os.path.basename(cfg.blend), len(cfg.frames)))
+        self.refresh_queue()
+        self._start_job(cfg, blender)
+
+    def _finish_queue(self):
+        """整个队列跑完：通知 + 善后（与完整界面一致，只在队列结束时触发）。"""
+        self.queue_mode = False
+        self.current_item = None
+        self._say("队列全部完成。")
+        self.refresh_queue()
+        last = self.last_result or {}
+        ok = bool(last.get("ok"))
+        try:
+            notify.announce(tk_winfo_id=self.root.winfo_id(),
+                            title="队列完成" if ok else "队列结束",
+                            message=self.status.get())
+        except Exception:
+            pass
+        choice = dict(AFTERMATH_LABELS).get(self.aftermath.get())
+        act = aftermath_plan(choice, ok, bool(last.get("cancelled")))
+        if act == "shutdown":
+            _ok, msg = power.shutdown_after()
+            self._say("善后：%s" % msg)
+        elif act == "sleep":
+            self._say("善后：即将睡眠")
+            power.sleep_now()
 
     def _clear_log(self):
         self.log.delete("1.0", "end")
@@ -403,25 +594,48 @@ class MinGUI(object):
 
     # ---------------- 渲染 ----------------
     def on_start(self):
-        if self.running:
-            return
-        cfg, err = model.build_config(self._values())
-        if err:
-            self._say("! %s" % err)
-            return
-        level, why = model.check_disk(cfg)
-        if level == "block":
-            self._say("! 磁盘空间不足，不开始：%s" % why)
-            return
-        if level == "warn":
-            self._say("! %s" % why)
+        """「开始渲染」= 按队列顺序跑完整个队列（与完整界面同一语义）。
 
+        队列为空时把当前表单入队，保留"配好参数直接点开始"的用法。
+        """
+        if self.running or self.queue_mode:
+            self._say("! 当前有任务在跑，等它结束再开始")
+            return
+        q = queue_store.load()
+        if not q or not q.get("items"):
+            cfg, err = model.build_config(self._values())
+            if err:
+                self._say("! %s" % err)
+                return
+            level, why = model.check_disk(cfg)
+            if level == "block":
+                self._say("! 磁盘空间不足，不开始：%s" % why)
+                return
+            if level == "warn":
+                self._say("! %s" % why)
+            queue_store.add(cfg, self.blender.get().strip())
+            q = queue_store.load()
+            self._say("队列为空，已把当前表单入队")
+        # 上一轮全部完成 → 重置状态重跑（否则点开始看起来没反应）
+        if not any(it.get("status") != queue_store.STATUS_DONE for it in q["items"]):
+            for it in q["items"]:
+                queue_store.set_status(it["id"], queue_store.STATUS_PENDING)
+            q = queue_store.load()
+            self._say("上一轮队列已全部完成，重置后重新按顺序渲染")
+        self.queue_mode = True
+        self._say("开始渲染：按队列顺序跑 %d 项" % len(q["items"]))
+        self._run_next_queue_item()
+
+    def _start_job(self, cfg, blender):
+        """启动队列中的一项（进度复位、按钮状态、后台线程）。"""
         guard = (power.keep_awake, power.allow_sleep) if self.sleep_guard.get() else None
-        self.job = RenderJob(cfg, self.blender.get().strip(), power_guard=guard)
+        self.job = RenderJob(cfg, blender, power_guard=guard)
         self.running = True
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.pb.configure(maximum=max(len(cfg.frames), 1), value=0)
+        self.pb_label.set("0/%d" % len(cfg.frames))
+        self.eta_label.set("ETA --")
         self.status.set("渲染中…")
         self._say("开始：%s · 场景 %s · %d 帧" % (
             cfg.blend, cfg.scene or "默认", len(cfg.frames)))
@@ -517,19 +731,38 @@ class MinGUI(object):
         else:
             self.status.set("失败：%s" % (ev.get("error") or ev.get("msg") or kind))
 
-        # 完成通知（尽力而为，失败不影响主流程）
+        # ---- 队列推进：标状态 → 继续下一项 / 收尾 ----
+        in_queue = bool(self.queue_mode and self.current_item)
+        if in_queue:
+            item_id = self.current_item.get("id")
+            status = model.queue_status_after(kind, ev)
+            queue_store.set_status(item_id, status)
+            self._say("队列项已标记：%s（%s）" % (
+                status, os.path.basename(
+                    (self.current_item.get("config") or {}).get("blend") or "?")))
+            self.current_item = None
+            self.refresh_queue()
+
+        if in_queue and cancelled:
+            # 主动停止 = 停整个队列；当前项保留断点，点开始可续
+            self.queue_mode = False
+            self._say("队列已暂停（当前项保留断点；点「开始渲染」可接着跑）")
+            return
+        if in_queue:
+            self.root.after(300, self._run_next_queue_item)
+            return
+
+        # ---- 不在队列里（单项表单任务）：走通知 + 善后 ----
         try:
             notify.announce(tk_winfo_id=self.root.winfo_id(),
                             title="渲染完成" if ok else "渲染失败",
                             message=self.status.get())
         except Exception:
             pass
-
-        # 善后：只有"全部渲完"才触发；关机带 60 秒倒计时可撤
         choice = dict(AFTERMATH_LABELS).get(self.aftermath.get())
         act = aftermath_plan(choice, ok, cancelled)
         if act == "shutdown":
-            ok2, msg = power.shutdown_after()
+            _ok, msg = power.shutdown_after()
             self._say("善后：%s" % msg)
         elif act == "sleep":
             self._say("善后：即将睡眠")
