@@ -117,12 +117,13 @@ python main.py --demo                 # 自检：自动填配置 + 用内置假 
 —— 引擎 / 采样 / 分辨率 / 帧范围 / 输出路径都是**每个场景各有一套**的。
 只有一个场景时下拉只作展示；某个场景没设相机的话会提前告警（Blender 会拒绝渲染它）。
 
-**最简测试界面**：`min_gui.py` 是一个单文件、只依赖 `core` 与 `inspect` 的最小窗口，
-用来判断"是 core 坏了还是完整 GUI 层坏了"。控件只有工程 / 读取配置 / 场景 / 帧范围 /
-引擎 / 采样 / 分辨率 / 输出模板 / Blender 路径 + 开始 / 停止 + 日志框；不碰视图契约，
-也不写存档。点「读取配置」会调用 `brconsole.inspect` 无头读 `.blend`，把每个场景的
-引擎 / 采样 / 分辨率 / 帧范围 / 输出路径回填到控件（后台线程读，不卡界面）；
-读完后直接用这些参数渲染，用来验证"读配置 → 回填 → 渲染"整条链路。
+**最简测试界面**：`min_gui.py` 功能对齐完整界面，但不依赖 `gui/` 包与视图契约——
+用来判断"是 core 坏了还是完整 GUI 层坏了"。控件齐全：工程 / 读取配置 / 场景 /
+集合显示 / 帧范围（含多段帧列表）/ 引擎 / 设备 / 采样 / 分辨率 / 百分比 / 格式 /
+位数 / 输出模板 / Blender 版本与深扫 / 重试三参数 / 断点续跑 / 原生输出 / 防睡眠 /
+开机自启 / 结束后动作 + 进度条与 ETA + 开始 / 停止 / 清断点 / 打开输出目录 / 清日志。
+规则全部复用 `brconsole.guimodel` 的唯一出口（`min_gui_model.py` 是纯逻辑，可单测），
+读配置复用 `brconsole.inspect`；UI 只负责摆控件、转发事件。不管视觉效果。
 
 ```bash
 python min_gui.py                 # 打开最简界面
@@ -246,7 +247,8 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ```
 .
 ├── main.py                  # 入口：无参数 → GUI，带参数 → CLI（PyInstaller 也从这里打包）
-├── min_gui.py               # 最简测试界面：只调 core，绕开 GUI 契约层，验证渲染链路
+├── min_gui.py               # 最简测试界面：功能对齐完整 GUI，但不依赖 gui/ 包与视图契约
+├── min_gui_model.py         # min_gui 的纯逻辑（控件值→JobConfig），可单测
 ├── brconsole/
 │   ├── layout.py            # 打包布局常量（_brc）—— 叶子模块，单一来源，谁都能依赖它
 │   ├── gui/                 # 界面控制包：app 薄壳 + app_state + 8 个 controller mixin
