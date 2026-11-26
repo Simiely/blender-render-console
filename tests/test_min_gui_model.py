@@ -92,6 +92,22 @@ class TestFillFromDetail(unittest.TestCase):
         self.assertEqual(v["format"], "PNG")
         self.assertEqual(v["depth"], "16")
 
+    def test_gpu_backend_filled_from_compute_device_type(self):
+        # cycles_device 只有 CPU/GPU 两值；GPU 时真正的后端名在 compute_device_type
+        detail = {"engine": "CYCLES", "cycles_device": "GPU",
+                  "compute_device_type": "OPTIX"}
+        v = fill_from_detail({}, detail)
+        self.assertEqual(v["device"], "OPTIX")
+
+    def test_cpu_device_filled_from_cycles_device(self):
+        v = fill_from_detail({}, {"engine": "CYCLES", "cycles_device": "CPU"})
+        self.assertEqual(v["device"], "CPU")
+
+    def test_unknown_gpu_backend_does_not_guess(self):
+        # 读不到后端名时不动控件（宁缺勿错），保持原值
+        v = fill_from_detail({"device": ""}, {"engine": "CYCLES", "cycles_device": "GPU"})
+        self.assertEqual(v["device"], "")
+
     def test_unknown_fields_leave_values_untouched(self):
         v = fill_from_detail({"samples": "99"}, {"samples": None})
         self.assertEqual(v["samples"], "99")
