@@ -30,8 +30,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import arch_metrics as am                                            # noqa: E402
 
-# 允许碰 tkinter 的文件（界面层）
+# 允许碰 tkinter 的文件（界面层）。登记表，不是架构约束。
+# min_gui.py：独立的最简测试界面入口，与 main.py 同为组合根，自带 Tk。
 UI_FILES = {"brconsole/gui.py", "brconsole/theme.py", "brconsole/uikit.py",
+            "min_gui.py",
             "brconsole/ui_project.py",
             "brconsole/ui_frames.py", "brconsole/ui_render.py",
             "brconsole/ui_overview.py",

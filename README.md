@@ -117,6 +117,15 @@ python main.py --demo                 # 自检：自动填配置 + 用内置假 
 —— 引擎 / 采样 / 分辨率 / 帧范围 / 输出路径都是**每个场景各有一套**的。
 只有一个场景时下拉只作展示；某个场景没设相机的话会提前告警（Blender 会拒绝渲染它）。
 
+**最简测试界面**：`min_gui.py` 是一个单文件、只依赖 `core` 的最小窗口，用来判断
+"是 core 坏了还是完整 GUI 层坏了"。只有工程 / 帧范围 / Blender 路径三个输入 +
+开始 / 停止两个按钮 + 日志框，不碰 guimodel / 视图契约，也不写存档。
+
+```bash
+python min_gui.py                 # 打开最简界面
+python min_gui.py 工程.blend       # 预填工程
+```
+
 ### 多段不连续的序列帧
 
 帧范围是一个**段列表**，点「＋ 添加一段」新增一行，每行填这一段自己的「起 / 止 / 步长」，
@@ -234,6 +243,7 @@ Blender：C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ```
 .
 ├── main.py                  # 入口：无参数 → GUI，带参数 → CLI（PyInstaller 也从这里打包）
+├── min_gui.py               # 最简测试界面：只调 core，绕开 GUI 契约层，验证渲染链路
 ├── brconsole/
 │   ├── layout.py            # 打包布局常量（_brc）—— 叶子模块，单一来源，谁都能依赖它
 │   ├── gui/                 # 界面控制包：app 薄壳 + app_state + 8 个 controller mixin
